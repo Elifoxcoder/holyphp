@@ -1,0 +1,9 @@
+src/hphpc/lexer.c: In function 'lex_next':
+src/hphpc/lexer.c:408:5: warning: case label value exceeds maximum value for type [-Wswitch-outside-range]
+  408 |     case '<' + 256: break; /* unreachable */
+      |     ^~~~
+src/hphpc/sema.c: In function 'resolve_type':
+src/hphpc/sema.c:320:40: warning: assignment discards 'const' qualifier from pointer target type [-Wdiscarded-qualifiers]
+  320 |             ((Type **)t->fn.params)[i] = resolve_type(sc, (Type *)t->fn.params[i], tok);
+      |                                        ^
+collect2.exe: error: ld returned 1 exit status

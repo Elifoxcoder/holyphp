@@ -1,0 +1,36 @@
+$store = "top";
+function setIt(): void {
+    global $store;
+    $store = "changed-in-fn";
+}
+function getIt(): string {
+    global $store;
+    return $store;
+}
+setIt();
+echo getIt() . "\n";
+echo $store . "\n";
+
+// global auto-declared by first use in a function
+function bump(): void {
+    global $count;
+    $count = $count + 1;
+}
+bump(); bump(); bump();
+echo "count=" . $count . "\n";
+
+// global captured in a closure via use()
+function makeCounter(): int {
+    global $hits;
+    $f = function(): void { global $hits; $hits = $hits + 5; };
+    $f();
+    return 0;
+}
+makeCounter();
+echo "hits=" . $hits . "\n";
+
+// mixed with closures capturing locals normally
+$n = 0;
+$inc = function() use (&$n): void { $n = $n + 1; };
+$inc(); $inc();
+echo "n=" . $n . "\n";

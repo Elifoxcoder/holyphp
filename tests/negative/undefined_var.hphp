@@ -1,0 +1,2 @@
+// undefined_var.hphp — must FAIL sema: $nope never assigned
+echo $nope;

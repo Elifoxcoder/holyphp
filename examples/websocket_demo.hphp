@@ -1,0 +1,39 @@
+// websocket_demo.hphp — a tiny WebSocket chat server, built on the `websocket`
+// package (hphp pkg install websocket).
+//
+//   hphp run websocket_demo.hphp        (from the folder you downloaded it to)
+//   open examples/ws_chat.html          (or any WebSocket client) -> ws://127.0.0.1:9500
+//
+// Connect from JavaScript:
+//   const ws = new WebSocket("ws://127.0.0.1:9500/");
+//   ws.onmessage = (e) => console.log(e.data);
+//   ws.send("hello");
+import "websocket.hphp";
+
+$server = new WebSocketServer("tcp://127.0.0.1:9500");
+$server->verbose = true;
+if (!$server->listen()) {
+    echo "cannot bind tcp://127.0.0.1:9500 (already running?)\n";
+    exit(1);
+}
+echo "HolyPHP chat server on ws://127.0.0.1:9500 — open examples/ws_chat.html\n";
+
+$server->onOpen = function(int $client) use ($server): void {
+    echo "client " . $client . " joined\n";
+    $server->broadcast("user " . $client . " joined the chat");
+};
+
+$server->onMessage = function(int $client, string $msg) use ($server): void {
+    echo "client " . $client . ": " . $msg . "\n";
+    $server->broadcast("user " . $client . ": " . $msg);
+};
+
+$server->onClose = function(int $client, int $code) use ($server): void {
+    echo "client " . $client . " left (code " . $code . ")\n";
+    $server->broadcast("user " . $client . " left the chat");
+};
+
+while ($server->tick()) {
+    usleep(10000);   /* 10 ms loop; the library does the I/O multiplexing */
+}
+echo "server shut down\n";

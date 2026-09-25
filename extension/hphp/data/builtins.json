@@ -1,0 +1,1650 @@
+{
+ "generatedFrom": "src/hphpc/builtins.c",
+ "builtins": [
+  {
+   "name": "strlen",
+   "sig": "strlen(mixed $v): int",
+   "args": 1,
+   "desc": "string|array → int",
+   "unsafe": false
+  },
+  {
+   "name": "count",
+   "sig": "count(mixed $v): int",
+   "args": 1,
+   "desc": "string|array → int",
+   "unsafe": false
+  },
+  {
+   "name": "sizeof",
+   "sig": "sizeof(mixed $v): int",
+   "args": 1,
+   "desc": "string|array → int",
+   "unsafe": false
+  },
+  {
+   "name": "strtoupper",
+   "sig": "strtoupper(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "strtolower",
+   "sig": "strtolower(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "ucfirst",
+   "sig": "ucfirst(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "lcfirst",
+   "sig": "lcfirst(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "trim",
+   "sig": "trim(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "ltrim",
+   "sig": "ltrim(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "rtrim",
+   "sig": "rtrim(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "chop",
+   "sig": "chop(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "strrev",
+   "sig": "strrev(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "str_pad",
+   "sig": "str_pad(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "str_replace",
+   "sig": "str_replace(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "substr",
+   "sig": "substr(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "strstr",
+   "sig": "strstr(string $haystack, string $needle): string",
+   "args": 2,
+   "desc": "(string, string) → string",
+   "unsafe": false
+  },
+  {
+   "name": "strchr",
+   "sig": "strchr(string $haystack, string $needle): string",
+   "args": 2,
+   "desc": "(string, string) → string",
+   "unsafe": false
+  },
+  {
+   "name": "strpos",
+   "sig": "strpos(string $haystack, string $needle): int",
+   "args": 2,
+   "desc": "(string, string) → string",
+   "unsafe": false
+  },
+  {
+   "name": "str_contains",
+   "sig": "str_contains(string $haystack, string $needle): bool",
+   "args": 2,
+   "desc": "(string, string) → string",
+   "unsafe": false
+  },
+  {
+   "name": "str_starts_with",
+   "sig": "str_starts_with(string $haystack, string $needle): bool",
+   "args": 2,
+   "desc": "(string, string) → string",
+   "unsafe": false
+  },
+  {
+   "name": "str_ends_with",
+   "sig": "str_ends_with(string $haystack, string $needle): bool",
+   "args": 2,
+   "desc": "(string, string) → string",
+   "unsafe": false
+  },
+  {
+   "name": "strcmp",
+   "sig": "strcmp(string $a, string $b): int",
+   "args": 2,
+   "desc": "(string, string) → int",
+   "unsafe": false
+  },
+  {
+   "name": "strncmp",
+   "sig": "strncmp(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "strncasecmp",
+   "sig": "strncasecmp(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "strcasecmp",
+   "sig": "strcasecmp(string $a, string $b): int",
+   "args": 2,
+   "desc": "(string, string) → int",
+   "unsafe": false
+  },
+  {
+   "name": "implode",
+   "sig": "implode(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "join",
+   "sig": "join(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "nl2br",
+   "sig": "nl2br(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "number_format",
+   "sig": "number_format(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "unset",
+   "sig": "unset(...$args): void",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "json_encode",
+   "sig": "json_encode(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "md5",
+   "sig": "md5(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "sha1",
+   "sig": "sha1(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "crc32",
+   "sig": "crc32(string $s): int",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "base64_encode",
+   "sig": "base64_encode(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "base64_decode",
+   "sig": "base64_decode(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "urlencode",
+   "sig": "urlencode(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "urldecode",
+   "sig": "urldecode(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "htmlentities",
+   "sig": "htmlentities(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "htmlspecialchars",
+   "sig": "htmlspecialchars(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "sprintf",
+   "sig": "sprintf(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "printf",
+   "sig": "printf(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "vsprintf",
+   "sig": "vsprintf(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ord",
+   "sig": "ord(string $s): int",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "bin2hex",
+   "sig": "bin2hex(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "hex2bin",
+   "sig": "hex2bin(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "ucwords",
+   "sig": "ucwords(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "wordwrap",
+   "sig": "wordwrap(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "similar_text",
+   "sig": "similar_text(string $haystack, string $needle): int",
+   "args": 2,
+   "desc": "(string, string) → string",
+   "unsafe": false
+  },
+  {
+   "name": "levenshtein",
+   "sig": "levenshtein(string $haystack, string $needle): int",
+   "args": 2,
+   "desc": "(string, string) → string",
+   "unsafe": false
+  },
+  {
+   "name": "array",
+   "sig": "array(...$values): mixed",
+   "args": -1,
+   "desc": "variadic → array",
+   "unsafe": false
+  },
+  {
+   "name": "array_keys",
+   "sig": "array_keys(array $a): mixed",
+   "args": 1,
+   "desc": "array → array (keys)",
+   "unsafe": false
+  },
+  {
+   "name": "array_values",
+   "sig": "array_values(array $a): mixed",
+   "args": 1,
+   "desc": "array → array (values)",
+   "unsafe": false
+  },
+  {
+   "name": "array_merge",
+   "sig": "array_merge(...$args): mixed",
+   "args": -1,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_slice",
+   "sig": "array_slice(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_reverse",
+   "sig": "array_reverse(array $a): mixed",
+   "args": 1,
+   "desc": "array → array",
+   "unsafe": false
+  },
+  {
+   "name": "array_sum",
+   "sig": "array_sum(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_product",
+   "sig": "array_product(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_unique",
+   "sig": "array_unique(array $a): mixed",
+   "args": 1,
+   "desc": "array → array",
+   "unsafe": false
+  },
+  {
+   "name": "in_array",
+   "sig": "in_array(...$args): bool",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_key_exists",
+   "sig": "array_key_exists(...$args): bool",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "isset",
+   "sig": "isset(...$args): bool",
+   "args": -1,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "range",
+   "sig": "range(int $start, int $end): mixed",
+   "args": 2,
+   "desc": "(int, int) → array",
+   "unsafe": false
+  },
+  {
+   "name": "compact",
+   "sig": "compact(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_map",
+   "sig": "array_map(...$args): mixed",
+   "args": -1,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_filter",
+   "sig": "array_filter(...$args): mixed",
+   "args": -1,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_reduce",
+   "sig": "array_reduce(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_flip",
+   "sig": "array_flip(array $a): mixed",
+   "args": 1,
+   "desc": "array → array",
+   "unsafe": false
+  },
+  {
+   "name": "array_fill",
+   "sig": "array_fill(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_combine",
+   "sig": "array_combine(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_diff",
+   "sig": "array_diff(...$args): mixed",
+   "args": -1,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_intersect",
+   "sig": "array_intersect(...$args): mixed",
+   "args": -1,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_push",
+   "sig": "array_push(...$args): int",
+   "args": -1,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_pop",
+   "sig": "array_pop(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_shift",
+   "sig": "array_shift(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_unshift",
+   "sig": "array_unshift(...$args): int",
+   "args": -1,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "array_splice",
+   "sig": "array_splice(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "shuffle",
+   "sig": "shuffle(...$args): bool",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "sort",
+   "sig": "sort(array &$a): bool",
+   "args": 1,
+   "desc": "in-place sort",
+   "unsafe": false
+  },
+  {
+   "name": "rsort",
+   "sig": "rsort(array &$a): bool",
+   "args": 1,
+   "desc": "in-place sort",
+   "unsafe": false
+  },
+  {
+   "name": "ksort",
+   "sig": "ksort(array &$a): bool",
+   "args": 1,
+   "desc": "in-place sort",
+   "unsafe": false
+  },
+  {
+   "name": "krsort",
+   "sig": "krsort(array &$a): bool",
+   "args": 1,
+   "desc": "in-place sort",
+   "unsafe": false
+  },
+  {
+   "name": "asort",
+   "sig": "asort(array &$a): bool",
+   "args": 1,
+   "desc": "in-place sort",
+   "unsafe": false
+  },
+  {
+   "name": "array_search",
+   "sig": "array_search(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "end",
+   "sig": "end(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "reset",
+   "sig": "reset(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "max",
+   "sig": "max(...$numbers): mixed",
+   "args": -1,
+   "desc": "variadic numeric",
+   "unsafe": false
+  },
+  {
+   "name": "min",
+   "sig": "min(...$numbers): mixed",
+   "args": -1,
+   "desc": "variadic numeric",
+   "unsafe": false
+  },
+  {
+   "name": "rand",
+   "sig": "rand(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "mt_rand",
+   "sig": "mt_rand(...$args): float",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "srand",
+   "sig": "srand(...$args): void",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "mt_srand",
+   "sig": "mt_srand(...$args): void",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "random_int",
+   "sig": "random_int(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "fgetc",
+   "sig": "fgetc(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "abs",
+   "sig": "abs(mixed $number): mixed",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "round",
+   "sig": "round(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "floor",
+   "sig": "floor(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "ceil",
+   "sig": "ceil(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "sqrt",
+   "sig": "sqrt(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "pow",
+   "sig": "pow(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "intdiv",
+   "sig": "intdiv(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "fmod",
+   "sig": "fmod(...$args): float",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "sin",
+   "sig": "sin(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "cos",
+   "sig": "cos(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "tan",
+   "sig": "tan(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "atan",
+   "sig": "atan(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "atan2",
+   "sig": "atan2(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "asin",
+   "sig": "asin(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "acos",
+   "sig": "acos(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "log",
+   "sig": "log(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "log2",
+   "sig": "log2(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "log10",
+   "sig": "log10(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "exp",
+   "sig": "exp(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "is_nan",
+   "sig": "is_nan(mixed $number): bool",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "is_finite",
+   "sig": "is_finite(mixed $number): bool",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "is_infinite",
+   "sig": "is_infinite(mixed $number): bool",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "pi",
+   "sig": "pi(...$args): float",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "M_PI",
+   "sig": "M_PI(...$args): float",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "deg2rad",
+   "sig": "deg2rad(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "rad2deg",
+   "sig": "rad2deg(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "hypot",
+   "sig": "hypot(...$args): float",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "lcg_value",
+   "sig": "lcg_value(...$args): float",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "is_int",
+   "sig": "is_int(mixed $number): bool",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "is_integer",
+   "sig": "is_integer(mixed $number): bool",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "is_float",
+   "sig": "is_float(mixed $number): bool",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "is_string",
+   "sig": "is_string(mixed $number): bool",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "is_bool",
+   "sig": "is_bool(mixed $number): bool",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "is_array",
+   "sig": "is_array(mixed $number): bool",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "is_null",
+   "sig": "is_null(mixed $number): bool",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "is_numeric",
+   "sig": "is_numeric(mixed $number): bool",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "intval",
+   "sig": "intval(mixed $number): int",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "floatval",
+   "sig": "floatval(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "doubleval",
+   "sig": "doubleval(mixed $number): float",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "strval",
+   "sig": "strval(mixed $number): string",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "boolval",
+   "sig": "boolval(mixed $number): bool",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "gettype",
+   "sig": "gettype(mixed $number): string",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "var_dump",
+   "sig": "var_dump(...$args): void",
+   "args": -1,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "print_r",
+   "sig": "print_r(...$args): string",
+   "args": -1,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "var_export",
+   "sig": "var_export(...$args): string",
+   "args": -1,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "serialize",
+   "sig": "serialize(mixed $number): string",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "unserialize",
+   "sig": "unserialize(mixed $number): mixed",
+   "args": 1,
+   "desc": "number → number",
+   "unsafe": false
+  },
+  {
+   "name": "readline",
+   "sig": "readline(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "file_get_contents",
+   "sig": "file_get_contents(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "file_put_contents",
+   "sig": "file_put_contents(string $haystack, string $needle): int",
+   "args": 2,
+   "desc": "(string, string) → string",
+   "unsafe": false
+  },
+  {
+   "name": "file_exists",
+   "sig": "file_exists(string $s): bool",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "is_dir",
+   "sig": "is_dir(string $s): bool",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "filesize",
+   "sig": "filesize(string $s): int",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "mkdir",
+   "sig": "mkdir(string $s): bool",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "rmdir",
+   "sig": "rmdir(string $s): bool",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "unlink",
+   "sig": "unlink(string $s): bool",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "rename",
+   "sig": "rename(string $haystack, string $needle): bool",
+   "args": 2,
+   "desc": "(string, string) → string",
+   "unsafe": false
+  },
+  {
+   "name": "copy",
+   "sig": "copy(string $haystack, string $needle): bool",
+   "args": 2,
+   "desc": "(string, string) → string",
+   "unsafe": false
+  },
+  {
+   "name": "fgets",
+   "sig": "fgets(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "fwrite",
+   "sig": "fwrite(string $haystack, string $needle): int",
+   "args": 2,
+   "desc": "(string, string) → string",
+   "unsafe": false
+  },
+  {
+   "name": "fopen",
+   "sig": "fopen(string $haystack, string $needle): mixed",
+   "args": 2,
+   "desc": "(string, string) → string",
+   "unsafe": false
+  },
+  {
+   "name": "fclose",
+   "sig": "fclose(string $s): bool",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "stream_socket_server",
+   "sig": "stream_socket_server(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "stream_socket_client",
+   "sig": "stream_socket_client(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "stream_socket_accept",
+   "sig": "stream_socket_accept(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "stream_set_blocking",
+   "sig": "stream_set_blocking(...$args): bool",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "stream_recv",
+   "sig": "stream_recv(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "stream_send",
+   "sig": "stream_send(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "stream_eof",
+   "sig": "stream_eof(...$args): bool",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "stream_peer",
+   "sig": "stream_peer(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "stream_close",
+   "sig": "stream_close(...$args): bool",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "getcwd",
+   "sig": "getcwd(): string",
+   "args": 0,
+   "desc": "no arguments",
+   "unsafe": false
+  },
+  {
+   "name": "bindec",
+   "sig": "bindec(string $s): int",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "octdec",
+   "sig": "octdec(string $s): int",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "hexdec",
+   "sig": "hexdec(string $s): int",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "getenv",
+   "sig": "getenv(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "putenv",
+   "sig": "putenv(string $s): bool",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "php_uname",
+   "sig": "php_uname(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "phpversion",
+   "sig": "phpversion(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "php_sapi_name",
+   "sig": "php_sapi_name(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "microtime",
+   "sig": "microtime(...$args): float",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "hrtime",
+   "sig": "hrtime(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "memory_get_usage",
+   "sig": "memory_get_usage(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "memory_get_peak_usage",
+   "sig": "memory_get_peak_usage(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "gc_collect_cycles",
+   "sig": "gc_collect_cycles(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "sys_getloadavg",
+   "sig": "sys_getloadavg(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "php_logo_guid",
+   "sig": "php_logo_guid(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "date",
+   "sig": "date(string $s): string",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "time",
+   "sig": "time(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "exit",
+   "sig": "exit(...$args): void",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "die",
+   "sig": "die(...$args): void",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "php_sapi",
+   "sig": "php_sapi(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_run_main",
+   "sig": "ui_run_main(): void",
+   "args": 0,
+   "desc": "no arguments",
+   "unsafe": false
+  },
+  {
+   "name": "ui_quit",
+   "sig": "ui_quit(): void",
+   "args": 0,
+   "desc": "no arguments",
+   "unsafe": false
+  },
+  {
+   "name": "ui_window",
+   "sig": "ui_window(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_show",
+   "sig": "ui_show(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_title",
+   "sig": "ui_title(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_size",
+   "sig": "ui_size(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_pos",
+   "sig": "ui_pos(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_close",
+   "sig": "ui_close(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_alive",
+   "sig": "ui_alive(...$args): bool",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_add",
+   "sig": "ui_add(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_set",
+   "sig": "ui_set(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_get",
+   "sig": "ui_get(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_enable",
+   "sig": "ui_enable(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_move",
+   "sig": "ui_move(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_focus",
+   "sig": "ui_focus(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_items",
+   "sig": "ui_items(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_remove",
+   "sig": "ui_remove(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_clear",
+   "sig": "ui_clear(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_ctrl_show",
+   "sig": "ui_ctrl_show(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_selected",
+   "sig": "ui_selected(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_select",
+   "sig": "ui_select(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_item_text",
+   "sig": "ui_item_text(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_check_get",
+   "sig": "ui_check_get(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_check_set",
+   "sig": "ui_check_set(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_progress",
+   "sig": "ui_progress(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_slider_get",
+   "sig": "ui_slider_get(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_slider_set",
+   "sig": "ui_slider_set(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_bg",
+   "sig": "ui_bg(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_fg",
+   "sig": "ui_fg(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_font",
+   "sig": "ui_font(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_menu",
+   "sig": "ui_menu(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_menu_item",
+   "sig": "ui_menu_item(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_menu_sep",
+   "sig": "ui_menu_sep(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_menu_check",
+   "sig": "ui_menu_check(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_on",
+   "sig": "ui_on(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_timer",
+   "sig": "ui_timer(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_msg",
+   "sig": "ui_msg(...$args): int",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_open_file",
+   "sig": "ui_open_file(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_save_file",
+   "sig": "ui_save_file(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_pick_folder",
+   "sig": "ui_pick_folder(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_pick_color",
+   "sig": "ui_pick_color(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": false
+  },
+  {
+   "name": "ui_clip_set",
+   "sig": "ui_clip_set(string $s): int",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": false
+  },
+  {
+   "name": "ui_clip_get",
+   "sig": "ui_clip_get(): string",
+   "args": 0,
+   "desc": "no arguments",
+   "unsafe": false
+  },
+  {
+   "name": "free",
+   "sig": "free(...$args): void",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": true
+  },
+  {
+   "name": "memcpy",
+   "sig": "memcpy(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": true
+  },
+  {
+   "name": "memset",
+   "sig": "memset(...$args): mixed",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": true
+  },
+  {
+   "name": "ffi_load",
+   "sig": "ffi_load(string $s): mixed",
+   "args": 1,
+   "desc": "string → string",
+   "unsafe": true
+  },
+  {
+   "name": "ffi_call",
+   "sig": "ffi_call(...$args): mixed",
+   "args": -1,
+   "desc": "flexible signature",
+   "unsafe": true
+  },
+  {
+   "name": "heap_dump",
+   "sig": "heap_dump(...$args): string",
+   "args": -2,
+   "desc": "flexible signature",
+   "unsafe": true
+  }
+ ]
+}

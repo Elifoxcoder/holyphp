@@ -1,0 +1,7 @@
+{
+  "name": "websocket",
+  "version": "1.0.0",
+  "entry": "websocket.hphp",
+  "description": "RFC 6455 WebSocket server for HolyPHP (handshake, frames, broadcast)",
+  "author": "HolyPHP"
+}

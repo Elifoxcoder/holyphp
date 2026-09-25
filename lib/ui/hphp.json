@@ -1,0 +1,7 @@
+{
+  "name": "ui",
+  "version": "1.0.0",
+  "entry": "ui.hphp",
+  "description": "Native Win32 UI toolkit for HolyPHP: windows, buttons, inputs, menus",
+  "author": "HolyPHP"
+}

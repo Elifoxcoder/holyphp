@@ -1,0 +1,80 @@
+// demo.hphp — HolyPHP feature tour (PHP-style, no declarations needed)
+
+echo "=== functions ===\n";
+
+function fib(int $n): int {
+    if ($n < 2) { return $n; }
+    return fib($n - 1) + fib($n - 2);
+}
+echo "fib(10) = " . fib(10) . "\n";
+
+function greet(string $who): string {
+    return "Hi, {$who}!";
+}
+echo greet("HolyPHP") . "\n";
+
+echo "=== arrays ===\n";
+$nums = [5, 3, 8, 1, 9];
+$total = 0;
+foreach ($nums as $x) {
+    $total += $x;
+}
+echo "sum = {$total}, count = " . count($nums) . "\n";
+echo "first = {$nums[0]}, last = {$nums[4]}\n";
+
+echo "=== map ===\n";
+$user = ["name" => "Elias", "lang" => "HolyPHP"];
+echo "name: {$user["name"]}\n";
+foreach ($user as $k => $v) {
+    echo "  {$k} => {$v}\n";
+}
+
+echo "=== classes ===\n";
+class Counter {
+    pub int $count = 0;
+    pub function bump(): void {
+        $this->count += 1;
+    }
+    pub function get(): int {
+        return $this->count;
+    }
+}
+$c = new Counter();
+$c->bump();
+$c->bump();
+$c->bump();
+echo "counter = " . $c->get() . "\n";
+
+echo "=== closures ===\n";
+$base = 100;
+$addBase = function(int $x) use ($base): int {
+    return $base + $x;
+};
+echo "addBase(5) = " . $addBase(5) . "\n";
+
+echo "=== match ===\n";
+function classify(int $n): string {
+    return match ($n) {
+        0 => "zero",
+        1, 2, 3 => "small",
+        _ => "big",
+    };
+}
+echo "0 is " . classify(0) . ", 2 is " . classify(2) . ", 42 is " . classify(42) . "\n";
+
+echo "=== try/catch ===\n";
+try {
+    throw "boom";
+} catch (string $e) {
+    echo "caught: {$e}\n";
+}
+
+echo "=== done ===\n";
+
+echo "sdkjfsdfsdf";
+
+$mylist = [3,1,5];
+
+sort($mylist);
+
+echo "sorted list: " . implode(", ", $mylist) . "\n";

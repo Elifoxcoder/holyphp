@@ -1,0 +1,31 @@
+// global arrays and chained reads through methods
+$cfg = ["a" => 1, "b" => 2];
+function addCfg(string $k, int $v): void {
+    global $cfg;
+    $cfg[$k] = $v;
+}
+addCfg("c", 9);
+echo json_encode($cfg) . "\n";
+
+// global in a method
+class Svc {
+    pub function touch(): void {
+        global $touch_count;
+        $touch_count = $touch_count + 1;
+    }
+}
+$s = new Svc();
+$s->touch(); $s->touch();
+echo "touched=" . $touch_count . "\n";
+
+// two functions sharing a global array by reference semantics
+function pushLog(string $m): void {
+    global $log;
+    $log[] = $m;
+}
+function logCount(): int {
+    global $log;
+    return count($log);
+}
+pushLog("one"); pushLog("two"); pushLog("three");
+echo "log=" . logCount() . " first=" . $log[0] . "\n";

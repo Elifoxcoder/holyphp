@@ -1,0 +1,4 @@
+// rawptr_outside_unsafe.hphp — must FAIL sema: raw pointer deref needs unsafe
+function peek($p: *int): int {
+    return *$p;     // error: dereferencing a raw pointer requires an unsafe block
+}

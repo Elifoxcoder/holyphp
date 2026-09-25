@@ -1,0 +1,7 @@
+// borrow_bad.hphp — must FAIL sema: mutating an immutably borrowed value
+function bump(int $n): int {
+    $r = &$n;
+    $n += 1;        // error: $n is immutably borrowed by $r
+    return $r;
+}
+echo bump(1);

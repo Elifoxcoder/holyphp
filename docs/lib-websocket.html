@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>websocket.hphp — HolyPHP standard library</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<script src="assets/nav.html.js"></script>
+<main>
+  <h1>websocket<span class="ph">.hphp</span></h1>
+  <p class="lead">A single-file RFC 6455 WebSocket server, written in HolyPHP itself.
+  Real SHA-1 handshake, text/binary frames, fragmentation, ping/pong, close handshake,
+  and non-blocking I/O so one slow client never blocks the others.</p>
+
+  <div>
+    <span class="pill e">stdlib — embedded</span>
+    <span class="pill">RFC 6455</span>
+    <span class="pill">browser-compatible</span>
+    <span class="pill">non-blocking sockets</span>
+    <span class="pill p">~450 lines of HolyPHP</span>
+  </div>
+
+  <h2>Minimal server</h2>
+<pre><code class="hphp">import "websocket.hphp";
+
+$server = new WebSocketServer("tcp://0.0.0.0:9001");
+
+$server-&gt;onMessage = function(int $client, string $msg): void {
+    $server-&gt;broadcast($msg);        // chat-style echo
+};
+
+$server-&gt;run();                      // blocking event loop</code></pre>
+  <p>Connect from any browser:</p>
+<pre><code class="hphp">const ws = new WebSocket("ws://localhost:9001");
+ws.onmessage = (e) =&gt; console.log(e.data);
+ws.send("hello");</code></pre>
+
+  <h2>Construction</h2>
+  <div class="api-sig"><span class="t">new</span> WebSocketServer(<span class="t">string</span> $addr = <span class="tok-str">"tcp://127.0.0.1:9001"</span>)</div>
+  <table>
+    <tr><th>Property</th><th>Type</th><th>Meaning</th></tr>
+    <tr><td><code>$addr</code></td><td>string</td><td>bind address, <code>tcp://host:port</code></td></tr>
+    <tr><td><code>$verbose</code></td><td>bool</td><td>log lifecycle + frames to stdout</td></tr>
+    <tr><td><code>$onOpen</code></td><td>closure</td><td><code>fn(int $client)</code></td></tr>
+    <tr><td><code>$onMessage</code></td><td>closure</td><td><code>fn(int $client, string $message)</code> — text frames</td></tr>
+    <tr><td><code>$onBinary</code></td><td>closure</td><td><code>fn(int $client, string $bytes)</code> — binary frames</td></tr>
+    <tr><td><code>$onClose</code></td><td>closure</td><td><code>fn(int $client, int $code)</code></td></tr>
+  </table>
+  <p class="small muted">Client ids are small integers starting at 1, stable for the
+  connection's lifetime.</p>
+
+  <h2>Methods</h2>
+  <div class="api-sig"><span class="ret">bool</span> listen()                                    <span class="tok-com">// bind + listen; false on failure</span>
+<span class="ret">void</span> run()                                     <span class="tok-com">// blocking loop until stop()</span>
+<span class="ret">void</span> stop()                                    <span class="tok-com">// leave the loop from a callback</span>
+<span class="ret">bool</span> isRunning()
+<span class="ret">bool</span> tick(<span class="t">int</span> $timeoutMs = 50)                 <span class="tok-com">// one pass: accept + read</span>
+<span class="ret">bool</span> send(<span class="t">int</span> $client, <span class="t">string</span> $message)        <span class="tok-com">// text frame</span>
+<span class="ret">bool</span> sendBinary(<span class="t">int</span> $client, <span class="t">string</span> $bytes)    <span class="tok-com">// binary frame</span>
+<span class="ret">bool</span> ping(<span class="t">int</span> $client)
+<span class="ret">int</span>  broadcast(<span class="t">string</span> $message, <span class="t">int</span> $except = 0) <span class="tok-com">// to all (minus one)</span>
+<span class="ret">void</span> close(<span class="t">int</span> $client, <span class="t">int</span> $code = 1000)      <span class="tok-com">// clean close handshake</span>
+<span class="ret">void</span> drop(<span class="t">int</span> $client, <span class="t">int</span> $code = 1000)       <span class="tok-com">// force disconnect</span>
+<span class="ret">int</span>  clientCount()
+<span class="ret">bool</span> isOpen(<span class="t">int</span> $client)
+<span class="ret">string</span> peerOf(<span class="t">int</span> $client)                     <span class="tok-com">// "ip:port"</span>
+<span class="ret">array</span> clients()                                 <span class="tok-com">// ids of open clients</span></div>
+
+  <h2>Event-driven chat server (full example)</h2>
+<pre><code class="hphp">import "websocket.hphp";
+
+$server = new WebSocketServer("tcp://127.0.0.1:9500");
+$server-&gt;verbose = true;
+if (!$server-&gt;listen()) { exit(1); }
+
+$server-&gt;onOpen = function(int $client) use ($server): void {
+    $server-&gt;broadcast("user " . $client . " joined the chat");
+};
+
+$server-&gt;onMessage = function(int $client, string $msg) use ($server): void {
+    $server-&gt;broadcast("user " . $client . ": " . $msg);
+};
+
+$server-&gt;onClose = function(int $client, int $code) use ($server): void {
+    $server-&gt;broadcast("user " . $client . " left the chat");
+};
+
+while ($server-&gt;tick()) {
+    usleep(10000);    // 10 ms loop; the library multiplexes I/O
+}</code></pre>
+
+  <h2>Integrate into your own loop</h2>
+  <p>Don't want the blocking <code>run()</code>? Call <code>tick()</code> from your own loop —
+  it accepts pending connections and drains readable sockets, then returns.</p>
+<pre><code class="hphp">while ($server-&gt;tick(10)) {          // your game/render loop here
+    do_frame();
+}</code></pre>
+
+  <h2>Protocol details handled for you</h2>
+  <table>
+    <tr><th>Feature</th><th>Status</th></tr>
+    <tr><td>HTTP upgrade handshake (Sec-WebSocket-Accept, real SHA-1 + base64)</td><td>&#10003;</td></tr>
+    <tr><td>Masked client frames (unmasked in server direction)</td><td>&#10003;</td></tr>
+    <tr><td>Fragmented messages (continuation frames, opcode 0)</td><td>&#10003;</td></tr>
+    <tr><td>Text (1) / binary (2) opcodes</td><td>&#10003;</td></tr>
+    <tr><td>Ping/pong keepalive (opcodes 9/10)</td><td>&#10003;</td></tr>
+    <tr><td>Close handshake with status codes (opcode 8)</td><td>&#10003;</td></tr>
+    <tr><td>64-bit extended payload lengths</td><td>&#10003;</td></tr>
+    <tr><td>One slow client never blocks others (poll-based)</td><td>&#10003;</td></tr>
+  </table>
+
+  <h2>Lower-level pieces (exported)</h2>
+  <p>The library also exposes its frame codec if you want to build something exotic:</p>
+  <div class="api-sig"><span class="ret">string</span> ws_frame(<span class="t">string</span> $payload, <span class="t">int</span> $opcode = 1)
+<span class="ret">array?</span> ws_decode(<span class="t">string</span> $buf)         <span class="tok-com">// null while frame incomplete</span>
+<span class="ret">string</span> ws_accept_key(<span class="t">string</span> $key)     <span class="tok-com">// Sec-WebSocket-Accept</span>
+<span class="ret">string</span> ws_close_payload(<span class="t">int</span> $code)</div>
+  <p class="small muted"><code>ws_decode</code> returns
+  <code>["fin" =&gt; bool, "opcode" =&gt; int, "payload" =&gt; string, "consumed" =&gt; int]</code>.</p>
+
+  <h2>Browser-side starter</h2>
+  <p>A complete HTML client ships at <code>examples/ws_chat.html</code> — dark themed chat UI,
+  auto-reconnect, Enter to send. Open it directly from disk; no web server needed.</p>
+<pre><code class="hphp">hphp build examples/ws_chat.hphp -o wschat.exe
+./wschat.exe
+# then open examples/ws_chat.html in Chrome</code></pre>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

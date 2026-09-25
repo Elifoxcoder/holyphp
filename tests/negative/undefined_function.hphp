@@ -1,0 +1,2 @@
+// undefined_function.hphp — must FAIL sema: no such function
+echo nosuchfn(1, 2);

@@ -1,0 +1,446 @@
+/* lib/websocket.hphp — a small RFC 6455 WebSocket server for HolyPHP.
+ *
+ *   import "websocket.hphp";
+ *
+ *   $server = new WebSocketServer("tcp://0.0.0.0:9001");
+ *   $server->onMessage = function(int $client, string $msg): void {
+ *       $server->broadcast($msg);              // chat-style echo
+ *   };
+ *   $server->run();                            // blocking event loop
+ *
+ * Connect from JavaScript:
+ *
+ *   const ws = new WebSocket("ws://localhost:9001");
+ *   ws.onmessage = (e) => console.log(e.data);
+ *   ws.send("hello");
+ *
+ * Features: the HTTP upgrade handshake (real SHA-1 accept key), text and
+ * binary frames, fragmentation, ping/pong, close handshake, and one slow
+ * client never blocking the others (non-blocking sockets + poll).
+ *
+ * The server is single-threaded and non-blocking: run() loops over tick(),
+ * which accepts new connections and reads whatever data is ready.
+ */
+
+/* ---- the magic GUID from RFC 6455 ---------------------------------- */
+
+function ws_guid(): string {
+    return "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+}
+
+/* ------------------------------------------------------------------ */
+/* frame codec                                                         */
+/* ------------------------------------------------------------------ */
+
+/* Build a frame the server sends (never masked, FIN always set). */
+function ws_frame(string $payload, int $opcode = 1): string {
+    $len = strlen($payload);
+    $head = chr(0x80 | ($opcode & 0x0F));      /* FIN + opcode */
+    if ($len < 126) {
+        $head = $head . chr($len);
+    } elseif ($len < 65536) {
+        $head = $head . chr(126) . chr(intdiv($len, 256) % 256) . chr($len % 256);
+    } else {
+        $bytes = "";
+        $n = $len;
+        for ($i = 0; $i < 8; $i++) {
+            $bytes = chr($n % 256) . $bytes;
+            $n = intdiv($n, 256);
+        }
+        $head = $head . chr(127) . $bytes;
+    }
+    return $head . $payload;
+}
+
+/* Parse one frame out of $buf. Returns null when the frame is still
+ * incomplete (the caller waits for more bytes), otherwise an array:
+ *   ["fin" => bool, "opcode" => int, "payload" => string, "consumed" => int]
+ * Client frames are masked; the mask is removed here. */
+function ws_decode(string $buf) {
+    $n = strlen($buf);
+    if ($n < 2) { return null; }
+    $b0 = ord($buf[0]);
+    $b1 = ord($buf[1]);
+    $fin = ($b0 & 0x80) != 0;
+    $opcode = $b0 & 0x0F;
+    $masked = ($b1 & 0x80) != 0;
+    $len = $b1 & 0x7F;
+    $off = 2;
+    if ($len == 126) {
+        if ($n < 4) { return null; }
+        $len = (ord($buf[2]) << 8) | ord($buf[3]);
+        $off = 4;
+    } elseif ($len == 127) {
+        if ($n < 10) { return null; }
+        $len = 0;
+        for ($i = 0; $i < 8; $i++) {
+            $len = $len * 256 + ord($buf[2 + $i]);
+        }
+        $off = 10;
+    }
+    $mask = "";
+    if ($masked) {
+        if ($n < $off + 4) { return null; }
+        $mask = substr($buf, $off, 4);
+        $off = $off + 4;
+    }
+    if ($n < $off + $len) { return null; }
+    $payload = substr($buf, $off, $len);
+    if ($masked) {
+        $k0 = ord($mask[0]);
+        $k1 = ord($mask[1]);
+        $k2 = ord($mask[2]);
+        $k3 = ord($mask[3]);
+        $plain = "";
+        for ($i = 0; $i < $len; $i++) {
+            $k = $k0;
+            $r = $i % 4;
+            if ($r == 1) { $k = $k1; }
+            elseif ($r == 2) { $k = $k2; }
+            elseif ($r == 3) { $k = $k3; }
+            $plain = $plain . chr((ord($payload[$i]) ^ $k) & 0xFF);
+        }
+        $payload = $plain;
+    }
+    return ["fin" => $fin, "opcode" => $opcode,
+            "payload" => $payload, "consumed" => $off + $len];
+}
+
+/* close frame payload: a 16-bit status code, big endian */
+function ws_close_payload(int $code): string {
+    return chr(intdiv($code, 256) % 256) . chr($code % 256);
+}
+
+/* ------------------------------------------------------------------ */
+/* handshake                                                           */
+/* ------------------------------------------------------------------ */
+
+/* Sec-WebSocket-Accept = base64(sha1(key + GUID)) — SHA-1 must be real,
+ * browsers verify this value before the socket is usable. */
+function ws_accept_key(string $key): string {
+    return base64_encode(sha1($key . ws_guid(), true));
+}
+
+/* Pull Sec-WebSocket-Key out of a raw HTTP request head ("" if absent). */
+function ws_request_key(string $head): string {
+    $lines = explode("\r\n", $head);
+    foreach ($lines as $line) {
+        $p = strpos($line, ":");
+        if ($p === false) { continue; }
+        $name = strtolower(trim(substr($line, 0, $p)));
+        if ($name == "sec-websocket-key") {
+            return trim(substr($line, $p + 1));
+        }
+    }
+    return "";
+}
+
+/* The 101 response that upgrades the connection. */
+function ws_upgrade_response(string $key): string {
+    return "HTTP/1.1 101 Switching Protocols\r\n"
+         . "Upgrade: websocket\r\n"
+         . "Connection: Upgrade\r\n"
+         . "Sec-WebSocket-Accept: " . ws_accept_key($key) . "\r\n"
+         . "\r\n";
+}
+
+function ws_reject_response(): string {
+    return "HTTP/1.1 400 Bad Request\r\n"
+         . "Content-Type: text/plain\r\n"
+         . "Connection: close\r\n"
+         . "Content-Length: 21\r\n"
+         . "\r\n"
+         . "Not a websocket, bye\n";
+}
+
+/* ------------------------------------------------------------------ */
+/* the server                                                          */
+/* ------------------------------------------------------------------ */
+
+class WebSocketServer {
+    /* configuration */
+    pub $addr = "tcp://127.0.0.1:9001";
+    pub $verbose = false;
+
+    /* callbacks — assign closures:
+     *   onOpen    fn(int $client)
+     *   onMessage fn(int $client, string $message)
+     *   onBinary  fn(int $client, string $bytes)
+     *   onClose   fn(int $client, int $code) */
+    pub $onOpen = null;
+    pub $onMessage = null;
+    pub $onBinary = null;
+    pub $onClose = null;
+
+    /* state (one entry per client id) */
+    private $srv = -1;
+    private $nextId = 1;
+    private $running = false;
+    private $socks = [];      /* id => handle */
+    private $bufs = [];       /* id => unparsed bytes */
+    private $states = [];     /* id => 0 handshake, 1 open */
+    private $frags = [];      /* id => fragmented payload so far */
+    private $fragOps = [];    /* id => opcode of that payload */
+    private $peers = [];      /* id => "ip:port" */
+
+    public function __construct(string $addr = "") {
+        if ($addr != "") { $this->addr = $addr; }
+    }
+
+    /* ---- lifecycle ------------------------------------------------ */
+
+    public function listen(): bool {
+        $this->srv = stream_socket_server($this->addr);
+        if ($this->srv < 0) { return false; }
+        $this->log("listening on " . $this->addr . " (handle " . $this->srv . ")");
+        return true;
+    }
+
+    /* Blocking event loop; call stop() from a callback to leave it. */
+    public function run(): void {
+        if ($this->srv < 0) {
+            if (!$this->listen()) {
+                throw "WebSocketServer: cannot listen on " . $this->addr;
+            }
+        }
+        $this->running = true;
+        while ($this->running) {
+            $this->tick(50);
+        }
+    }
+
+    public function stop(): void { $this->running = false; }
+    public function isRunning(): bool { return $this->running; }
+
+    /* One pass of the loop: accept what is pending, read what is ready. */
+    public function tick(int $timeoutMs = 50): bool {
+        $srv = $this->srv;
+        if ($srv < 0) { return false; }
+        $handles = [$srv];
+        foreach ($this->socks as $id => $sock) {
+            if ($sock >= 0) { $handles[] = $sock; }
+        }
+        $ready = stream_ready($handles, $timeoutMs);
+        foreach ($ready as $h) {
+            if ($h == $srv) {
+                $this->accept_all();
+            } else {
+                $id = $this->idOf($h);
+                if ($id > 0) { $this->read_client($id); }
+            }
+        }
+        return true;
+    }
+
+    /* ---- sending -------------------------------------------------- */
+
+    public function send(int $client, string $message): bool {
+        if (!$this->isOpen($client)) { return false; }
+        return $this->writeFrame($client, $message, 1);
+    }
+
+    public function sendBinary(int $client, string $bytes): bool {
+        if (!$this->isOpen($client)) { return false; }
+        return $this->writeFrame($client, $bytes, 2);
+    }
+
+    public function ping(int $client): bool {
+        if (!$this->isOpen($client)) { return false; }
+        return stream_send($this->socks[$client], ws_frame("", 9)) > 0;
+    }
+
+    /* Send a text frame to every open client ($except skips one id). */
+    public function broadcast(string $message, int $except = 0): int {
+        $sent = 0;
+        foreach ($this->socks as $id => $sock) {
+            if ($id == $except || $sock < 0) { continue; }
+            if ($this->states[$id] != 1) { continue; }
+            if ($this->writeFrame($id, $message, 1)) { $sent = $sent + 1; }
+        }
+        return $sent;
+    }
+
+    /* Close one client politely: close frame, then the socket. */
+    public function close(int $client, int $code = 1000): void {
+        $this->drop($client, $code);
+    }
+
+    public function clientCount(): int {
+        $n = 0;
+        foreach ($this->socks as $id => $sock) {
+            if ($sock >= 0) { $n = $n + 1; }
+        }
+        return $n;
+    }
+
+    /* Handle a lower-level close (peer vanished, protocol error). */
+    public function drop(int $client, int $code = 1000): void {
+        if (!$this->hasClient($client)) { return; }
+        $sock = $this->socks[$client];
+        if ($code != 1006) {
+            stream_send($sock, ws_frame(ws_close_payload($code), 8));
+        }
+        stream_close($sock);
+        $this->socks[$client] = -1;
+        $this->states[$client] = -1;
+        $this->bufs[$client] = "";
+        $this->frags[$client] = "";
+        $this->log("client " . $client . " closed (" . $code . ")");
+        if ($this->onClose != null) { $this->onClose($client, $code); }
+    }
+
+    /* ---- client bookkeeping --------------------------------------- */
+
+    public function isOpen(int $client): bool {
+        return $this->hasClient($client) && $this->states[$client] == 1;
+    }
+
+    public function peerOf(int $client): string {
+        if (!$this->hasClient($client)) { return ""; }
+        return $this->peers[$client];
+    }
+
+    public function clients(): array {
+        $ids = [];
+        foreach ($this->socks as $id => $sock) {
+            if ($sock >= 0) { $ids[] = $id; }
+        }
+        return $ids;
+    }
+
+    private function hasClient(int $client): bool {
+        foreach ($this->socks as $id => $sock) {
+            if ($id == $client) { return true; }
+        }
+        return false;
+    }
+
+    private function idOf(int $sock): int {
+        foreach ($this->socks as $id => $s) {
+            if ($s == $sock) { return $id; }
+        }
+        return -1;
+    }
+
+    private function log(string $msg): void {
+        if ($this->verbose) { echo "[websocket] " . $msg . "\n"; }
+    }
+
+    private function writeFrame(int $client, string $payload, int $opcode): bool {
+        $sock = $this->socks[$client];
+        if ($sock < 0) { return false; }
+        return stream_send($sock, ws_frame($payload, $opcode)) > 0;
+    }
+
+    /* ---- receiving ------------------------------------------------ */
+
+    private function accept_all(): void {
+        while (true) {
+            $sock = stream_socket_accept2($this->srv, 0);
+            if ($sock === false || $sock < 0) { break; }
+            $id = $this->nextId;
+            $this->nextId = $id + 1;
+            $this->socks[$id] = $sock;
+            $this->bufs[$id] = "";
+            $this->states[$id] = 0;
+            $this->frags[$id] = "";
+            $this->fragOps[$id] = 0;
+            $this->peers[$id] = stream_peer($sock);
+            $this->log("client " . $id . " connected from " . $this->peers[$id]);
+        }
+    }
+
+    private function read_client(int $id): void {
+        $sock = $this->socks[$id];
+        if ($sock < 0) { return; }
+        $data = stream_recv($sock, 65536);
+        if ($data == "") {
+            if (stream_eof($sock)) { $this->drop($id, 1006); }
+            return;
+        }
+        $this->bufs[$id] = $this->bufs[$id] . $data;
+        $this->consume($id);
+    }
+
+    /* Hand off buffered bytes: first the HTTP handshake, then frames. */
+    private function consume(int $id): void {
+        if ($this->states[$id] == 0) {
+            $buf = $this->bufs[$id];
+            $end = strpos($buf, "\r\n\r\n");
+            if ($end === false) {
+                if (strlen($buf) > 16384) { $this->drop($id, 1002); }
+                return;
+            }
+            $head = substr($buf, 0, $end + 4);
+            $rest = substr($buf, $end + 4);
+            if (!$this->handshake($id, $head)) { return; }
+            $this->states[$id] = 1;
+            $this->bufs[$id] = $rest;
+            $this->log("client " . $id . " upgraded");
+            $this->frags[$id] = "";
+            if ($this->onOpen != null) { $this->onOpen($id); }
+        }
+        $this->pumpFrames($id);
+    }
+
+    private function handshake(int $id, string $head): bool {
+        $key = ws_request_key($head);
+        if ($key == "") {
+            stream_send($this->socks[$id], ws_reject_response());
+            $this->drop($id, 1002);
+            return false;
+        }
+        $sent = stream_send($this->socks[$id], ws_upgrade_response($key));
+        if ($sent <= 0) { $this->drop($id, 1011); return false; }
+        return true;
+    }
+
+    /* Decode every complete frame currently buffered. */
+    private function pumpFrames(int $id): void {
+        while (true) {
+            if (!$this->isOpen($id)) { return; }
+            $buf = $this->bufs[$id];
+            $f = ws_decode($buf);
+            if ($f == null) { return; }
+            $this->bufs[$id] = substr($buf, $f["consumed"]);
+            $op = $f["opcode"];
+            $payload = $f["payload"];
+
+            if ($op == 0) {                       /* continuation */
+                $this->frags[$id] = $this->frags[$id] . $payload;
+                if ($f["fin"]) {
+                    $whole = $this->frags[$id];
+                    $this->frags[$id] = "";
+                    $this->deliver($id, $this->fragOps[$id], $whole);
+                }
+                continue;
+            }
+            if ($op == 1 || $op == 2) {           /* text / binary */
+                if ($f["fin"]) {
+                    $this->deliver($id, $op, $payload);
+                } else {
+                    $this->frags[$id] = $payload;
+                    $this->fragOps[$id] = $op;
+                }
+                continue;
+            }
+            if ($op == 8) {                       /* close */
+                $this->drop($id, 1000);
+                return;
+            }
+            if ($op == 9) {                       /* ping -> pong */
+                stream_send($this->socks[$id], ws_frame($payload, 10));
+                continue;
+            }
+            /* 10 = pong: nothing to do */
+        }
+    }
+
+    private function deliver(int $id, int $op, string $payload): void {
+        if ($op == 2) {
+            if ($this->onBinary != null) { $this->onBinary($id, $payload); }
+            return;
+        }
+        if ($this->onMessage != null) { $this->onMessage($id, $payload); }
+    }
+}

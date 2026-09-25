@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ui.hphp — HolyPHP standard library</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<script src="assets/nav.html.js"></script>
+<main>
+  <h1>ui<span class="ph">.hphp</span></h1>
+  <p class="lead">Native desktop windows with buttons, inputs, lists, sliders, menus, timers
+  and dialogs — a friendly HolyPHP API over a hand-written Win32 layer in the runtime.
+  No external dependencies: <code>hphp build</code> links everything into one ~315 KB exe.</p>
+
+  <div>
+    <span class="pill e">stdlib — embedded</span>
+    <span class="pill">Win32 native</span>
+    <span class="pill">event-driven</span>
+    <span class="pill">chainable widgets</span>
+  </div>
+
+  <h2>Hello GUI</h2>
+<pre><code class="hphp">import "ui.hphp";
+
+$app = new App("My App", 640, 420);
+$btn = $app-&gt;button("Click me", 16, 40);
+$name = $app-&gt;input("world", 16, 80);
+
+$btn-&gt;onClick = function() use ($app, $name) {
+    $app-&gt;msg("Hello, " . $name-&gt;value() . "!");
+};
+
+$app-&gt;run();   // real desktop event loop</code></pre>
+
+  <h2>App</h2>
+  <div class="api-sig"><span class="t">new</span> App(<span class="t">string</span> $title = <span class="tok-str">"HolyPHP App"</span>, <span class="t">int</span> $w = 800, <span class="t">int</span> $h = 600)</div>
+  <table>
+    <tr><th>Method</th><th>Returns</th><th>Meaning</th></tr>
+    <tr><td><code>title($t)</code> / <code>size($w,$h)</code> / <code>pos($x,$y)</code></td><td>App</td><td>window geometry (chainable)</td></tr>
+    <tr><td><code>run()</code></td><td>void</td><td>blocking event loop</td></tr>
+    <tr><td><code>tick($ms = 15)</code></td><td>void</td><td>pump events once (own loop)</td></tr>
+    <tr><td><code>alive()</code></td><td>bool</td><td>window still open?</td></tr>
+    <tr><td><code>close()</code></td><td>void</td><td>close the window</td></tr>
+    <tr><td><code>every($ms, $fn)</code></td><td>void</td><td>timer — runs <code>$fn</code> periodically</td></tr>
+    <tr><td><code>onClose($fn)</code></td><td>void</td><td>runs when the window closes</td></tr>
+  </table>
+
+  <h3>Widgets — created through the App</h3>
+  <table>
+    <tr><th>Factory</th><th>Widget</th><th>Extras</th></tr>
+    <tr><td><code>$app-&gt;button($text, $x, $y, $w = 120, $h = 30)</code></td><td>Button</td><td><code>$w-&gt;onClick</code></td></tr>
+    <tr><td><code>$app-&gt;label($text, $x, $y, ...)</code></td><td>Label</td><td>—</td></tr>
+    <tr><td><code>$app-&gt;input($text, $x, $y, ...)</code></td><td>Input</td><td><code>value()</code> / <code>setValue()</code> / <code>$w-&gt;onChange</code></td></tr>
+    <tr><td><code>$app-&gt;checkbox($text, $x, $y, ...)</code></td><td>Checkbox</td><td><code>checked()</code> / <code>setChecked()</code></td></tr>
+    <tr><td><code>$app-&gt;listBox($x, $y, $w, $h)</code></td><td>ListBox</td><td><code>add/clear/remove/selected/select/selectedText</code></td></tr>
+    <tr><td><code>$app-&gt;comboBox($x, $y, $w, $h)</code></td><td>ComboBox</td><td>same API as ListBox</td></tr>
+    <tr><td><code>$app-&gt;progress($x, $y, $w)</code></td><td>ProgressBar</td><td><code>set(pct)</code> / <code>get()</code></td></tr>
+    <tr><td><code>$app-&gt;slider($x, $y, $w)</code></td><td>Slider</td><td><code>set(pos)</code> / <code>get()</code> / <code>$w-&gt;onChange(int $v)</code></td></tr>
+    <tr><td><code>$app-&gt;group($text, $x, $y, $w, $h)</code></td><td>Group</td><td>framed container</td></tr>
+    <tr><td><code>$app-&gt;panel($x, $y, $w, $h)</code></td><td>Panel</td><td>flat container</td></tr>
+  </table>
+  <p class="small muted">All widgets inherit from <code>UIObject</code>: chainable
+  <code>text()</code>, <code>getText()</code>, <code>show()</code>, <code>enable()</code>,
+  <code>move()</code>, <code>focus()</code>, <code>font($size, $bold)</code>, <code>bg($rgb)</code>.</p>
+
+  <h3>Slider events fire live</h3>
+<pre><code class="hphp">$slider = $app-&gt;slider(430, 70, 180);
+$sliderLbl = $app-&gt;label("slider: 50", 430, 104);
+
+$slider-&gt;onChange = function(int $v) use ($sliderLbl) {
+    $sliderLbl-&gt;text("slider: " . $v);   // fires while dragging
+};</code></pre>
+
+  <h2>Menus</h2>
+<pre><code class="hphp">$file = $app-&gt;menu("&amp;File");
+$file-&gt;item("&amp;Open\tCtrl+O", function() use ($app) {
+    $f = $app-&gt;openFile("Text|*.txt|All|*.*");
+    if ($f != "") { $app-&gt;msg("picked " . $f); }
+});
+$file-&gt;separator();
+$file-&gt;item("E&amp;xit", function() use ($app) { $app-&gt;close(); });</code></pre>
+
+  <h2>Dialogs &amp; system</h2>
+  <div class="api-sig"><span class="ret">void</span> msg(<span class="t">string</span> $text, <span class="t">string</span> $title = <span class="tok-str">"HolyPHP"</span>)
+<span class="ret">void</span> warn(<span class="t">string</span> $text, <span class="t">string</span> $title)
+<span class="ret">void</span> error(<span class="t">string</span> $text, <span class="t">string</span> $title)
+<span class="ret">bool</span> question(<span class="t">string</span> $text, <span class="t">string</span> $title)
+<span class="ret">string</span> openFile(<span class="t">string</span> $patterns = <span class="tok-str">"All files|*.*"</span>)   <span class="tok-com">// "" = cancelled</span>
+<span class="ret">string</span> saveFile(<span class="t">string</span> $patterns)
+<span class="ret">string</span> pickFolder()
+<span class="ret">int</span>    pickColor(<span class="t">int</span> $initial = 0xffffff)   <span class="tok-com">// 0xRRGGBB, -1 = cancelled</span></div>
+
+  <h2>Timers &amp; counters</h2>
+<pre><code class="hphp">$frame = 0;
+$app-&gt;every(100, function() use (&amp;$frame, $app) {   // by-ref capture!
+    $frame = $frame + 1;
+    if ($frame % 10 == 0) { $app-&gt;title("frames: " . $frame); }
+});</code></pre>
+
+  <h2>Full tour</h2>
+  <p><code>examples/ui_demo.hphp</code> exercises every feature — buttons, inputs, checkbox
+  gating, list box, combo, progress + slider, groups, menus, timers and dialogs:</p>
+<pre><code class="hphp">hphp build examples/ui_demo.hphp -o ui_demo.exe
+./ui_demo.exe</code></pre>
+
+  <h2>How it works</h2>
+  <p>The Win32 layer lives in the runtime (<code>hphp_ui.c</code>): a handle table, a window
+  proc that routes events to HolyPHP closures, and guarded callback invocation — an exception
+  inside a handler prints and keeps the app alive instead of unwinding through C. Callbacks run
+  on the GUI thread; long work belongs in a timer.</p>
+  <div class="note"><b>Tip:</b> <code>$w-&gt;onClick</code> / <code>$w-&gt;onChange</code> are plain
+  closure properties — assign any closure, capture anything with <code>use</code>.</div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

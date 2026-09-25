@@ -1,0 +1,104 @@
+// ui_demo.hphp — HolyPHP UI library feature tour.
+//
+//   hphp build examples/ui_demo.hphp -o ui_demo.exe
+//   ./ui_demo.exe
+//
+// Shows: windows, buttons, labels, inputs, checkboxes, list boxes, combo
+// boxes, progress bar, slider, groups, menus, timers, message boxes,
+// file dialogs and the clipboard.
+import "ui.hphp";
+
+$app = new App("HolyPHP UI Demo", 640, 420);
+$label_font = 10;
+
+// ---------- left column: basic controls ----------
+$app->label("Controls", 16, 12)->font(14, true);
+
+$name = $app->input("world", 16, 40, 180);
+$greet = $app->button("Greet me", 16, 74);
+$counterLbl = $app->label("Clicked 0 times", 16, 112);
+$loud = $app->checkbox("LOUD MODE", 16, 140);
+$clicks = 0;
+
+$greet->onClick = function() use ($app, $name, $counterLbl, $loud, &$clicks) {
+    $clicks = $clicks + 1;
+    $counterLbl->text("Clicked " . $clicks . " times");
+    $msg = "Hello, " . $name->value() . "!";
+    if ($loud->checked()) { $msg = $msg . " !!!"; }
+    $app->msg($msg, "Greeting");
+};
+
+// ---------- list + combo ----------
+$app->label("Pick a language", 230, 12)->font(14, true);
+$list = $app->listBox(230, 36, 180, 120);
+$list->add("HolyPHP");
+$list->add("PHP");
+$list->add("C");
+$list->add("Rust");
+$list->select(0);
+$langOut = $app->label("selected: HolyPHP", 230, 162);
+
+$list->onChange = function(int $i, string $t) use ($langOut) {
+    $langOut->text("selected: " . $t);
+};
+
+$combo = $app->comboBox(230, 190, 180);
+$combo->add("Beginner");
+$combo->add("Intermediate");
+$combo->add("Expert");
+$combo->select(0);
+
+// ---------- progress + slider ----------
+$app->label("Progress & slider", 430, 12)->font(14, true);
+$bar = $app->progress(430, 40, 180);
+$slider = $app->slider(430, 70, 180);
+$sliderLbl = $app->label("slider: 50", 430, 104);
+
+$slider->onChange = function(int $v) use ($bar, $sliderLbl) {
+    $sliderLbl->text("slider: " . $v);
+    $bar->set($v);
+};
+
+// auto-demo timer: gently fills the progress bar on startup
+$ticks = 0;
+$app->every(100, function() use (&$ticks, $bar) {
+    $ticks = $ticks + 1;
+    if ($ticks <= 50) { $bar->set($ticks * 2); }
+});
+
+// ---------- menu ----------
+$file = $app->menu("File");
+$file->item("Open…", function() use ($app) {
+    $path = $app->openFile("Text files|*.txt|All files|*.*");
+    if ($path != "") { $app->msg("You picked:\n" . $path, "Open"); }
+});
+$file->item("Save as…", function() use ($app) {
+    $path = $app->saveFile("Text files|*.txt");
+    if ($path != "") { $app->msg("Would save to:\n" . $path, "Save"); }
+});
+$file->separator();
+$file->item("Quit", function() use ($app) { $app->close(); });
+
+$edit = $app->menu("Edit");
+$edit->item("Copy greeting", function() use ($name) {
+    ui_clip_set("Hello, " . $name->value() . "!");
+});
+$edit->item("About…", function() use ($app) {
+    $app->msg("HolyPHP UI demo\nBuilt with the HolyPHP compiler.", "About");
+});
+
+$help = $app->menu("Help");
+$help->item("Ask a question", function() use ($app) {
+    $yes = $app->question("Do you like HolyPHP so far?");
+    if ($yes) { $app->msg("Great — more UI features coming!", "Yay"); }
+    else { $app->msg("Tell us what to improve!", "Hmm"); }
+});
+
+// ---------- status bar ----------
+$app->panel(0, 392, 640, 28);
+$status = $app->label("Ready — click around, drag the slider, open the menus.", 12, 398);
+$status->font(9, false);
+
+echo "starting UI event loop…\n";
+$app->run();          // blocking desktop loop (use `hphp build`)
+echo "window closed, bye\n";

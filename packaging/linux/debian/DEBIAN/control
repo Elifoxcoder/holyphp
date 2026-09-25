@@ -1,0 +1,22 @@
+Package: holyphp
+Version: 1.0.0
+Section: devel
+Priority: optional
+Architecture: amd64
+Maintainer: HolyPHP <holyphp@localhost>
+Installed-Size: 4096
+Depends: libc6 (>= 2.17)
+Recommends: gcc
+Suggests: build-essential
+Homepage: https://localhost/holyphp
+Description: compiled, memory-safe programming language with the soul of PHP
+ HolyPHP compiles .hphp source to native machine code through its own C
+ backend: PHP-flavored syntax ($variables, echo, foreach), a compile-time
+ borrow checker, ownership (own<T>), and raw pointers only inside unsafe.
+ .
+ The package contains the self-contained `hphp` compiler (runtime and
+ standard library embedded). It installs /usr/bin/hphp so `hphp run`,
+ `hphp build` and `hphp pkg` work immediately in any shell.
+ .
+ Libraries such as ui and websocket are NOT included; install them with
+ the built-in package manager: `hphp install ui`.

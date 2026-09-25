@@ -1,0 +1,141 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "HolyPHP",
+  "scopeName": "source.hphp",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#constants" },
+    { "include": "#types" },
+    { "include": "#functions" },
+    { "include": "#variables" },
+    { "include": "#numbers" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.hphp",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.line.number-sign.hphp",
+          "match": "#.*$"
+        },
+        {
+          "name": "comment.block.hphp",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "captures": { "0": "comment.block.hphp" }
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.interpolated.hphp",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "include": "#escapes" },
+            {
+              "name": "meta.embedded.variable.hphp",
+              "begin": "\\{\\$",
+              "end": "\\}",
+              "patterns": [
+                { "name": "variable.other.hphp", "match": "[A-Za-z_][A-Za-z0-9_]*" }
+              ]
+            },
+            {
+              "name": "variable.simple.hphp",
+              "match": "\\$[A-Za-z_][A-Za-z0-9_]*"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.hphp",
+          "begin": "'",
+          "end": "'",
+          "patterns": [{ "include": "#escapes" }]
+        }
+      ]
+    },
+    "escapes": {
+      "name": "constant.character.escape.hphp",
+      "match": "\\\\[nrtvef\\\\$\"']"
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.hphp",
+          "match": "\\b(if|else|elseif|while|for|foreach|as|in|do|switch|case|default|match|return|break|continue|try|catch|finally|throw|yield)\\b"
+        },
+        {
+          "name": "keyword.declaration.hphp",
+          "match": "\\b(function|fn|class|interface|trait|enum|extends|implements|new|const|use|import|export|let|mut|own|unsafe|this|self|parent)\\b"
+        },
+        {
+          "name": "keyword.other.hphp",
+          "match": "\\b(echo|print|public|protected|private|static|abstract|final|and|or|xor|not)\\b"
+        }
+      ]
+    },
+    "constants": {
+      "name": "constant.language.hphp",
+      "match": "\\b(true|TRUE|false|FALSE|null|NULL)\\b"
+    },
+    "types": {
+      "name": "support.type.hphp",
+      "match": "\\b(int|i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|float|f32|f64|double|bool|string|str|array|list|mixed|void|Vec|Map|Set|Option|Result)\\b"
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.hphp",
+          "match": "\\b(?<=function\\s)[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+        },
+        {
+          "name": "support.function.builtin.hphp",
+          "match": "\\b(strlen|count|sizeof|strtoupper|strtolower|ucfirst|lcfirst|trim|ltrim|rtrim|implode|explode|str_repeat|str_replace|substr|strpos|sprintf|printf|print_r|var_dump|json_encode|json_decode|sort|rsort|ksort|asort|array_push|array_pop|array_shift|array_keys|array_values|array_merge|array_slice|in_array|array_search|range|shuffle|number_format|abs|round|floor|ceil|sqrt|pow|max|min|intdiv|intval|floatval|strval|boolval|file_get_contents|file_put_contents|file_exists|unlink|mkdir|getcwd|getenv|putenv|readline|sleep|usleep|rand|mt_rand|time|microtime|die|exit)\\s*(?=\\()"
+        }
+      ]
+    },
+    "variables": {
+      "patterns": [
+        {
+          "name": "variable.other.hphp",
+          "match": "\\$[A-Za-z_][A-Za-z0-9_]*"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.hphp",
+          "match": "\\b0[xX][0-9a-fA-F]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.hphp",
+          "match": "\\b\\d+\\.\\d+([eE][+-]?\\d+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.hphp",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "operators": {
+      "name": "keyword.operator.hphp",
+      "match": "<=>|===|!==|==|!=|<>|<=|>=|\\*\\*=|\\+\\+|--|\\+=|-=|\\*=|/=|%=|\\.=|&&|\\|\\||\\?\\?|->|=>|::|\\.\\.\\.|\\*\\*|[-+*/%.=<>!&|^~?:]"
+    },
+    "punctuation": {
+      "patterns": [
+        { "name": "punctuation.separator.hphp", "match": "[;,.]" },
+        { "name": "punctuation.bracket.hphp", "match": "[{}()\\[\\]]" }
+      ]
+    }
+  }
+}

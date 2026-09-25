@@ -1,0 +1,11 @@
+// hello.hphp — your first HolyPHP program
+echo "Hello from HolyPHP!\n";
+
+$name = "World";
+echo "Hello, {$name}!\n";
+
+$sum = 0;
+for ($i = 1; $i <= 10; $i += 1) {
+    $sum += $i;
+}
+echo "sum(1..10) = {$sum}\n";

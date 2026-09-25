@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  HolyPHP MSIX manifest.
+
+  The package carries the self-contained `hphp` compiler (runtime + stdlib
+  embedded). No gcc, no libraries — the `ui`/`websocket` libraries are not
+  included; users get them through the package manager
+  (`hphp pkg install ui`, ...). Compiled programs need a local gcc at *build*
+  time; the wizard warns if none is found.
+
+  "Adds it to PATH" is handled the MSIX-native way: the uap3 appExecutionAlias
+  below makes Windows surface `hphp.exe` in
+  %LOCALAPPDATA%\Microsoft\WindowsApps — a folder already on the user PATH —
+  the moment the package is installed. No PATH edits, no admin rights.
+-->
+<Package
+    xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+    xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+    xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+    xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+    xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+    xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+    IgnorableNamespaces="uap uap3 desktop6 rescap">
+
+  <Identity
+      Name="HolyPHP.HolyPHP"
+      Publisher="CN=HolyPHP"
+      Version="1.0.0.0"
+      ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>HolyPHP</DisplayName>
+    <PublisherDisplayName>HolyPHP</PublisherDisplayName>
+    <Logo>assets\icon.png</Logo>
+    <!-- Keep package-manager data in the real %APPDATA%\hphp instead of the
+         per-package virtualized AppData (users can back it up / point other
+         tools at it, and `hphp pkg home` prints a normal folder). -->
+    <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="HolyPHP" Executable="hphp\hphp.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+          DisplayName="HolyPHP"
+          Description="A compiled, memory-safe language with the soul of PHP."
+          BackgroundColor="#1e1e2e"
+          Square150x150Logo="assets\icon.png"
+          Square44x44Logo="assets\icon.png" />
+      <Extensions>
+        <!-- Puts hphp.exe on PATH (via the per-user WindowsApps folder).
+             Note: the inner element is desktop:ExecutionAlias (uap3's schema
+             only allows the desktop-namespace choice as its child). -->
+        <uap3:Extension Category="windows.appExecutionAlias">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="hphp.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <!-- required by desktop6:FileSystemWriteVirtualization (disabled above) -->
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+</Package>

@@ -1,0 +1,196 @@
+// ws_selftest.hphp — drives lib/websocket.hphp over a real socket:
+// one part runs the server's tick loop, the other acts as the browser
+// (client frames are masked, exactly like Chrome sends them).
+//
+// Note on interleaving: the server is single-threaded and non-blocking.
+// A tick() accepts pending connections AND reads whatever is ready — but
+// a socket accepted during tick N is only read during tick N+1. So after
+// the browser sends, two ticks guarantee the server has consumed it.
+import "websocket.hphp";
+
+$server = new WebSocketServer("tcp://127.0.0.1:9201");
+$server->verbose = true;
+if (!$server->listen()) { echo "listen failed\n"; exit(1); }
+
+$log = [];
+$server->onOpen = function(int $client): void {
+    echo "open: client " . $client . "\n";
+};
+$server->onMessage = function(int $client, string $msg) use (&$log): void {
+    echo "message from " . $client . ": '" . $msg . "'\n";
+    $log[] = $msg;
+};
+$server->onBinary = function(int $client, string $b): void {
+    echo "binary " . strlen($b) . " bytes\n";
+};
+$server->onClose = function(int $client, int $code): void {
+    echo "close: client " . $client . " (" . $code . ")\n";
+};
+
+/* ---- the "browser" side: connect, mask, complete the handshake ---- */
+
+class FakeBrowser {
+    private $sock = -1;
+    private $buf = "";
+
+    public function connect(string $addr): bool {
+        $this->sock = stream_socket_client($addr);
+        if ($this->sock < 0) { return false; }
+        /* an HTTP upgrade request like Chrome would send */
+        $req = "GET /chat HTTP/1.1\r\n"
+             . "Host: localhost\r\n"
+             . "Upgrade: websocket\r\n"
+             . "Connection: Upgrade\r\n"
+             . "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+             . "Sec-WebSocket-Version: 13\r\n"
+             . "\r\n";
+        stream_send($this->sock, $req);
+        return true;
+    }
+
+    /* call only after the server had a tick to answer the handshake */
+    public function finishHandshake(): bool {
+        $head = "";
+        while (strpos($head, "\r\n\r\n") === false) {
+            $chunk = stream_recv($this->sock, 4096);
+            if ($chunk == "" && stream_eof($this->sock)) { return false; }
+            if ($chunk == "") { return false; }   /* nothing pending: no spin */
+            $head = $head . $chunk;
+        }
+        $ok = strpos($head, "101 Switching Protocols") !== false;
+        $want = "Sec-WebSocket-Accept: " . ws_accept_key("dGhlIHNhbXBsZSBub25jZQ==");
+        $ok = $ok && strpos($head, $want) !== false;
+        echo "handshake " . ($ok ? "OK" : "BAD") . "\n";
+        return $ok;
+    }
+
+    /* client->server frames MUST be masked (RFC 6455) */
+    public function sendText(string $msg): void {
+        $len = strlen($msg);
+        $head = chr(0x81);
+        if ($len < 126) { $head = $head . chr(0x80 | $len); }
+        else { $head = $head . chr(0x80 | 126) . chr(intdiv($len, 256) % 256) . chr($len % 256); }
+        $mask = chr(37) . chr(60) . chr(11) . chr(99);
+        $masked = "";
+        for ($i = 0; $i < $len; $i++) {
+            $r = $i % 4;
+            $k = 37;
+            if ($r == 1) { $k = 60; } elseif ($r == 2) { $k = 11; } elseif ($r == 3) { $k = 99; }
+            $masked = $masked . chr((ord($msg[$i]) ^ $k) & 0xFF);
+        }
+        stream_send($this->sock, $head . $mask . $masked);
+    }
+
+    public function sendBinary(string $bytes): void {
+        $head = chr(0x82) . chr(0x80 | strlen($bytes));
+        $mask = chr(1) . chr(2) . chr(3) . chr(4);
+        $masked = "";
+        for ($i = 0; $i < strlen($bytes); $i++) {
+            $r = $i % 4;
+            $k = 1;
+            if ($r == 1) { $k = 2; } elseif ($r == 2) { $k = 3; } elseif ($r == 3) { $k = 4; }
+            $masked = $masked . chr((ord($bytes[$i]) ^ $k) & 0xFF);
+        }
+        stream_send($this->sock, $head . $mask . $masked);
+    }
+
+    /* fragmented text: "Hel" + "lo w" + "orld" */
+    public function sendFragmented(): void {
+        $mk = function(string $part, int $op, bool $fin): string {
+            $b0 = ($fin ? 0x80 : 0) | $op;
+            $h = chr($b0) . chr(0x80 | strlen($part));
+            $m = "";
+            for ($i = 0; $i < strlen($part); $i++) {
+                $m = $m . chr((ord($part[$i]) ^ 5) & 0xFF);
+            }
+            return $h . chr(5) . chr(5) . chr(5) . chr(5) . $m;
+        };
+        stream_send($this->sock, $mk("Hel", 1, false));
+        stream_send($this->sock, $mk("lo w", 0, false));
+        stream_send($this->sock, $mk("orld", 0, true));
+    }
+
+    public function sendPing(string $payload): void {
+        $head = chr(0x89) . chr(0x80 | strlen($payload));
+        $m = "";
+        for ($i = 0; $i < strlen($payload); $i++) {
+            $m = $m . chr((ord($payload[$i]) ^ 7) & 0xFF);
+        }
+        stream_send($this->sock, $head . chr(7) . chr(7) . chr(7) . chr(7) . $m);
+    }
+
+    /* read one server frame if one is fully buffered (server frames are
+     * unmasked); returns null instead of spinning when none is pending */
+    public function readFrame() {
+        while (true) {
+            $f = $this->tryParse();
+            if ($f != null) { return $f; }
+            $chunk = stream_recv($this->sock, 4096);
+            if ($chunk == "") { return null; }
+            $this->buf = $this->buf . $chunk;
+        }
+    }
+
+    private function tryParse() {
+        $n = strlen($this->buf);
+        if ($n < 2) { return null; }
+        $b1 = ord($this->buf[1]);
+        $len = $b1 & 0x7F;
+        $off = 2;
+        if ($len == 126) {
+            if ($n < 4) { return null; }
+            $len = (ord($this->buf[2]) << 8) | ord($this->buf[3]);
+            $off = 4;
+        }
+        if ($n < $off + $len) { return null; }
+        $opcode = ord($this->buf[0]) & 0x0F;
+        $payload = substr($this->buf, $off, $len);
+        $this->buf = substr($this->buf, $off + $len);
+        return ["opcode" => $opcode, "payload" => $payload];
+    }
+
+    /* the polite close handshake */
+    public function sock() { return $this->sock; }
+    public function close(): void { stream_close($this->sock); }
+}
+
+$browser = new FakeBrowser();
+if (!$browser->connect("tcp://127.0.0.1:9201")) { echo "connect failed\n"; exit(1); }
+$server->tick(100);   /* accept */
+$server->tick(100);   /* read the request + answer the handshake */
+if (!$browser->finishHandshake()) { echo "handshake failed\n"; exit(1); }
+
+/* interleave: browser sends, then two ticks so the server consumes it */
+$browser->sendText("hello from the browser");
+$server->tick(50); $server->tick(50);
+
+$browser->sendText("second message");
+$server->tick(50); $server->tick(50);
+
+$browser->sendBinary("BIN\x00\x01");
+$server->tick(50); $server->tick(50);
+
+$browser->sendFragmented();
+$server->tick(50); $server->tick(50);
+
+$browser->sendPing("pingdata");
+$server->tick(50); $server->tick(50);
+
+/* server -> browser: broadcast, then read the unmasked frame */
+$n = $server->broadcast("welcome, everyone");
+echo "broadcast to " . $n . "\n";
+$f = $browser->readFrame();
+echo "browser got opcode " . $f["opcode"] . ": '" . $f["payload"] . "'\n";
+
+$server->send($server->clients()[0], "just you");
+$f = $browser->readFrame();
+echo "browser got: '" . $f["payload"] . "'\n";
+
+/* the polite close handshake */
+stream_send($browser->sock(), ws_frame(ws_close_payload(1000), 8));
+$server->tick(50); $server->tick(50);
+$browser->close();
+
+echo "messages seen: " . count($log) . "\n";
+echo "client count after close: " . $server->clientCount() . "\n";
+echo "SELFTEST DONE\n";

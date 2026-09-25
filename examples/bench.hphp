@@ -1,0 +1,33 @@
+// bench.hphp — HolyPHP micro-benchmark (compiled path).
+//
+//   hphp build examples/bench.hphp -o bench.exe && ./bench.exe
+//
+// Three workloads, self-timed with hrtime(): an integer loop,
+// recursive fib() (function-call overhead), and string building.
+// Compare against the same logic in hand-written C for a baseline.
+
+function fib(int $n): int {
+    if ($n < 2) { return $n; }
+    return fib($n - 1) + fib($n - 2);
+}
+
+$acc = 0;
+$t0 = hrtime(true);
+for ($i = 0; $i < 200000; $i++) {
+    $acc += $i % 7;
+}
+$t1 = hrtime(true);
+
+$f = fib(24);
+$t2 = hrtime(true);
+
+$s = "";
+for ($i = 0; $i < 30000; $i++) {
+    $s .= "x";
+}
+$t3 = hrtime(true);
+
+echo "int_loop_200k_ns = " . ($t1 - $t0) . "\n";
+echo "fib24_ns         = " . ($t2 - $t1) . "\n";
+echo "concat_30k_ns    = " . ($t3 - $t2) . "\n";
+echo "acc={$acc} fib={$f} len=" . strlen($s) . "\n";

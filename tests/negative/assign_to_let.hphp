@@ -1,0 +1,4 @@
+// reassign_type_mismatch.hphp — must FAIL sema: cannot assign string to int
+$x = 10;
+$x = "hello";   // error: $x is int (inferred from first assignment)
+echo $x;

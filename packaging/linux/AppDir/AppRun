@@ -1,0 +1,102 @@
+#!/bin/sh
+# AppRun — HolyPHP AppImage launcher.
+#
+# Two modes:
+#   1. plain run (default): execute the bundled compiler, wherever the
+#      AppImage currently lives — zero-install behaviour.
+#   2. wizard (`hphp.AppImage install`): the "installer" mode — verifies the
+#      binary, adds the *squashfs mount point* to PATH via ~/.profile and
+#      ~/.bashrc, checks gcc, and explains the package-manager route for
+#      ui/websocket libraries. Idempotent; run again to repair.
+#
+# The AppImage ships only the compiler (runtime + stdlib embedded). No
+# libraries — `hphp install ui` / `websocket` fetch those.
+
+SELF="$(readlink -f "$0")"
+HERE="$(dirname "$SELF")"
+BIN="$HERE/usr/bin/hphp"
+MARKER="# added by HolyPHP AppImage installer"
+
+cmd="${1:-}"
+
+# ---- wizard mode -----------------------------------------------------------
+if [ "$cmd" = "install" ] || [ "$cmd" = "uninstall" ]; then
+    echo ""
+    echo "  HolyPHP AppImage installer"
+    echo "  --------------------------"
+
+    if [ "$cmd" = "uninstall" ]; then
+        for rc in "$HOME/.profile" "$HOME/.bashrc"; do
+            [ -f "$rc" ] || continue
+            # drop our marker + the PATH line right after it
+            sed -i "/^$MARKER\$/,+1d" "$rc"
+        done
+        echo "  [ok]   PATH entries removed (the AppImage file itself stays where it is)"
+        echo ""
+        exit 0
+    fi
+
+    [ -x "$BIN" ] || { echo "  [FAIL] $BIN missing — broken AppImage?"; exit 1; }
+
+    if "$BIN" --help >/dev/null 2>&1; then
+        echo "  [ok]   compiler runs: $BIN"
+    else
+        echo "  [FAIL] bundled hphp did not run (missing loader? run 'ldd \"$BIN\"')"
+        exit 1
+    fi
+
+    changed=0
+    for rc in "$HOME/.profile" "$HOME/.bashrc"; do
+        [ -f "$rc" ] || touch "$rc"
+        if ! grep -qs "$MARKER" "$rc"; then
+            {
+                echo ""
+                echo "$MARKER"
+                echo "case \":\$PATH:\" in *\":$HERE:\"*) ;; *) PATH=\"$HERE:\$PATH\" ;; esac"
+            } >> "$rc"
+            changed=1
+        fi
+    done
+    if [ "$changed" = 1 ]; then
+        echo "  [ok]   added to PATH in ~/.profile and ~/.bashrc"
+        echo "         (open a new shell, or: source ~/.profile)"
+    else
+        echo "  [ok]   PATH already set up"
+    fi
+
+    if command -v gcc >/dev/null 2>&1; then
+        echo "  [ok]   gcc found: $(command -v gcc)"
+    else
+        echo "  [warn] gcc not found — 'hphp run/build' needs it to compile programs."
+        echo "         install it with:  sudo apt install build-essential"
+    fi
+
+    echo "  [info] ui and websocket libraries are NOT bundled."
+    echo "         install them with the package manager:"
+    echo "            hphp install ui"
+    echo "            hphp install websocket"
+    echo ""
+    echo "  Done. Try:  hphp run hello.hphp"
+    echo ""
+    exit 0
+fi
+
+# ---- plain run -------------------------------------------------------------
+# If the user asked for the wizard help explicitly, show it.
+if [ "$cmd" = "-h" ] || [ "$cmd" = "--help" ] || [ "$cmd" = "help" ]; then
+    cat <<EOF
+HolyPHP AppImage
+
+usage:
+  hphp.AppImage <hphp arguments...>    run the bundled compiler, e.g.
+                                         hphp.AppImage run hello.hphp
+  hphp.AppImage install                add to PATH (user scope, no sudo)
+  hphp.AppImage uninstall              undo the PATH entries
+
+libraries (ui, websocket) are installed with: hphp pkg install <name>
+EOF
+    exit 0
+fi
+
+# otherwise forward everything to the real compiler
+exec "$BIN" "$@"

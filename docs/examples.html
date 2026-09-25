@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Examples — HolyPHP</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<script src="assets/nav.html.js"></script>
+<main>
+  <h1><span class="ph">Examples</span></h1>
+  <p class="lead">Real programs from the repo — every snippet runs with
+  <code>hphp run examples/&lt;name&gt;.hphp</code>.</p>
+
+  <h2>hello.hphp — the classic</h2>
+<pre><code class="hphp">echo "Hello, HolyPHP!\n";</code></pre>
+
+  <h2>demo.hphp — the feature tour</h2>
+  <p>Functions, arrays, maps, classes, closures, match, exceptions — the whole tour in 79
+  lines. Highlights:</p>
+<pre><code class="hphp">function fib(int $n): int {
+    if ($n &lt; 2) { return $n; }
+    return fib($n - 1) + fib($n - 2);
+}
+echo "fib(10) = " . fib(10) . "\n";
+
+$nums = [5, 3, 8, 1, 9];
+$total = 0;
+foreach ($nums as $x) { $total += $x; }
+echo "sum = {$total}, count = " . count($nums) . "\n";
+
+$user = ["name" =&gt; "Elias", "lang" =&gt; "HolyPHP"];
+foreach ($user as $k =&gt; $v) {
+    echo "  {$k} =&gt; {$v}\n";
+}
+
+class Counter {
+    pub int $count = 0;
+    pub function bump(): void { $this-&gt;count += 1; }
+    pub function get(): int { return $this-&gt;count; }
+}
+
+function classify(int $n): string {
+    return match ($n) {
+        0 =&gt; "zero",
+        1, 2, 3 =&gt; "small",
+        _ =&gt; "big",
+    };
+}
+
+try {
+    throw "boom";
+} catch (string $e) {
+    echo "caught: {$e}\n";
+}</code></pre>
+
+  <h2>showcase.hphp — every builtin, timed</h2>
+  <p>Groups all 235 built-ins thematically, demonstrates the Rust DNA (borrows, unsafe,
+  enums) and prints runtime measurements — including the famous:</p>
+<pre><code class="hphp">$t0 = microtime(true);
+$fib = fib(27);
+$t1 = microtime(true);
+echo "fib(27) = {$fib} in " . round(($t1 - $t0) * 1000, 2) . " ms\n";
+// same machine: PHP 8.5 ~24 ms, Rust ~0.6 ms
+// -&gt; HolyPHP ~25x faster than PHP, &lt;2x slower than Rust</code></pre>
+  <p class="small muted">Rust-DNA section (verbatim from the example):</p>
+<pre><code class="hphp">// immutable borrow: &amp; = read-only, &amp;mut = writable
+function laenge(string $text): int { return strlen($text); }
+$w = "borrowed";
+echo "immutable borrow: laenge($w) = " . laenge($w) . "\n";
+
+// raw pointers exist ONLY inside unsafe blocks
+unsafe {
+    $geheim: int = 42;
+    $zeiger: &amp;int = &amp;$geheim;
+    echo "unsafe block: deref(&amp;geheim) = " . (*$zeiger) . "\n";
+}
+
+// algebraic data types: enum + match
+enum Farbe: int { Rot, Gruen, Blau }</code></pre>
+
+  <h2>word_guess.hphp — playable game</h2>
+  <p>A two-player hangman in 73 lines — readline input, arrays, string building:</p>
+<pre><code class="hphp">function mask_word(string $word, array $found): string {
+    $out = "";
+    $len = strlen($word);
+    for ($i = 0; $i &lt; $len; $i++) {
+        $c = substr($word, $i, 1);
+        if (in_array($c, $found)) { $out .= $c . " "; }
+        else { $out .= "_ "; }
+    }
+    return $out;
+}
+
+$word = strtolower(trim(readline("Geheimes Wort: ")));
+$found = [];
+// ... loop: guess letters until mask_word shows everything</code></pre>
+
+  <h2>ui_demo.hphp — desktop GUI tour</h2>
+  <p>Every widget in one window: button with a click counter (by-ref closure capture!),
+  gated input, checkbox, list box, combo, progress + slider, groups, menus, timers:</p>
+<pre><code class="hphp">import "ui.hphp";
+
+$app = new App("HolyPHP UI Demo", 640, 440);
+$counterLbl = $app-&gt;label("Clicked 0 times", 16, 12);
+$clicks = 0;
+
+$greet = $app-&gt;button("Greet", 16, 40);
+$greet-&gt;onClick = function() use ($app, $name, $counterLbl, &amp;$clicks) {
+    $clicks = $clicks + 1;                        // real by-ref capture
+    $counterLbl-&gt;text("Clicked " . $clicks . " times");
+};
+
+$slider = $app-&gt;slider(430, 70, 180);
+$slider-&gt;onChange = function(int $v) use ($sliderLbl) {
+    $sliderLbl-&gt;text("slider: " . $v);            // live while dragging
+};
+
+$app-&gt;every(2000, function() use ($status) {      // timer
+    $status-&gt;text("tick " . hrtime(true));
+});
+
+$app-&gt;run();</code></pre>
+
+  <h2>ws_chat.hphp — browser chat server</h2>
+  <p>The library showcase: a chat server that any browser joins — no page reloads, no
+  polling, pure WebSockets:</p>
+<pre><code class="hphp">import "websocket.hphp";
+
+$server = new WebSocketServer("tcp://127.0.0.1:9500");
+$server-&gt;onOpen = function(int $client) use ($server): void {
+    $server-&gt;broadcast("user " . $client . " joined the chat");
+};
+$server-&gt;onMessage = function(int $client, string $msg) use ($server): void {
+    $server-&gt;broadcast("user " . $client . ": " . $msg);
+};
+
+while ($server-&gt;tick()) { usleep(10000); }</code></pre>
+<pre><code class="hphp">hphp build examples/ws_chat.hphp -o wschat.exe
+./wschat.exe
+# open examples/ws_chat.html in Chrome and start typing</code></pre>
+
+  <h2>ui_selftest.hphp — headless smoke test</h2>
+  <p>Creates a window, binds controls, exercises text get/set and the event pump, then
+  closes — CI-friendly (no human input needed):</p>
+<pre><code class="hphp">hphp run examples/ui_selftest.hphp   # exits 0 when everything worked</code></pre>
+
+  <div class="note"><b>Tip:</b> every example compiles to a standalone binary:
+  <code>hphp build examples/word_guess.hphp -o guess.exe</code> — no PHP, no runtime,
+  no DLLs. Double-click and play.</div>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

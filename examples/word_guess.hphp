@@ -1,0 +1,73 @@
+// word_guess.hphp — Hangman-style word guess game
+// Player enters a word, the other must guess it letter by letter
+// (Wortratsche / hangman style). Two-player hot-seat game.
+
+function mask_word(string $word, array $found): string {
+    $out = "";
+    $len = strlen($word);
+    for ($i = 0; $i < $len; $i++) {
+        $c = substr($word, $i, 1);
+        if (in_array($c, $found)) {
+            $out .= $c . " ";
+        } else {
+            $out .= "_ ";
+        }
+    }
+    return $out;
+}
+
+echo "=== HolyPHP Wortratsche ===\n";
+echo "Spieler 1: Gib ein Wort ein (Spieler 2 schaut weg!)\n";
+$word = strtolower(trim(readline("Geheimes Wort: ")));
+
+if (strlen($word) < 2) {
+    echo "Zu kurz! Tschuess.\n";
+    exit(1);
+}
+
+$wrong = 0;
+$maxwrong = 7;
+$found = [];
+$alphabet = "abcdefghijklmnopqrstuvwxyz";
+
+echo "\n" . str_repeat("\n", 20) . "Los geht's!\n";
+
+while ($wrong < $maxwrong) {
+    echo "\nWort:  " . mask_word($word, $found) . "\n";
+    echo "Fehler: " . $wrong . "/" . $maxwrong . "   Geraten: " . implode(",", $found) . "\n";
+
+    $guess = strtolower(trim(readline("Buchstabe: ")));
+    if (strlen($guess) == 0) {
+        echo "Abgebrochen (leere Eingabe).\n";
+        break;   /* EOF oder Enter: Spiel beenden */
+    }
+    if (strlen($guess) != 1) {
+        echo "Bitte genau einen Buchstaben!\n";
+        continue;
+    }
+    if (in_array($guess, $found)) {
+        echo "'" . $guess . "' hast du schon geraten.\n";
+        continue;
+    }
+    if (strpos($word, $guess) === false) {
+        $found[] = $guess;
+        $wrong++;
+        echo "Leider falsch!\n";
+    } else {
+        $found[] = $guess;
+        echo "Richtig!\n";
+    }
+
+    $complete = true;
+    $len = strlen($word);
+    for ($i = 0; $i < $len; $i++) {
+        $c = substr($word, $i, 1);
+        if (!in_array($c, $found)) { $complete = false; }
+    }
+    if ($complete) {
+        echo "\n*** GEWONNEN! *** Das Wort war: " . strtoupper($word) . "\n";
+        exit(0);
+    }
+}
+
+echo "\n*** VERLOREN! *** Das Wort war: " . strtoupper($word) . "\n";

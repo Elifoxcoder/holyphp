@@ -1,0 +1,5 @@
+// type_mismatch.hphp — must FAIL sema: string is not an int
+function double(int $v): int {
+    return $v * 2;
+}
+echo double("hello");

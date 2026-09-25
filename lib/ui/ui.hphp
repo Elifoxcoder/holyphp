@@ -1,0 +1,378 @@
+// ui.hphp — HolyPHP native UI library.
+//
+// Wraps the compiler's built-in UI layer (Win32) in a small, PHP-easy class
+// API. Windows, buttons, labels, inputs, checkboxes, lists, combos,
+// progress bars, sliders, groups, panels, menus, timers, message boxes,
+// file/folder/color dialogs and the clipboard.
+//
+// Quick start:
+//   import "ui.hphp";
+//   $app = new App("Hello");
+//   $btn = $app->button("Click me", 20, 20, 120, 30);
+//   $btn->onClick = function() use ($app) { $app->msg("Hi!", "You clicked."); };
+//   $app->run();
+//
+// Two run modes:
+//   $app->run()      blocking desktop loop (best with `hphp build`)
+//   $app->run(fn)    script keeps control; fn is called every ~15 ms
+//                    (best with `hphp run`, keeps console I/O alive)
+
+class UIKind {
+    static $WINDOW   = 1;
+    static $BUTTON   = 2;
+    static $LABEL    = 3;
+    static $INPUT    = 4;
+    static $CHECKBOX = 5;
+    static $LIST     = 6;
+    static $COMBO    = 7;
+    static $PROGRESS = 8;
+    static $SLIDER   = 9;
+    static $GROUP    = 10;
+    static $PANEL    = 12;
+}
+
+// colors as 0xRRGGBB helpers
+function ui_rgb(int $r, int $g, int $b): int {
+    return ($r << 16) | ($g << 8) | $b;
+}
+
+class UIObject {
+    pub int $h;                    // native handle
+    pub $onClick = null;           // closures: function(...): void
+    pub $onChange = null;
+    pub $onClose = null;
+
+    pub function __construct(int $handle) {
+        $this->h = $handle;
+    }
+
+    pub function text(string $t) {
+        ui_set($this->h, $t);
+        return $this;              // chainable
+    }
+
+    pub function getText(): string {
+        return ui_get($this->h);
+    }
+
+    pub function show(bool $visible = true) {
+        ui_ctrl_show($this->h, $visible);
+        return $this;
+    }
+
+    pub function enable(bool $on = true) {
+        ui_enable($this->h, $on);
+        return $this;
+    }
+
+    pub function move(int $x, int $y, int $w = -1, int $hgt = -1) {
+        if ($w == -1 || $hgt == -1) {
+            ui_move($this->h, $x, $y, 0, 0);
+        } else {
+            ui_move($this->h, $x, $y, $w, $hgt);
+        }
+        return $this;
+    }
+
+    pub function focus() {
+        ui_focus($this->h);
+        return $this;
+    }
+
+    pub function font(int $size, bool $bold = false) {
+        ui_font($this->h, $size, $bold);
+        return $this;
+    }
+
+    pub function bg(int $rgb) {
+        ui_bg($this->h, $rgb);
+        return $this;
+    }
+
+    // internal: fire a click handler
+    pub function _clicked() {
+        if ($this->onClick) { ($this->onClick)(); }
+    }
+}
+
+class Button extends UIObject {
+}
+
+class Label extends UIObject {
+}
+
+class Input extends UIObject {
+    pub function value(): string {
+        return $this->getText();
+    }
+    pub function setValue(string $v) {
+        $this->text($v);
+        return $this;
+    }
+}
+
+class Checkbox extends UIObject {
+    pub function checked(): bool {
+        return ui_check_get($this->h) == 1;
+    }
+    pub function setChecked(bool $on) {
+        ui_check_set($this->h, $on ? 1 : 0);
+        return $this;
+    }
+}
+
+class ListBox extends UIObject {
+    pub function add(string $item): int {
+        return ui_items($this->h, $item);   // returns item index
+    }
+    pub function clear() {
+        ui_clear($this->h);
+        return $this;
+    }
+    pub function remove(int $index) {
+        ui_remove($this->h, $index);
+        return $this;
+    }
+    pub function selected(): int {
+        return ui_selected($this->h);
+    }
+    pub function select(int $index) {
+        ui_select($this->h, $index);
+        return $this;
+    }
+    pub function selectedText(): string {
+        $i = $this->selected();
+        if ($i < 0) { return ""; }
+        return ui_item_text($this->h, $i);
+    }
+}
+
+class ComboBox extends UIObject {
+    pub function add(string $item): int {
+        return ui_items($this->h, $item);
+    }
+    pub function clear() {
+        ui_clear($this->h);
+        return $this;
+    }
+    pub function selected(): int {
+        return ui_selected($this->h);
+    }
+    pub function select(int $index) {
+        ui_select($this->h, $index);
+        return $this;
+    }
+    pub function selectedText(): string {
+        $i = $this->selected();
+        if ($i < 0) { return ""; }
+        return ui_item_text($this->h, $i);
+    }
+}
+
+class ProgressBar extends UIObject {
+    pub function set(int $pct) {
+        ui_progress($this->h, $pct);
+        return $this;
+    }
+    pub function get(): int {
+        return ui_slider_get($this->h);
+    }
+}
+
+class Slider extends UIObject {
+    pub function set(int $pos) {
+        ui_slider_set($this->h, $pos);
+        return $this;
+    }
+    pub function get(): int {
+        return ui_slider_get($this->h);
+    }
+}
+
+class Group extends UIObject {
+}
+
+class Panel extends UIObject {
+}
+
+class Menu {
+    pub int $h;
+    pub App $app;
+    pub function __construct(int $handle, App $app) {
+        $this->h = $handle;
+        $this->app = $app;
+    }
+    pub function item(string $label, $handler): MenuItem {
+        $id = ui_menu_next($this->app);
+        $h = ui_menu_item($this->h, $label, $id);
+        $this->app->_register_menu_item($h, $id, $handler);
+        return new MenuItem($h, $id);
+    }
+    pub function separator(): Menu {
+        ui_menu_sep($this->h);
+        return $this;
+    }
+}
+
+class MenuItem {
+    pub int $h;
+    pub int $id;
+    pub function __construct(int $handle, int $id) {
+        $this->h = $handle;
+        $this->id = $id;
+    }
+}
+
+class App {
+    pub int $h;
+    pub $onIdle = null;
+    pub int $_menuSeq = 0;
+    private $menu_items = [];
+
+    pub function __construct(string $title = "HolyPHP App",
+                             int $w = 640, int $hgt = 480,
+                             int $x = -32000, int $y = -32000) {
+        $this->h = ui_window($title, $x, $y, $w, $hgt);
+    }
+
+    // ---- window-level ----
+    pub function title(string $t) {
+        ui_title($this->h, $t);
+        return $this;
+    }
+    pub function size(int $w, int $hgt) {
+        ui_size($this->h, $w, $hgt);
+        return $this;
+    }
+    pub function pos(int $x, int $y) {
+        ui_pos($this->h, $x, $y);
+        return $this;
+    }
+    pub function alive(): bool {
+        return ui_alive($this->h) == 1;
+    }
+    pub function close() {
+        ui_close($this->h);
+    }
+    pub function menu(string $label): Menu {
+        $h = ui_menu($this->h, $label);
+        return new Menu($h, $this);
+    }
+
+    // ---- controls ----
+    pub function button(string $text, int $x, int $y, int $w = 120, int $hgt = 30): Button {
+        $b = new Button(ui_add($this->h, 2, $text, $x, $y, $w, $hgt));
+        ui_on($b->h, 1, function() use ($b) { $b->_clicked(); });
+        return $b;
+    }
+    pub function label(string $text, int $x, int $y, int $w = 160, int $hgt = 22): Label {
+        return new Label(ui_add($this->h, 3, $text, $x, $y, $w, $hgt));
+    }
+    pub function input(string $text, int $x, int $y, int $w = 180, int $hgt = 26): Input {
+        $i = new Input(ui_add($this->h, 4, $text, $x, $y, $w, $hgt));
+        ui_on($i->h, 2, function() use ($i) {
+            if ($i->onChange) { ($i->onChange)($i->value()); }
+        });
+        return $i;
+    }
+    pub function checkbox(string $text, int $x, int $y, int $w = 160, int $hgt = 24): Checkbox {
+        $c = new Checkbox(ui_add($this->h, 5, $text, $x, $y, $w, $hgt));
+        ui_on($c->h, 2, function() use ($c) {
+            if ($c->onChange) { ($c->onChange)($c->checked()); }
+        });
+        return $c;
+    }
+    pub function listBox(int $x, int $y, int $w = 200, int $hgt = 160): ListBox {
+        $l = new ListBox(ui_add($this->h, 6, "", $x, $y, $w, $hgt));
+        ui_on($l->h, 2, function() use ($l) {
+            if ($l->onChange) { ($l->onChange)($l->selected(), $l->selectedText()); }
+        });
+        return $l;
+    }
+    pub function comboBox(int $x, int $y, int $w = 200, int $hgt = 200): ComboBox {
+        $c = new ComboBox(ui_add($this->h, 7, "", $x, $y, $w, $hgt));
+        ui_on($c->h, 2, function() use ($c) {
+            if ($c->onChange) { ($c->onChange)($c->selected(), $c->selectedText()); }
+        });
+        return $c;
+    }
+    pub function progress(int $x, int $y, int $w = 200, int $hgt = 22): ProgressBar {
+        return new ProgressBar(ui_add($this->h, 8, "", $x, $y, $w, $hgt));
+    }
+    pub function slider(int $x, int $y, int $w = 200, int $hgt = 28): Slider {
+        $s = new Slider(ui_add($this->h, 9, "", $x, $y, $w, $hgt));
+        ui_on($s->h, 2, function($id, int $v) use ($s) {
+            /* the notification already carries the thumb position (arg 2);
+             * re-querying can lag during a live drag */
+            if ($s->onChange) { ($s->onChange)($v); }
+        });
+        return $s;
+    }
+    pub function group(string $text, int $x, int $y, int $w, int $hgt): Group {
+        return new Group(ui_add($this->h, 10, $text, $x, $y, $w, $hgt));
+    }
+    pub function panel(int $x, int $y, int $w, int $hgt): Panel {
+        return new Panel(ui_add($this->h, 12, "", $x, $y, $w, $hgt));
+    }
+
+    // ---- dialogs & misc ----
+    pub function msg(string $text, string $title = "HolyPHP") {
+        ui_msg($this->h, $title, $text, 0);
+    }
+    pub function warn(string $text, string $title = "Warning") {
+        ui_msg($this->h, $title, $text, 1);
+    }
+    pub function error(string $text, string $title = "Error") {
+        ui_msg($this->h, $title, $text, 2);
+    }
+    pub function question(string $text, string $title = "Question"): bool {
+        return ui_msg($this->h, $title, $text, 3) == 1;
+    }
+    pub function openFile(string $patterns = "All files|*.*"): string {
+        $r = ui_open_file($this->h, $patterns);
+        return $r === null ? "" : $r;
+    }
+    pub function saveFile(string $patterns = "All files|*.*"): string {
+        $r = ui_save_file($this->h, $patterns);
+        return $r === null ? "" : $r;
+    }
+    pub function pickFolder(): string {
+        $r = ui_pick_folder($this->h);
+        return $r === null ? "" : $r;
+    }
+    pub function pickColor(int $initial = 0xffffff) {
+        return ui_pick_color($this->h, $initial);   // null on cancel
+    }
+    pub function every(int $ms, $handler) {
+        ui_timer($ms, $handler);
+    }
+
+    // ---- menu plumbing (called by Menu) ----
+    pub function _register_menu_item(int $h, int $id, $handler) {        ui_on($h, 1, function() use ($handler) { if ($handler) { ($handler)(); } });
+    }
+
+    // ---- run modes ----
+    pub function onClose($handler) {
+        ui_on($this->h, 3, function() use ($handler) {
+            $veto = false;
+            if ($handler) { $veto = ($handler)() == false; }
+            if (!$veto) { ui_close($this->h); }
+        });
+    }
+
+    // blocking desktop loop (use with `hphp build`)
+    pub function run() {
+        ui_run_main();
+    }
+
+    // cooperative loop for `hphp run`: calls $onIdle every tick
+    pub function tick(int $ms = 15) {
+        ui_dispatch($ms);
+    }
+}
+
+// menu command ids: each App owns a counter (no local statics in HolyPHP)
+function ui_menu_next(App $app): int {
+    $app->_menuSeq = $app->_menuSeq + 1;
+    return 5000 + $app->_menuSeq;
+}

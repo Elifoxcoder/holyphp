@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Language reference — HolyPHP</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<script src="assets/nav.html.js"></script>
+<main>
+  <h1>Language <span class="ph">reference</span></h1>
+  <p class="lead">Everything HolyPHP adds on top of PHP — and everything it borrows from Rust.
+  All snippets are verified against the compiler.</p>
+
+  <h2 id="variables">Variables &amp; types</h2>
+  <p>Variables are PHP-style: start with <code>$</code>, no declaration keyword, inferred types.
+  Add an explicit type after the name when you want one.</p>
+<pre><code class="hphp">$count = 5;                  // inferred int
+$pi = 3.14159;               // float
+$ok = true;                  // bool
+$who = "Elias";              // string
+
+$count: int = 5;             // pinned types
+$rate: float = 0.19;
+$name: string = "Ann";
+$flag: bool = false;
+
+$items = [1, 2, 3];          // list array
+$user = ["name" =&gt; "Elias",  // map array (string keys)
+         "lang" =&gt; "HolyPHP"];</code></pre>
+  <table>
+    <tr><th>Type</th><th>Literals</th><th>Notes</th></tr>
+    <tr><td><code>int</code></td><td><code>42</code>, <code>0x2A</code></td><td>64-bit signed</td></tr>
+    <tr><td><code>float</code></td><td><code>3.14</code>, <code>1e9</code></td><td>64-bit IEEE</td></tr>
+    <tr><td><code>bool</code></td><td><code>true</code> / <code>false</code></td><td></td></tr>
+    <tr><td><code>string</code></td><td><code>"..."</code> with <code>{$var}</code> interpolation</td><td>immutable, refcounted</td></tr>
+    <tr><td><code>array</code></td><td><code>[1, 2]</code>, <code>["k" =&gt; "v"]</code></td><td>copy-on-write value semantics</td></tr>
+    <tr><td><code>mixed</code></td><td>anything</td><td>runtime-tagged hval</td></tr>
+  </table>
+
+  <h2 id="functions">Functions</h2>
+  <p>Fully typed signatures with optional parameters and defaults. Untyped functions are
+  inferred like scripts.</p>
+<pre><code class="hphp">function greet(string $who): string {
+    return "Hi, {$who}!";
+}
+
+function pow2(float $base, int $exp = 2): float {
+    return $base ** $exp;
+}
+
+// by-reference parameter (a mutable borrow)
+function bump(int &amp;$r): void { $r += 1; }
+
+$n = 41;
+bump($n);        // $n === 42</code></pre>
+
+  <h2 id="operators">Operators</h2>
+  <table>
+    <tr><th>Group</th><th>Operators</th></tr>
+    <tr><td>Arithmetic</td><td><code>+ - * / % **</code></td></tr>
+    <tr><td>String</td><td><code>.</code> concat, <code>.=</code> append</td></tr>
+    <tr><td>Comparison</td><td><code>== != === !== &lt; &gt; &lt;= &gt;= &lt;=&gt;</code></td></tr>
+    <tr><td>Logic</td><td><code>&amp;&amp; || !</code></td></tr>
+    <tr><td>Bitwise</td><td><code>&amp; | ^ &lt;&lt; &gt;&gt;</code></td></tr>
+    <tr><td>Null coalesce</td><td><code>??</code></td></tr>
+    <tr><td>Compound</td><td><code>+= -= *= /= %= .= **=</code></td></tr>
+    <tr><td>Increment</td><td><code>++ --</code> (prefix and postfix)</td></tr>
+    <tr><td>Ternary</td><td><code>cond ? a : b</code></td></tr>
+  </table>
+
+  <h2 id="control">Control flow</h2>
+<pre><code class="hphp">if ($n &lt; 2) { return $n; }
+elseif ($n == 2) { echo "two\n"; }
+else { echo "many\n"; }
+
+while ($i &lt; 10) { $i++; }
+
+for ($i = 0; $i &lt; 10; $i++) { echo $i; }
+
+foreach ($nums as $x) { $total += $x; }
+foreach ($user as $k =&gt; $v) { echo "{$k} =&gt; {$v}\n"; }</code></pre>
+
+  <h3>match — algebraic switching</h3>
+<pre><code class="hphp">function classify(int $n): string {
+    return match ($n) {
+        0 =&gt; "zero",
+        1, 2, 3 =&gt; "small",
+        _ =&gt; "big",
+    };
+}</code></pre>
+
+  <h2 id="classes">Classes &amp; OOP</h2>
+  <p>Visibility is explicit: <code>pub</code> (public), <code>private</code>, <code>static</code>
+  for fields. Methods inherit PHP-style; constructors may be inherited too.</p>
+<pre><code class="hphp">class Counter {
+    pub int $count = 0;          // field with default
+    private $secret = "s";
+
+    pub function __construct(int $start = 0) {
+        $this-&gt;count = $start;
+    }
+    pub function bump(): void {
+        $this-&gt;count += 1;
+    }
+    pub function get(): int {
+        return $this-&gt;count;
+    }
+}
+
+$c = new Counter(10);
+$c-&gt;bump();
+echo $c-&gt;get();      // 11</code></pre>
+<pre><code class="hphp">class Animal {
+    pub function speak(): string { return "..."; }
+}
+class Dog extends Animal {
+    pub function speak(): string { return "Woof!"; }
+}
+echo (new Dog())-&gt;speak();   // "Woof!" — dynamic dispatch</code></pre>
+
+  <h2 id="closures">Closures &amp; captures</h2>
+  <p>Closures capture PHP-style with <code>use</code>. By-value copies by default;
+  <code>use (&amp;$x)</code> captures <b>by reference</b> — the variable lives in a heap box
+  shared with the outer scope.</p>
+<pre><code class="hphp">$base = 100;
+$addBase = function(int $x) use ($base): int {   // by value
+    return $base + $x;
+};
+
+$clicks = 0;
+$onClick = function() use (&amp;$clicks): void {     // by reference
+    $clicks = $clicks + 1;                       // outer $clicks changes
+};
+$onClick(); $onClick();
+echo $clicks;    // 2</code></pre>
+  <div class="note"><b>Why it's safe:</b> the compiler boxes the captured variable and
+  forces it to <code>mixed</code>, so the same slot is shared — no dangling pointers, no
+  data races, verified by <code>hphp check</code>.</div>
+
+  <h2 id="exceptions">Exceptions</h2>
+<pre><code class="hphp">try {
+    throw "boom";
+} catch (string $e) {
+    echo "caught: {$e}\n";
+} finally {
+    echo "always runs\n";
+}</code></pre>
+  <p><code>throw</code> accepts a value (strings today, Exception objects too). Handlers are
+  invoked through a setjmp-free architecture — the runtime runs each protected block as a
+  helper, so no <code>volatile</code> tricks appear in generated code and -O2 is safe.</p>
+
+  <h2 id="enums">Enums</h2>
+<pre><code class="hphp">enum Farbe: int { Rot, Gruen, Blau }
+
+function colorName(Farbe $f): string {
+    return match ($f) {
+        Farbe::Rot   =&gt; "red",
+        Farbe::Gruen =&gt; "green",
+        Farbe::Blau  =&gt; "blue",
+    };
+}</code></pre>
+
+  <h2 id="memory">Memory model</h2>
+  <p>HolyPHP is memory-safe <b>by default</b> and low-level <b>when you ask</b>.</p>
+  <table>
+    <tr><th>Concept</th><th>Syntax</th><th>Meaning</th></tr>
+    <tr><td>Value semantics</td><td>plain assignment</td><td>scalars &amp; arrays copy-on-write</td></tr>
+    <tr><td>Immutable borrow</td><td><code>&amp;$x</code></td><td>read-only alias, many allowed</td></tr>
+    <tr><td>Mutable borrow</td><td><code>&amp;mut $x</code></td><td>exactly one at a time</td></tr>
+    <tr><td>Owned box</td><td><code>own&lt;T&gt;</code></td><td>exclusive ownership, moves</td></tr>
+    <tr><td>Shared pointer</td><td><code>Rc&lt;T&gt;</code></td><td>refcounted shared ownership</td></tr>
+    <tr><td>Raw pointer</td><td><code>*T</code> / <code>&amp;$x</code> under <code>unsafe</code></td><td>only inside <code>unsafe {}</code></td></tr>
+  </table>
+<pre><code class="hphp">// borrow checker at compile time:
+function laenge(string $text): int {     // takes an immutable borrow
+    return strlen($text);
+}
+$w = "borrowed";
+echo laenge($w);        // owner keeps $w
+
+// this is a compile ERROR (two mutable borrows):
+// function bump(int &amp;$r): void { $r += 1; }
+// bump(&amp;$n); bump(&amp;$n); ...  =&gt; rejected by hphp check</code></pre>
+<pre><code class="hphp">unsafe {
+    $geheim: int = 42;
+    $zeiger: &amp;int = &amp;$geheim;      // raw pointer
+    echo "deref = " . (*$zeiger) . "\n";
+}</code></pre>
+  <div class="note warn"><b>unsafe:</b> everything outside the braces is still checked;
+  inside, you take responsibility for aliasing — exactly Rust's contract, minus the ceremony.</div>
+
+  <h2 id="imports">Imports &amp; the stdlib</h2>
+  <p>Libraries ship inside the compiler binary — <code>import</code> finds them with no files
+  on disk.</p>
+<pre><code class="hphp">import "ui.hphp";        // desktop GUI toolkit
+import "websocket.hphp"; // RFC 6455 server</code></pre>
+
+  <h2 id="strings">Strings</h2>
+  <p>Immutable and refcounted; interpolation is compile-time parsed into concat calls.</p>
+<pre><code class="hphp">$name = "Elias";
+echo "Hi {$name}, you have " . (3 + 4) . " new messages\n";
+
+$s = "Hello";
+$s .= " World";          // append (rebuilt behind the scenes)</code></pre>
+
+  <h2 id="arrays">Arrays &amp; maps</h2>
+  <p>One type for both: lists keep insertion order; assigning a string key or a non-sequential
+  int key promotes to a keyed map (exactly PHP's semantics).</p>
+<pre><code class="hphp">$nums = [5, 3, 8, 1, 9];
+$nums[] = 7;                 // append
+sort($nums);                 // in place
+echo $nums[0];               // 1
+
+$m = [];
+$m[1] = "a";                 // key 1 is remembered
+$m["name"] = "Elias";        // becomes a keyed map
+foreach ($m as $k =&gt; $v) {
+    echo "{$k} =&gt; {$v}\n";   // 1 =&gt; a, then name =&gt; Elias
+}
+
+$a = [1, 2, 3];
+$b = $a;                     // COW: shares until one writes
+$b[0] = 99;                  // clones now; $a unchanged</code></pre>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

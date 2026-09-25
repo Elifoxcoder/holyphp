@@ -1,0 +1,25 @@
+import "ui.hphp";
+
+// headless smoke test: create the app window, a few controls, tick the
+// pump twice, then close. Verifies handles, calls, and dispatch.
+$app = new App("smoke", 320, 200);
+echo "window handle: " . $app->h . "\n";
+$btn = $app->button("press", 10, 10, 100, 28);
+$lbl = $app->label("hello", 10, 50);
+$in  = $app->input("type here", 10, 80);
+$cb  = $app->checkbox("check", 10, 115);
+echo "button: " . $btn->h . " label: " . $lbl->h . " input: " . $in->h . " cb: " . $cb->h . "\n";
+
+$in->setValue("changed");
+echo "input now: " . $in->value() . "\n";
+$lbl->text("updated");
+echo "label now: " . $lbl->getText() . "\n";
+
+$clicked = 0;
+$btn->onClick = function() use (&$clicked) { $clicked = $clicked + 1; };
+$app->tick(50);
+$app->tick(50);
+echo "alive after ticks: " . ($app->alive() ? "yes" : "no") . "\n";
+
+$app->close();
+echo "SMOKE OK\n";

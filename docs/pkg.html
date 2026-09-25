@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Packages — HolyPHP</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<script src="assets/nav.html.js"></script>
+<main>
+  <h1><span class="ph">Packages</span> — <code>hphp pkg</code></h1>
+  <p class="lead">HolyPHP ships with its own package manager. Packages are plain
+  folders of <code>.hphp</code> files described by an <code>hphp.json</code> manifest,
+  packed into a portable <code>.hpx</code> archive, and shared through a registry —
+  which is itself a HolyPHP program (<code>registry/server.hphp</code>, ~250 lines).</p>
+
+  <h2>Quick start</h2>
+<pre><code class="hphp">hphp pkg init                     # create hphp.json skeleton in this folder
+hphp pkg check                    # typecheck the package's entry file
+hphp pkg pack                     # build name-version.hpx into your pkg cache
+hphp pkg publish                  # pack + upload to the configured registry
+hphp pkg install mathx            # download + unpack into $HPHP_HOME/packages
+hphp pkg remove mathx             # uninstall (alias: uninstall)
+hphp pkg list                     # show installed packages
+hphp pkg search clamp             # search the registry (falls back to local)
+hphp pkg registry http://localhost:8930   # point the client at a registry
+hphp pkg home                     # print the package home directory</code></pre>
+
+  <h2>The manifest: <code>hphp.json</code></h2>
+<pre><code class="hphp">{
+  "name": "mathx",
+  "version": "1.0.0",
+  "description": "tiny math helpers",
+  "entry": "mathx.hphp",
+  "author": "you"
+}</code></pre>
+  <p><code>entry</code> is what <code>hphp pkg check</code> typechecks (defaults to
+  <code>&lt;name&gt;.hphp</code>). Packing walks the whole package folder, so every
+  file in it ships in the archive.</p>
+
+  <h2>Using an installed package</h2>
+  <p><code>hphp pkg install mathx</code> unpacks into
+  <code>$HPHP_HOME/packages/mathx/</code>. The compiler's <code>import</code>
+  resolution then searches:</p>
+  <ol>
+    <li>the importing file's directory (project-local files, e.g. <code>lib/ui.hphp</code>)</li>
+    <li><code>$HPHP_HOME/packages/&lt;name&gt;/</code> (installed packages)</li>
+  </ol>
+<pre><code class="hphp">// app.hphp — after: hphp pkg install mathx
+import "mathx.hphp";
+
+echo "clamped: " . clampi(42, 0, 10) . "\n";   // 10</code></pre>
+
+  <h2>Run your own registry</h2>
+  <p>The registry is a normal HolyPHP program using the socket builtins
+  (<code>stream_socket_server</code>, <code>stream_ready</code>, <code>stream_recv</code>,
+  <code>stream_send</code>). It serves a browsable index, <code>?q=</code> search,
+  package downloads under <code>/pkg/&lt;name&gt;</code>, and accepts uploads via
+  <code>POST /publish</code>.</p>
+<pre><code class="bash">cd registry
+../hphp.exe run server.hphp          # listens on http://localhost:8930
+HPHP_HOME=../store ../hphp.exe run server.hphp --store /var/hphp-packages
+</code></pre>
+  <p>Packages live as <code>&lt;name&gt;.hpx</code> + <code>&lt;name&gt;.json</code> metadata
+  in the store directory, so a registry can be backed up, synced, or moved to another
+  machine by copying one folder. Point clients at it from any device:</p>
+<pre><code class="hphp">hphp pkg registry http://your-server:8930</code></pre>
+
+  <h2>End-to-end walkthrough</h2>
+<pre><code class="hphp"># 1. author
+mkdir mathx && cd mathx && hphp pkg init
+#    ... edit mathx.hphp and hphp.json ...
+hphp pkg check                        # types + borrows
+
+# 2. share (machine A)
+hphp pkg publish                      # -> uploaded to the registry
+
+# 3. consume (machine B, same registry)
+hphp pkg registry http://your-server:8930
+hphp pkg install mathx
+hphp run app.hphp                     # import "mathx.hphp" just works</code></pre>
+
+  <h2>How it works under the hood</h2>
+  <ul>
+    <li><b>.hpx format</b> — a trivial tar-like container: repeated
+      <code>name &nbsp;size\n</code> headers followed by raw payload, terminated by
+      <code>HPHX1</code>. Human-readable, streamable, no dependencies.</li>
+    <li><b>Package home</b> — <code>HPHP_HOME</code> (defaults to a per-user folder):
+      <code>cache/</code> for downloaded archives, <code>packages/</code> for installed
+      code, <code>registry_url</code> for the configured server.</li>
+    <li><b>Publish</b> — the client packs, then <code>POST</code>s the archive as
+      <code>application/octet-stream</code>; the server validates the embedded manifest
+      and stores it.</li>
+    <li><b>Install</b> — the client downloads, unpacks to a temp dir, validates the
+      manifest, then moves it into <code>packages/&lt;name&gt;</code>.</li>
+  </ul>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

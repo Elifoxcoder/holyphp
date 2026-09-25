@@ -1,0 +1,64 @@
+/* strict.hphp — PHP-8-style === / !== identity semantics.
+ * A FAIL line here means the lexer/codegen identity path regressed. */
+$failures = 0;
+
+function expect(bool $got, bool $want, string $what): void {
+    global $failures;
+    if ($got === $want) {
+        echo "OK   " . $what . "\n";
+    } else {
+        echo "FAIL " . $what . "\n";
+        $failures = $failures + 1;
+    }
+}
+
+/* string vs bool: never equal, both directions */
+expect("hello" === false, false, "str === false");
+expect("hello" !== false, true,  "str !== false");
+expect(false === "hello", false, "false === str");
+
+/* bool identity */
+expect(false === false, true,  "false === false");
+expect(true === true,   true,  "true === true");
+expect(true === false,  false, "true === false");
+
+/* int vs bool: different tags, never equal (PHP 8) */
+expect(1 === true,  false, "1 === true");
+expect(0 === false, false, "0 === false");
+expect("1" === 1,   false, "'1' === 1");
+
+/* null identity */
+expect(null === false, false, "null === false");
+expect(null === null,  true,  "null === null");
+
+/* string and int identity */
+expect("a" === "a", true,  "'a' === 'a'");
+expect("a" === "b", false, "'a' === 'b'");
+expect(5 === 5,     true,  "5 === 5");
+
+/* arrays: deep identity — same pairs, same order, same types */
+$a1 = [1, 2];
+$a2 = $a1;
+expect($a1 === $a2, true,  "same-handle arrays ===");
+expect([1, 2] === [1, 2], true,  "equal-content arrays ===");
+expect([1, 2] === [2, 1], false, "reordered arrays ===");
+expect([1, 2] === [1, "2"], false, "int-vs-str members ===");
+expect(["k" => 1] === ["k" => 1], true, "maps with same keys ===");
+expect(["k" => 1] === ["j" => 1], false, "maps with diff keys ===");
+
+/* !== negations */
+expect([1, 2] !== [2, 1], true, "reordered arrays !==");
+expect("1" !== 1, true, "'1' !== 1");
+
+/* strpos idiom: the pattern that originally exposed the bug */
+$pos = strpos("hello world", "world");
+expect($pos !== false, true,  "strpos hit !== false");
+expect(strpos("hello", "xyz") === false, true, "strpos miss === false");
+$miss = strpos("hello", "xyz");
+expect($miss === false, true, "strpos miss value === false");
+
+if ($failures > 0) {
+    echo "strict.hphp: " . $failures . " failure(s)\n";
+    exit(1);
+}
+echo "strict.hphp: all identity checks passed\n";

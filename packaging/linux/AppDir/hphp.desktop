@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=HolyPHP
+GenericName=Programming language toolchain
+Comment=Compiled, memory-safe language with the soul of PHP
+Exec=hphp --help
+Icon=hphp
+Terminal=true
+Categories=Development;
+NoDisplay=false

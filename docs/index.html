@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HolyPHP — compiled, memory-safe, as easy as PHP</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<script src="assets/nav.html.js"></script>
+<main>
+  <section class="hero">
+    <h1>Holy<span class="ph">PHP</span></h1>
+    <p class="sub">A compiled, memory-safe programming language with the soul of PHP and the
+    discipline of Rust. Write scripts like it's Friday afternoon — ship binaries like it's C.</p>
+    <div class="quickstart">
+      <code>hphp run hello.hphp</code>
+      <button onclick="navigator.clipboard.writeText('hphp run hello.hphp')">copy</button>
+    </div>
+  </section>
+
+  <div class="statrow">
+    <div class="stat"><b>235+</b><span>built-in functions (PHP-compatible)</span></div>
+    <div class="stat"><b>~25&times;</b><span>faster than PHP 8 (fib benchmark)</span></div>
+    <div class="stat"><b>0</b><span>GC pauses — refcounted, deterministic</span></div>
+    <div class="stat"><b>1</b><span>standalone .exe per program, no runtime needed</span></div>
+  </div>
+
+  <h2>Why HolyPHP</h2>
+  <p>HolyPHP compiles <code>.hphp</code> source to native machine code through its own C backend.
+  It keeps everything you love about writing PHP — dollar-sign variables, loose typing when you
+  want it, 235 built-in functions, arrays that just work — and adds what PHP never gave you:
+  a compile-time <b>borrow checker</b>, <b>ownership</b> (<code>own&lt;T&gt;</code>), and
+  <b>raw pointers only inside <code>unsafe</code></b>.</p>
+
+  <div class="grid">
+    <a class="card" href="lang.html#variables"><span class="ico">&#36;</span>
+      <h3>Feels like PHP</h3><p>$variables, echo, foreach, arrays with string keys, string
+      interpolation, optional types. No let, no fuss.</p></a>
+    <a class="card" href="lang.html#memory"><span class="ico">&#128737;</span>
+      <h3>Safe like Rust</h3><p>Borrow checker at compile time, own&lt;T&gt; moves,
+      Rc&lt;T&gt; shared ownership, raw pointers only under unsafe.</p></a>
+    <a class="card" href="lang.html#types"><span class="ico">&#127919;</span>
+      <h3>Types when you want them</h3><p>$x = 5 just works. $x: int = 5 pins it down.
+      Function signatures are fully typed.</p></a>
+    <a class="card" href="lib-ui.html"><span class="ico">&#128421;</span>
+      <h3>Native desktop GUI</h3><p>The ui.hphp standard library builds real windows,
+      buttons, sliders, menus and timers in a few lines.</p></a>
+    <a class="card" href="lib-websocket.html"><span class="ico">&#127760;</span>
+      <h3>Browsers included</h3><p>websocket.hphp speaks RFC 6455: Chrome connects to your
+      HolyPHP server out of the box.</p></a>
+    <a class="card" href="cli.html"><span class="ico">&#9889;</span>
+      <h3>One-file toolchain</h3><p>The compiler embeds the whole runtime and stdlib.
+      hphp build produces a standalone executable.</p></a>
+    <a class="card" href="pkg.html"><span class="ico">&#128230;</span>
+      <h3>Packages</h3><p>hphp pkg init / publish / install — with a registry server
+      written in HolyPHP itself.</p></a>
+  </div>
+
+  <h2>Hello, HolyPHP</h2>
+<pre><code class="hphp">// hello.hphp — no imports, no main, just start writing
+$name = "Elias";
+echo "Hello, {$name}!\n";
+
+// optional types, like Rust — but only when you ask
+function fib(int $n): int {
+    if ($n &lt; 2) { return $n; }
+    return fib($n - 1) + fib($n - 2);
+}
+echo "fib(10) = " . fib(10) . "\n";</code></pre>
+
+  <h2>A real GUI in 12 lines</h2>
+<pre><code class="hphp">import "ui.hphp";
+
+$app = new App("My App", 640, 420);
+$btn = $app-&gt;button("Click me", 16, 40);
+$name = $app-&gt;input("world", 16, 80);
+
+$btn-&gt;onClick = function() use ($app, $name) {
+    $app-&gt;msg("Hello, " . $name-&gt;value() . "!");
+};
+
+$app-&gt;run();   // real desktop event loop</code></pre>
+
+  <h2>The memory model, in one look</h2>
+<pre><code class="hphp">// borrows are checked at compile time — like Rust
+function bump(int &amp;$r): void { $r += 1; }   // &amp;mut borrow
+
+$n = 41;
+bump($n);          // $n is now 42
+
+// raw pointers exist only under unsafe
+unsafe {
+    $x = 42;
+    $p = &amp;$x;
+    echo "deref: " . (*$p) . "\n";
+}
+
+// ownership is explicit
+enum Farbe: int { Rot, Gruen, Blau }</code></pre>
+
+  <div class="note"><b>Note:</b> the borrow checker runs at compile time
+  (<code>hphp check</code>) — many immutable borrows <i>xor</i> exactly one mutable borrow,
+  use-after-move is rejected, and there is nothing to debug at 3 AM because there is no
+  data race to have.</div>
+
+  <h2>Get it</h2>
+  <p>Build the toolchain from source (Windows today, macOS/Linux ports welcome):</p>
+<pre><code class="hphp">bash scripts/build.sh     # produces ./hphp.exe with runtime embedded
+
+hphp check program.hphp   # type + borrow check only
+hphp run program.hphp     # compile &amp; execute
+hphp build program.hphp -o app.exe   # standalone binary</code></pre>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

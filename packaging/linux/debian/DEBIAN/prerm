@@ -1,0 +1,11 @@
+#!/bin/sh
+# prerm — runs before the files are removed.
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    echo "Removing HolyPHP (/usr/bin/hphp)..."
+    echo "Note: packages installed via 'hphp pkg install' live in ~/.local/share/hphp"
+    echo "and are kept. Remove that directory for a full wipe."
+fi
+
+exit 0

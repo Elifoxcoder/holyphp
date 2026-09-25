@@ -1,0 +1,240 @@
+/* server.hphp — HolyPHP package registry.
+ *
+ * A tiny HTTP/1.1 server over raw TCP sockets that:
+ *   GET  /                 -> index of published packages
+ *   GET  /search?q=word    -> plain-text search listing
+ *   GET  /pkg/<name>       -> the .hpx binary
+ *   POST /publish          -> body is an .hpx; stored in the package store
+ *
+ * Storage is the ./store folder next to this file:
+ *   store/<name>-<version>.hpx   (versioned payload)
+ *   store/<name>.hpx             (latest)
+ *   store/<name>.json            {"name","version","description"}
+ *
+ * Run:  hphp run registry/server.hphp        (default port 8930)
+ */
+
+$PORT = 8930;
+$addr = "tcp://0.0.0.0:" . $PORT;
+$server = stream_socket_server($addr);
+if (!$server) {
+    echo "registry: cannot listen on " . $addr . "\n";
+    exit(1);
+}
+echo "HolyPHP registry listening on http://localhost:" . $PORT . "\n";
+echo "  point the client at it:  hphp pkg registry http://localhost:" . $PORT . "\n\n";
+
+$store = "store";
+if (!is_dir($store)) {
+    mkdir($store);
+}
+
+/* ---------- helpers ---------- */
+
+function send_response($client, int $code, string $status, string $ctype, string $body): void {
+    $head = "HTTP/1.1 " . $code . " " . $status . "\r\n"
+          . "Content-Type: " . $ctype . "\r\n"
+          . "Content-Length: " . strlen($body) . "\r\n"
+          . "Connection: close\r\n\r\n";
+    stream_send($client, $head . $body);
+    stream_close($client);
+}
+
+/* scan store/*.json into a list of metadata arrays */
+function load_packages() {
+    global $store;
+    $out = [];
+    $files = scandir($store);
+    foreach ($files as $f) {
+        if (substr($f, -5) != ".json") { continue; }
+        $m = json_decode(file_get_contents($store . "/" . $f));
+        if ($m == null || $m["name"] == "") { continue; }
+        $pkg = ["name" => $m["name"], "version" => $m["version"]];
+        $pkg["description"] = isset($m["description"]) ? $m["description"] : "";
+        array_push($out, $pkg);
+    }
+    return $out;
+}
+
+function format_package($p): string {
+    return $p["name"] . " " . $p["version"] . "  -  " . $p["description"] . "\n";
+}
+
+function send_index($client): void {
+    $pkgs = load_packages();
+    $rows = "";
+    foreach ($pkgs as $p) { $rows = $rows . format_package($p); }
+    if (count($pkgs) == 0) { $rows = "(no packages yet - publish one!)\n"; }
+    send_response($client, 200, "OK", "text/plain; charset=utf-8",
+        "HolyPHP registry - " . count($pkgs) . " package(s)\n\n" . $rows);
+}
+
+function send_search($client, string $q): void {
+    $pkgs = load_packages();
+    $rows = "";
+    foreach ($pkgs as $p) {
+        if ($q != "" && strpos($p["name"], $q) === false) { continue; }
+        $rows = $rows . format_package($p);
+    }
+    if ($rows == "") { $rows = "(no matches)\n"; }
+    send_response($client, 200, "OK", "text/plain; charset=utf-8", $rows);
+}
+
+/* strip a name down to [a-z0-9_-]; returns false when anything else was in it */
+function sanitize_name(string $name) {
+    $safe = "";
+    for ($i = 0; $i < strlen($name); $i++) {
+        $c = $name[$i];
+        if (($c >= "a" && $c <= "z") || ($c >= "0" && $c <= "9") || $c == "_" || $c == "-") {
+            $safe = $safe . $c;
+        } else {
+            return false;
+        }
+    }
+    if ($safe == "") { return false; }
+    return $safe;
+}
+
+function send_package($client, string $name): void {
+    global $store;
+    $safe = sanitize_name($name);
+    if ($safe === false) {
+        send_response($client, 400, "Bad Request", "text/plain", "bad package name\n");
+        return;
+    }
+    $path = $store . "/" . $safe . ".hpx";
+    if (!file_exists($path)) {
+        send_response($client, 404, "Not Found", "text/plain", "package not found: " . $safe . "\n");
+        return;
+    }
+    send_response($client, 200, "OK", "application/octet-stream", file_get_contents($path));
+}
+
+/* full parse of an .hpx into a name => content array */
+function hpx_files(string $hpx) {
+    $files = [];
+    $pos = 0;
+    $len = strlen($hpx);
+    while ($pos < $len) {
+        $nl = strpos($hpx, "\n", $pos);
+        if ($nl === false) { break; }
+        $hdr = trim(substr($hpx, $pos, $nl - $pos));
+        $pos = $nl + 1;
+        if ($hdr == "HPHX1") { break; }
+        $sp = strpos($hdr, " ");
+        if ($sp === false) { break; }
+        $fname = substr($hdr, 0, $sp);
+        $flen = intval(substr($hdr, $sp + 1));
+        $files[$fname] = substr($hpx, $pos, $flen);
+        $pos = $pos + $flen;
+    }
+    return $files;
+}
+
+function handle_publish($client, string $hpx): void {
+    global $store;
+    if (strlen($hpx) > 33554432) {
+        send_response($client, 413, "Payload Too Large", "text/plain", "package too large\n");
+        return;
+    }
+    $files = hpx_files($hpx);
+    if (!isset($files["hphp.json"])) {
+        send_response($client, 400, "Bad Request", "text/plain", "no hphp.json in package\n");
+        return;
+    }
+    $m = json_decode($files["hphp.json"]);
+    if ($m == null || !isset($m["name"]) || !isset($m["version"])) {
+        send_response($client, 400, "Bad Request", "text/plain", "bad hphp.json\n");
+        return;
+    }
+    $safe = sanitize_name($m["name"]);
+    if ($safe === false) {
+        send_response($client, 400, "Bad Request", "text/plain", "invalid package name (use [a-z0-9_-])\n");
+        return;
+    }
+    file_put_contents($store . "/" . $safe . "-" . $m["version"] . ".hpx", $hpx);
+    file_put_contents($store . "/" . $safe . ".hpx", $hpx);
+    $desc = "";
+    if (isset($m["description"])) { $desc = $m["description"]; }
+    $meta = ["name" => $safe, "version" => $m["version"], "description" => $desc];
+    file_put_contents($store . "/" . $safe . ".json", json_encode($meta));
+    send_response($client, 200, "OK", "text/plain",
+        "published " . $safe . " " . $m["version"] . " (" . strlen($hpx) . " bytes)\n");
+    echo "published: " . $safe . " " . $m["version"] . "\n";
+}
+
+/* ---------- main loop ---------- */
+
+while (true) {
+    $client = stream_socket_accept($server);
+    if (!$client) { continue; }
+
+    $req = "";
+    while (strlen($req) < 33554432) {
+        if (stream_eof($client)) { break; }
+        $ready = stream_ready([$client], 1000);
+        if (count($ready) == 0) { continue; }
+        $chunk = stream_recv($client, 65536);
+        if ($chunk === false || $chunk == "") {
+            if (!stream_eof($client)) { continue; }
+            break;
+        }
+        $req = $req . $chunk;
+        if (strpos($req, "\r\n\r\n") !== false) {
+            /* keep reading only while a POST body is still incomplete */
+            if (substr($req, 0, 4) != "POST") { break; }
+            $cl = 0;
+            $hlines = explode("\r\n", $req);
+            foreach ($hlines as $hl) {
+                $colon = strpos($hl, ":");
+                if ($colon === false) { continue; }
+                if (strtolower(trim(substr($hl, 0, $colon))) == "content-length") {
+                    $cl = intval(trim(substr($hl, $colon + 1)));
+                }
+            }
+            $headEnd = strpos($req, "\r\n\r\n");
+            if (strlen($req) - ($headEnd + 4) >= $cl) { break; }
+        }
+    }
+
+    $headEnd = strpos($req, "\r\n\r\n");
+    if ($headEnd === false) { stream_close($client); continue; }
+    $head = substr($req, 0, $headEnd);
+    $body = substr($req, $headEnd + 4);
+
+    $lineEnd = strpos($head, "\r\n");
+    $reqLine = $head;
+    if ($lineEnd !== false) { $reqLine = substr($head, 0, $lineEnd); }
+    $parts = explode(" ", $reqLine);
+    if (count($parts) < 2) { stream_close($client); continue; }
+    $method = $parts[0];
+    $target = $parts[1];
+
+    if ($method == "POST") {
+        $clen = 0;
+        $hlines = explode("\r\n", $head);
+        foreach ($hlines as $hl) {
+            $colon = strpos($hl, ":");
+            if ($colon === false) { continue; }
+            if (strtolower(trim(substr($hl, 0, $colon))) == "content-length") {
+                $clen = intval(trim(substr($hl, $colon + 1)));
+            }
+        }
+        $body = substr($body, 0, $clen);
+    }
+
+    if ($method == "GET" && ($target == "/" || $target == "/index")) {
+        send_index($client);
+    } elseif ($method == "GET" && strpos($target, "/search") === 0) {
+        $q = "";
+        $qm = strpos($target, "q=");
+        if ($qm !== false) { $q = urldecode(substr($target, $qm + 2)); }
+        send_search($client, $q);
+    } elseif ($method == "GET" && strpos($target, "/pkg/") === 0) {
+        send_package($client, substr($target, 5));
+    } elseif ($method == "POST" && $target == "/publish") {
+        handle_publish($client, $body);
+    } else {
+        send_response($client, 404, "Not Found", "text/plain", "unknown route\n");
+    }
+}

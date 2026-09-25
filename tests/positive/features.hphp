@@ -1,0 +1,72 @@
+// features.hphp — broad positive test of HolyPHP features
+// strings + interpolation
+$name = "World";
+echo "Hello, {$name}!\n";
+
+// integer math and precedence
+$x = 2 + 3 * 4 - 6 / 3;
+echo "math: {$x}\n";            // 10
+
+// concatenation with numbers (PHP '.')
+echo "n = " . 42 . "\n";
+
+// floats
+$pi = 3.5;
+echo "pi*2 = " . ($pi * 2) . "\n";
+
+// booleans
+$ok = true;
+if ($ok) { echo "ok is true\n"; }
+
+// while loop
+$i = 0;
+while ($i < 3) { $i += 1; }
+echo "while: {$i}\n";
+
+// for loop
+$total = 0;
+for ($j = 0; $j < 5; $j += 1) { $total += $j; }
+echo "for: {$total}\n";
+
+// recursion
+function fact(int $n): int {
+    if ($n <= 1) { return 1; }
+    return $n * fact($n - 1);
+}
+echo "fact(6) = " . fact(6) . "\n";
+
+// arrays + foreach
+$vals = [10, 20, 30];
+$s = 0;
+foreach ($vals as $v) { $s += $v; }
+echo "arr sum: {$s}\n";
+
+// map iteration
+$m = ["a" => 1, "b" => 2];
+foreach ($m as $k => $v2) {
+    echo "  {$k}={$v2}\n";
+}
+
+// string functions
+echo strlen("holy") . "\n";
+echo strtoupper("quiet") . "\n";
+echo str_repeat("ab", 3) . "\n";
+
+// ternary
+$age = 20;
+echo ($age >= 18 ? "adult" : "minor") . "\n";
+
+// closure
+$inc = function(int $n) use ($age): int { return $n + $age; };
+echo "inc: " . $inc(1) . "\n";
+
+// class
+class Greeter {
+    pub string $who = "";
+    pub function __construct(string $w) { $this->who = $w; }
+    pub function hi(): string { return "Hi, {$this->who}"; }
+}
+$g = new Greeter("PHP");
+echo $g->hi() . "\n";
+
+echo "all good\n";

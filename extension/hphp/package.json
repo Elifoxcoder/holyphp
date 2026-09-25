@@ -1,0 +1,70 @@
+{
+  "name": "holyphp",
+  "displayName": "HolyPHP Language Support",
+  "description": "HolyPHP (.hphp) — syntax highlighting, completions, hover, and live diagnostics via the hphp compiler. PHP-flavored, low-level, memory-safe.",
+  "version": "0.1.0",
+  "publisher": "holyphp",
+  "license": "MIT",
+  "private": true,
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Programming Languages"],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "holyphp",
+        "aliases": ["HolyPHP", "hphp"],
+        "extensions": [".hphp"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "holyphp",
+        "scopeName": "source.hphp",
+        "path": "./syntaxes/hphp.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "holyphp",
+        "path": "./snippets/hphp.json"
+      }
+    ],
+    "configuration": {
+      "title": "HolyPHP",
+      "properties": {
+        "holyphp.hphpPath": {
+          "type": "string",
+          "default": "hphp",
+          "description": "Path to the hphp compiler binary (used for `hphp check`)."
+        },
+        "holyphp.diagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run `hphp check` on save/change and show errors as squiggles."
+        },
+        "holyphp.diagnosticsMode": {
+          "type": "string",
+          "enum": ["save", "type"],
+          "default": "save",
+          "description": "Run diagnostics on every save or on every keystroke (with debounce)."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "holyphp.check",
+        "title": "HolyPHP: Check current file"
+      },
+      {
+        "command": "holyphp.run",
+        "title": "HolyPHP: Run current file"
+      }
+    ],
+    "keybindings": [
+      { "command": "holyphp.run", "key": "ctrl+f5", "when": "editorLangId == holYphp" }
+    ]
+  }
+}

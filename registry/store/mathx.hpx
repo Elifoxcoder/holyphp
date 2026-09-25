@@ -1,0 +1,11 @@
+hphp.json 89
+{"name":"mathx","version":"1.0.0","description":"tiny math helpers","main":"mathx.hphp"}
+mathx.hphp 214
+/* mathx — tiny math helpers */
+function clampi(int $v, int $lo, int $hi): int {
+    if ($v < $lo) { return $lo; }
+    if ($v > $hi) { return $hi; }
+    return $v;
+}
+function sqi(int $v): int { return $v * $v; }
+HPHX1

@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Built-in functions — HolyPHP</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<script src="assets/nav.html.js"></script>
+<main>
+  <h1>Built-in <span class="ph">functions</span></h1>
+  <p class="lead">235 functions compiled into the language, generated from the
+  compiler's own table. PHP names wherever PHP has them.</p>
+  <input id="bi-search" type="search" placeholder="Filter functions…  (try: array, str, time)" autocomplete="off">
+  <h2 class="bi-group">Strings <span class="muted small">(51)</span></h2>
+<div class="bi-row" data-name="strlen"><div class="sig"><span class="n">strlen</span>(mixed $v): <span class="r">int</span></div><div class="d">string|array → int</div></div>
+<div class="bi-row" data-name="strtoupper"><div class="sig"><span class="n">strtoupper</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="strtolower"><div class="sig"><span class="n">strtolower</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="ucfirst"><div class="sig"><span class="n">ucfirst</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="lcfirst"><div class="sig"><span class="n">lcfirst</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="trim"><div class="sig"><span class="n">trim</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="ltrim"><div class="sig"><span class="n">ltrim</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="rtrim"><div class="sig"><span class="n">rtrim</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="strrev"><div class="sig"><span class="n">strrev</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="str_pad"><div class="sig"><span class="n">str_pad</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="str_replace"><div class="sig"><span class="n">str_replace</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="substr"><div class="sig"><span class="n">substr</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="strstr"><div class="sig"><span class="n">strstr</span>(string $haystack, string $needle): <span class="r">string</span></div><div class="d">(string, string) → string</div></div>
+<div class="bi-row" data-name="strchr"><div class="sig"><span class="n">strchr</span>(string $haystack, string $needle): <span class="r">string</span></div><div class="d">(string, string) → string</div></div>
+<div class="bi-row" data-name="strpos"><div class="sig"><span class="n">strpos</span>(string $haystack, string $needle): <span class="r">int</span></div><div class="d">(string, string) → string</div></div>
+<div class="bi-row" data-name="str_contains"><div class="sig"><span class="n">str_contains</span>(string $haystack, string $needle): <span class="r">bool</span></div><div class="d">(string, string) → string</div></div>
+<div class="bi-row" data-name="str_starts_with"><div class="sig"><span class="n">str_starts_with</span>(string $haystack, string $needle): <span class="r">bool</span></div><div class="d">(string, string) → string</div></div>
+<div class="bi-row" data-name="str_ends_with"><div class="sig"><span class="n">str_ends_with</span>(string $haystack, string $needle): <span class="r">bool</span></div><div class="d">(string, string) → string</div></div>
+<div class="bi-row" data-name="strcmp"><div class="sig"><span class="n">strcmp</span>(string $a, string $b): <span class="r">int</span></div><div class="d">(string, string) → int</div></div>
+<div class="bi-row" data-name="strncmp"><div class="sig"><span class="n">strncmp</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="strncasecmp"><div class="sig"><span class="n">strncasecmp</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="strcasecmp"><div class="sig"><span class="n">strcasecmp</span>(string $a, string $b): <span class="r">int</span></div><div class="d">(string, string) → int</div></div>
+<div class="bi-row" data-name="implode"><div class="sig"><span class="n">implode</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="join"><div class="sig"><span class="n">join</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="nl2br"><div class="sig"><span class="n">nl2br</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="number_format"><div class="sig"><span class="n">number_format</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="urlencode"><div class="sig"><span class="n">urlencode</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="urldecode"><div class="sig"><span class="n">urldecode</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="htmlentities"><div class="sig"><span class="n">htmlentities</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="htmlspecialchars"><div class="sig"><span class="n">htmlspecialchars</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="sprintf"><div class="sig"><span class="n">sprintf</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="printf"><div class="sig"><span class="n">printf</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="vsprintf"><div class="sig"><span class="n">vsprintf</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ord"><div class="sig"><span class="n">ord</span>(string $s): <span class="r">int</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="bin2hex"><div class="sig"><span class="n">bin2hex</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="hex2bin"><div class="sig"><span class="n">hex2bin</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="ucwords"><div class="sig"><span class="n">ucwords</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="wordwrap"><div class="sig"><span class="n">wordwrap</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="similar_text"><div class="sig"><span class="n">similar_text</span>(string $haystack, string $needle): <span class="r">int</span></div><div class="d">(string, string) → string</div></div>
+<div class="bi-row" data-name="levenshtein"><div class="sig"><span class="n">levenshtein</span>(string $haystack, string $needle): <span class="r">int</span></div><div class="d">(string, string) → string</div></div>
+<div class="bi-row" data-name="is_string"><div class="sig"><span class="n">is_string</span>(mixed $number): <span class="r">bool</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="strval"><div class="sig"><span class="n">strval</span>(mixed $number): <span class="r">string</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="stream_socket_server"><div class="sig"><span class="n">stream_socket_server</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="stream_socket_client"><div class="sig"><span class="n">stream_socket_client</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="stream_socket_accept"><div class="sig"><span class="n">stream_socket_accept</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="stream_set_blocking"><div class="sig"><span class="n">stream_set_blocking</span>(...$args): <span class="r">bool</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="stream_recv"><div class="sig"><span class="n">stream_recv</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="stream_send"><div class="sig"><span class="n">stream_send</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="stream_eof"><div class="sig"><span class="n">stream_eof</span>(...$args): <span class="r">bool</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="stream_peer"><div class="sig"><span class="n">stream_peer</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="stream_close"><div class="sig"><span class="n">stream_close</span>(...$args): <span class="r">bool</span></div><div class="d">flexible signature</div></div>
+
+<h2 class="bi-group">Arrays <span class="muted small">(38)</span></h2>
+<div class="bi-row" data-name="count"><div class="sig"><span class="n">count</span>(mixed $v): <span class="r">int</span></div><div class="d">string|array → int</div></div>
+<div class="bi-row" data-name="sizeof"><div class="sig"><span class="n">sizeof</span>(mixed $v): <span class="r">int</span></div><div class="d">string|array → int</div></div>
+<div class="bi-row" data-name="array"><div class="sig"><span class="n">array</span>(...$values): <span class="r">mixed</span></div><div class="d">variadic → array</div></div>
+<div class="bi-row" data-name="array_keys"><div class="sig"><span class="n">array_keys</span>(array $a): <span class="r">mixed</span></div><div class="d">array → array (keys)</div></div>
+<div class="bi-row" data-name="array_values"><div class="sig"><span class="n">array_values</span>(array $a): <span class="r">mixed</span></div><div class="d">array → array (values)</div></div>
+<div class="bi-row" data-name="array_merge"><div class="sig"><span class="n">array_merge</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_slice"><div class="sig"><span class="n">array_slice</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_reverse"><div class="sig"><span class="n">array_reverse</span>(array $a): <span class="r">mixed</span></div><div class="d">array → array</div></div>
+<div class="bi-row" data-name="array_sum"><div class="sig"><span class="n">array_sum</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_product"><div class="sig"><span class="n">array_product</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_unique"><div class="sig"><span class="n">array_unique</span>(array $a): <span class="r">mixed</span></div><div class="d">array → array</div></div>
+<div class="bi-row" data-name="in_array"><div class="sig"><span class="n">in_array</span>(...$args): <span class="r">bool</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_key_exists"><div class="sig"><span class="n">array_key_exists</span>(...$args): <span class="r">bool</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="range"><div class="sig"><span class="n">range</span>(int $start, int $end): <span class="r">mixed</span></div><div class="d">(int, int) → array</div></div>
+<div class="bi-row" data-name="compact"><div class="sig"><span class="n">compact</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_map"><div class="sig"><span class="n">array_map</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_filter"><div class="sig"><span class="n">array_filter</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_reduce"><div class="sig"><span class="n">array_reduce</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_flip"><div class="sig"><span class="n">array_flip</span>(array $a): <span class="r">mixed</span></div><div class="d">array → array</div></div>
+<div class="bi-row" data-name="array_fill"><div class="sig"><span class="n">array_fill</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_combine"><div class="sig"><span class="n">array_combine</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_diff"><div class="sig"><span class="n">array_diff</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_intersect"><div class="sig"><span class="n">array_intersect</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_push"><div class="sig"><span class="n">array_push</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_pop"><div class="sig"><span class="n">array_pop</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_shift"><div class="sig"><span class="n">array_shift</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_unshift"><div class="sig"><span class="n">array_unshift</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="array_splice"><div class="sig"><span class="n">array_splice</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="shuffle"><div class="sig"><span class="n">shuffle</span>(...$args): <span class="r">bool</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="sort"><div class="sig"><span class="n">sort</span>(array &amp;$a): <span class="r">bool</span></div><div class="d">in-place sort</div></div>
+<div class="bi-row" data-name="rsort"><div class="sig"><span class="n">rsort</span>(array &amp;$a): <span class="r">bool</span></div><div class="d">in-place sort</div></div>
+<div class="bi-row" data-name="ksort"><div class="sig"><span class="n">ksort</span>(array &amp;$a): <span class="r">bool</span></div><div class="d">in-place sort</div></div>
+<div class="bi-row" data-name="krsort"><div class="sig"><span class="n">krsort</span>(array &amp;$a): <span class="r">bool</span></div><div class="d">in-place sort</div></div>
+<div class="bi-row" data-name="asort"><div class="sig"><span class="n">asort</span>(array &amp;$a): <span class="r">bool</span></div><div class="d">in-place sort</div></div>
+<div class="bi-row" data-name="array_search"><div class="sig"><span class="n">array_search</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="end"><div class="sig"><span class="n">end</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="reset"><div class="sig"><span class="n">reset</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="is_array"><div class="sig"><span class="n">is_array</span>(mixed $number): <span class="r">bool</span></div><div class="d">number → number</div></div>
+
+<h2 class="bi-group">Other <span class="muted small">(62)</span></h2>
+<div class="bi-row" data-name="chop"><div class="sig"><span class="n">chop</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="fgetc"><div class="sig"><span class="n">fgetc</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="M_PI"><div class="sig"><span class="n">M_PI</span>(...$args): <span class="r">float</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="lcg_value"><div class="sig"><span class="n">lcg_value</span>(...$args): <span class="r">float</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="doubleval"><div class="sig"><span class="n">doubleval</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="var_export"><div class="sig"><span class="n">var_export</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="getcwd"><div class="sig"><span class="n">getcwd</span>(): <span class="r">string</span></div><div class="d">no arguments</div></div>
+<div class="bi-row" data-name="bindec"><div class="sig"><span class="n">bindec</span>(string $s): <span class="r">int</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="octdec"><div class="sig"><span class="n">octdec</span>(string $s): <span class="r">int</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="hexdec"><div class="sig"><span class="n">hexdec</span>(string $s): <span class="r">int</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="sys_getloadavg"><div class="sig"><span class="n">sys_getloadavg</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="exit"><div class="sig"><span class="n">exit</span>(...$args): <span class="r">void</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="die"><div class="sig"><span class="n">die</span>(...$args): <span class="r">void</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_run_main"><div class="sig"><span class="n">ui_run_main</span>(): <span class="r">void</span></div><div class="d">no arguments</div></div>
+<div class="bi-row" data-name="ui_quit"><div class="sig"><span class="n">ui_quit</span>(): <span class="r">void</span></div><div class="d">no arguments</div></div>
+<div class="bi-row" data-name="ui_window"><div class="sig"><span class="n">ui_window</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_show"><div class="sig"><span class="n">ui_show</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_title"><div class="sig"><span class="n">ui_title</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_size"><div class="sig"><span class="n">ui_size</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_pos"><div class="sig"><span class="n">ui_pos</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_close"><div class="sig"><span class="n">ui_close</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_alive"><div class="sig"><span class="n">ui_alive</span>(...$args): <span class="r">bool</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_add"><div class="sig"><span class="n">ui_add</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_set"><div class="sig"><span class="n">ui_set</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_get"><div class="sig"><span class="n">ui_get</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_enable"><div class="sig"><span class="n">ui_enable</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_move"><div class="sig"><span class="n">ui_move</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_focus"><div class="sig"><span class="n">ui_focus</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_items"><div class="sig"><span class="n">ui_items</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_remove"><div class="sig"><span class="n">ui_remove</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_clear"><div class="sig"><span class="n">ui_clear</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_ctrl_show"><div class="sig"><span class="n">ui_ctrl_show</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_selected"><div class="sig"><span class="n">ui_selected</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_select"><div class="sig"><span class="n">ui_select</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_item_text"><div class="sig"><span class="n">ui_item_text</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_check_get"><div class="sig"><span class="n">ui_check_get</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_check_set"><div class="sig"><span class="n">ui_check_set</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_progress"><div class="sig"><span class="n">ui_progress</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_slider_get"><div class="sig"><span class="n">ui_slider_get</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_slider_set"><div class="sig"><span class="n">ui_slider_set</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_bg"><div class="sig"><span class="n">ui_bg</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_fg"><div class="sig"><span class="n">ui_fg</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_font"><div class="sig"><span class="n">ui_font</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_menu"><div class="sig"><span class="n">ui_menu</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_menu_item"><div class="sig"><span class="n">ui_menu_item</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_menu_sep"><div class="sig"><span class="n">ui_menu_sep</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_menu_check"><div class="sig"><span class="n">ui_menu_check</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_on"><div class="sig"><span class="n">ui_on</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_timer"><div class="sig"><span class="n">ui_timer</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_msg"><div class="sig"><span class="n">ui_msg</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_open_file"><div class="sig"><span class="n">ui_open_file</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_save_file"><div class="sig"><span class="n">ui_save_file</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_pick_folder"><div class="sig"><span class="n">ui_pick_folder</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_pick_color"><div class="sig"><span class="n">ui_pick_color</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ui_clip_set"><div class="sig"><span class="n">ui_clip_set</span>(string $s): <span class="r">int</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="ui_clip_get"><div class="sig"><span class="n">ui_clip_get</span>(): <span class="r">string</span></div><div class="d">no arguments</div></div>
+<div class="bi-row" data-name="free"><div class="sig"><span class="n">free</span>(...$args): <span class="r">void</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="memcpy"><div class="sig"><span class="n">memcpy</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="memset"><div class="sig"><span class="n">memset</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="ffi_load"><div class="sig"><span class="n">ffi_load</span>(string $s): <span class="r">mixed</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="ffi_call"><div class="sig"><span class="n">ffi_call</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="heap_dump"><div class="sig"><span class="n">heap_dump</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+
+<h2 class="bi-group">Types & vars <span class="muted small">(18)</span></h2>
+<div class="bi-row" data-name="unset"><div class="sig"><span class="n">unset</span>(...$args): <span class="r">void</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="json_encode"><div class="sig"><span class="n">json_encode</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="isset"><div class="sig"><span class="n">isset</span>(...$args): <span class="r">bool</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="is_int"><div class="sig"><span class="n">is_int</span>(mixed $number): <span class="r">bool</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="is_integer"><div class="sig"><span class="n">is_integer</span>(mixed $number): <span class="r">bool</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="is_float"><div class="sig"><span class="n">is_float</span>(mixed $number): <span class="r">bool</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="is_bool"><div class="sig"><span class="n">is_bool</span>(mixed $number): <span class="r">bool</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="is_null"><div class="sig"><span class="n">is_null</span>(mixed $number): <span class="r">bool</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="is_numeric"><div class="sig"><span class="n">is_numeric</span>(mixed $number): <span class="r">bool</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="intval"><div class="sig"><span class="n">intval</span>(mixed $number): <span class="r">int</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="floatval"><div class="sig"><span class="n">floatval</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="boolval"><div class="sig"><span class="n">boolval</span>(mixed $number): <span class="r">bool</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="gettype"><div class="sig"><span class="n">gettype</span>(mixed $number): <span class="r">string</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="var_dump"><div class="sig"><span class="n">var_dump</span>(...$args): <span class="r">void</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="print_r"><div class="sig"><span class="n">print_r</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="serialize"><div class="sig"><span class="n">serialize</span>(mixed $number): <span class="r">string</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="unserialize"><div class="sig"><span class="n">unserialize</span>(mixed $number): <span class="r">mixed</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="is_dir"><div class="sig"><span class="n">is_dir</span>(string $s): <span class="r">bool</span></div><div class="d">string → string</div></div>
+
+<h2 class="bi-group">Hash & encode <span class="muted small">(5)</span></h2>
+<div class="bi-row" data-name="md5"><div class="sig"><span class="n">md5</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="sha1"><div class="sig"><span class="n">sha1</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="crc32"><div class="sig"><span class="n">crc32</span>(string $s): <span class="r">int</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="base64_encode"><div class="sig"><span class="n">base64_encode</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="base64_decode"><div class="sig"><span class="n">base64_decode</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+
+<h2 class="bi-group">Math <span class="muted small">(33)</span></h2>
+<div class="bi-row" data-name="max"><div class="sig"><span class="n">max</span>(...$numbers): <span class="r">mixed</span></div><div class="d">variadic numeric</div></div>
+<div class="bi-row" data-name="min"><div class="sig"><span class="n">min</span>(...$numbers): <span class="r">mixed</span></div><div class="d">variadic numeric</div></div>
+<div class="bi-row" data-name="rand"><div class="sig"><span class="n">rand</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="mt_rand"><div class="sig"><span class="n">mt_rand</span>(...$args): <span class="r">float</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="srand"><div class="sig"><span class="n">srand</span>(...$args): <span class="r">void</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="mt_srand"><div class="sig"><span class="n">mt_srand</span>(...$args): <span class="r">void</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="random_int"><div class="sig"><span class="n">random_int</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="abs"><div class="sig"><span class="n">abs</span>(mixed $number): <span class="r">mixed</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="round"><div class="sig"><span class="n">round</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="floor"><div class="sig"><span class="n">floor</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="ceil"><div class="sig"><span class="n">ceil</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="sqrt"><div class="sig"><span class="n">sqrt</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="pow"><div class="sig"><span class="n">pow</span>(...$args): <span class="r">mixed</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="intdiv"><div class="sig"><span class="n">intdiv</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="fmod"><div class="sig"><span class="n">fmod</span>(...$args): <span class="r">float</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="sin"><div class="sig"><span class="n">sin</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="cos"><div class="sig"><span class="n">cos</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="tan"><div class="sig"><span class="n">tan</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="atan"><div class="sig"><span class="n">atan</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="atan2"><div class="sig"><span class="n">atan2</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="asin"><div class="sig"><span class="n">asin</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="acos"><div class="sig"><span class="n">acos</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="log"><div class="sig"><span class="n">log</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="log2"><div class="sig"><span class="n">log2</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="log10"><div class="sig"><span class="n">log10</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="exp"><div class="sig"><span class="n">exp</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="is_nan"><div class="sig"><span class="n">is_nan</span>(mixed $number): <span class="r">bool</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="is_finite"><div class="sig"><span class="n">is_finite</span>(mixed $number): <span class="r">bool</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="is_infinite"><div class="sig"><span class="n">is_infinite</span>(mixed $number): <span class="r">bool</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="pi"><div class="sig"><span class="n">pi</span>(...$args): <span class="r">float</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="deg2rad"><div class="sig"><span class="n">deg2rad</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="rad2deg"><div class="sig"><span class="n">rad2deg</span>(mixed $number): <span class="r">float</span></div><div class="d">number → number</div></div>
+<div class="bi-row" data-name="hypot"><div class="sig"><span class="n">hypot</span>(...$args): <span class="r">float</span></div><div class="d">flexible signature</div></div>
+
+<h2 class="bi-group">System & I/O <span class="muted small">(24)</span></h2>
+<div class="bi-row" data-name="readline"><div class="sig"><span class="n">readline</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="file_get_contents"><div class="sig"><span class="n">file_get_contents</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="file_put_contents"><div class="sig"><span class="n">file_put_contents</span>(string $haystack, string $needle): <span class="r">int</span></div><div class="d">(string, string) → string</div></div>
+<div class="bi-row" data-name="file_exists"><div class="sig"><span class="n">file_exists</span>(string $s): <span class="r">bool</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="filesize"><div class="sig"><span class="n">filesize</span>(string $s): <span class="r">int</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="mkdir"><div class="sig"><span class="n">mkdir</span>(string $s): <span class="r">bool</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="rmdir"><div class="sig"><span class="n">rmdir</span>(string $s): <span class="r">bool</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="unlink"><div class="sig"><span class="n">unlink</span>(string $s): <span class="r">bool</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="rename"><div class="sig"><span class="n">rename</span>(string $haystack, string $needle): <span class="r">bool</span></div><div class="d">(string, string) → string</div></div>
+<div class="bi-row" data-name="copy"><div class="sig"><span class="n">copy</span>(string $haystack, string $needle): <span class="r">bool</span></div><div class="d">(string, string) → string</div></div>
+<div class="bi-row" data-name="fgets"><div class="sig"><span class="n">fgets</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="fwrite"><div class="sig"><span class="n">fwrite</span>(string $haystack, string $needle): <span class="r">int</span></div><div class="d">(string, string) → string</div></div>
+<div class="bi-row" data-name="fopen"><div class="sig"><span class="n">fopen</span>(string $haystack, string $needle): <span class="r">mixed</span></div><div class="d">(string, string) → string</div></div>
+<div class="bi-row" data-name="fclose"><div class="sig"><span class="n">fclose</span>(string $s): <span class="r">bool</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="getenv"><div class="sig"><span class="n">getenv</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="putenv"><div class="sig"><span class="n">putenv</span>(string $s): <span class="r">bool</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="php_uname"><div class="sig"><span class="n">php_uname</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="phpversion"><div class="sig"><span class="n">phpversion</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="php_sapi_name"><div class="sig"><span class="n">php_sapi_name</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="memory_get_usage"><div class="sig"><span class="n">memory_get_usage</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="memory_get_peak_usage"><div class="sig"><span class="n">memory_get_peak_usage</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="gc_collect_cycles"><div class="sig"><span class="n">gc_collect_cycles</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="php_logo_guid"><div class="sig"><span class="n">php_logo_guid</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="php_sapi"><div class="sig"><span class="n">php_sapi</span>(...$args): <span class="r">string</span></div><div class="d">flexible signature</div></div>
+
+<h2 class="bi-group">Time <span class="muted small">(4)</span></h2>
+<div class="bi-row" data-name="microtime"><div class="sig"><span class="n">microtime</span>(...$args): <span class="r">float</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="hrtime"><div class="sig"><span class="n">hrtime</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+<div class="bi-row" data-name="date"><div class="sig"><span class="n">date</span>(string $s): <span class="r">string</span></div><div class="d">string → string</div></div>
+<div class="bi-row" data-name="time"><div class="sig"><span class="n">time</span>(...$args): <span class="r">int</span></div><div class="d">flexible signature</div></div>
+
+
+  <p class="small muted" id="bi-none" style="display:none">No functions match.</p>
+</main>
+</div>
+<script src="assets/site.js"></script>
+<script>
+const q = document.getElementById("bi-search");
+q.addEventListener("input", () => {
+  const s = q.value.toLowerCase();
+  let any = false;
+  document.querySelectorAll(".bi-row").forEach(r => {
+    const hit = r.dataset.name.toLowerCase().includes(s) || r.textContent.toLowerCase().includes(s);
+    r.style.display = hit ? "" : "none";
+    if (hit) any = true;
+  });
+  document.querySelectorAll(".bi-group").forEach(h => {
+    let vis = 0;
+    let el = h.nextElementSibling;
+    while (el && !el.classList.contains("bi-group")) {
+      if (el.classList.contains("bi-row") && el.style.display !== "none") vis++;
+      el = el.nextElementSibling;
+    }
+    h.style.display = vis ? "" : "none";
+  });
+  document.getElementById("bi-none").style.display = any ? "none" : "";
+});
+</script>
+</body>
+</html>

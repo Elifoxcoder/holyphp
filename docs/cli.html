@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hphp CLI — HolyPHP</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<script src="assets/nav.html.js"></script>
+<main>
+  <h1><span class="ph">hphp</span> command line</h1>
+  <p class="lead">One binary does everything: check, run, build. The runtime and the whole
+  standard library are embedded inside <code>hphp.exe</code> — nothing else to install.</p>
+
+  <h2>Commands</h2>
+  <table>
+    <tr><th>Command</th><th>What it does</th></tr>
+    <tr><td><code>hphp check file.hphp</code></td><td>Type + borrow check only. Fastest feedback loop; prints <code>OK (types and borrows check)</code> or precise diagnostics with line numbers.</td></tr>
+    <tr><td><code>hphp run file.hphp</code></td><td>Compile to a temp binary and execute it. Perfect for scripts and quick iteration.</td></tr>
+    <tr><td><code>hphp build file.hphp -o app.exe</code></td><td>Produce a standalone executable. Ships with the runtime linked in — no dependencies on the target machine.</td></tr>
+    <tr><td><code>hphp emit file.hphp</code></td><td>Print the generated C (for the curious and the debugger-inclined).</td></tr>
+    <tr><td><code>hphp pkg ...</code></td><td>Package manager: <code>init</code>, <code>check</code>, <code>pack</code>, <code>publish</code>, <code>install</code>, <code>remove</code>, <code>search</code>. See the <a href="pkg.html">Packages</a> page.</td></tr>
+  </table>
+
+  <h2>Environment variables</h2>
+  <table>
+    <tr><th>Variable</th><th>Effect</th></tr>
+    <tr><td><code>HPHP_VERBOSE=1</code></td><td>Show the backend compile/link commands and diagnostics detail.</td></tr>
+    <tr><td><code>HPHP_KEEP_BIN=1</code></td><td>Keep the intermediate build directory (prog.c, objects) for inspection.</td></tr>
+  </table>
+
+  <h2>Typical workflow</h2>
+<pre><code class="hphp">hphp check app.hphp          # instant: types + borrows
+hphp run app.hphp            # quick run
+hphp build app.hphp -o app.exe   # ship it</code></pre>
+
+  <h2>Editor support</h2>
+  <p>A VS Code extension lives in <code>extension/hphp</code>: syntax highlighting,
+  completions for all 235 builtins (generated from the compiler's own table), hover
+  signatures, and live diagnostics that run <code>hphp check</code> as you type.</p>
+
+  <h2>Under the hood</h2>
+  <p>The pipeline is: <b>lexer &rarr; recursive-descent parser &rarr; semantic analysis
+  (types, borrows, ownership) &rarr; C codegen &rarr; cc + ld</b>. The runtime
+  (values, strings, COW arrays, exceptions, Win32 UI, sockets) is embedded in the compiler
+  binary and extracted at build time, compiled with your local gcc, and linked statically —
+  which is why output exes are a few hundred KB and start instantly.</p>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>
