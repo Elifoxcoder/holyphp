@@ -955,6 +955,29 @@ static const Type *check_expr(Scope *sc, Expr *e) {
              * level, so a top-level read must still resolve to it. */
             v = program_global_find(e->u.var.name);
         }
+        if (!v && e->u.var.name && strncmp(e->u.var.name, "PHP_", 4) == 0) {
+            /* PHP predefined constants: PHP_INT_MAX, PHP_EOL, PHP_OS, ... */
+            const char *n = e->u.var.name;
+            if (n == intern("PHP_INT_SIZE") || n == intern("PHP_INT_DIGITS") ||
+                n == intern("PHP_INT_MAX") || n == intern("PHP_INT_MIN") ||
+                n == intern("PHP_ROUND_HALF_UP") || n == intern("PHP_ROUND_HALF_DOWN") ||
+                n == intern("PHP_ROUND_HALF_EVEN") || n == intern("PHP_ROUND_HALF_ODD") ||
+                n == intern("PHP_FILE_APPEND") || n == intern("PHP_FILE_IGNORE_NEW_LINES") ||
+                n == intern("PHP_FILE_SKIP_EMPTY_LINES") || n == intern("PHP_FILE_USE_INCLUDE_PATH"))
+                e->type = ty_int;
+            else if (n == intern("PHP_FLOAT_EPSILON") || n == intern("PHP_EULER") ||
+                     n == intern("PHP_PI"))
+                e->type = ty_float;
+            else if (n == intern("PHP_OS") || n == intern("PHP_EOL") ||
+                     n == intern("PHP_VERSION") || n == intern("PHP_SAPI") ||
+                     n == intern("PHP_UNAME"))
+                e->type = ty_string;
+            else if (n == intern("PHP_TRUE") || n == intern("PHP_FALSE") || n == intern("PHP_NULL"))
+                e->type = ty_mixed;
+            else
+                sema_error(&e->tok, "undefined constant %s", n);
+            return e->type;
+        }
         if (!v) {
             sema_error(&e->tok, "undefined variable $%s (assign it a value first)", e->u.var.name);
             e->type = ty_mixed;
@@ -1239,6 +1262,28 @@ static const Type *check_expr(Scope *sc, Expr *e) {
     }
     case EX_ASSIGN: {
         Expr *tgt = e->u.assign.target;
+        /* list destructuring "[$a, $b] = expr;" / "[$k => $v] = expr;" */
+        if (tgt->kind == EX_ARRAY_LIT && e->u.assign.op.kind == T_ASSIGN) {
+            const Type *st = e->u.assign.value ? check_expr(sc, e->u.assign.value) : ty_mixed;
+            bool keyed = tgt->u.map.keys.len > 0;
+            size_t n = keyed ? tgt->u.map.vals.len : tgt->u.arr.elems.len;
+            for (size_t i = 0; i < n; i++) {
+                Expr *slot = keyed ? (Expr *)tgt->u.map.vals.items[i]
+                                   : (Expr *)tgt->u.arr.elems.items[i];
+                if (!slot) continue;   /* skip slot: [$a, , $c] */
+                if (slot->kind != EX_VAR)
+                    sema_error(&slot->tok, "destructuring target must be a variable");
+                else if (!scope_find(sc, slot->u.var.name)) {
+                    VarSym *sv = scope_declare(sc, slot->u.var.name, ty_mixed, slot->tok, true);
+                    sv->is_auto = true;
+                    slot->u.var.sym = sv;
+                } else {
+                    slot->u.var.sym = scope_find(sc, slot->u.var.name);
+                }
+            }
+            e->type = (st && (st->kind == TY_ARRAY || st->kind == TY_VEC)) ? st : ty_mixed;
+            return e->type;
+        }
         const Type *vt = e->u.assign.value ? check_expr(sc, e->u.assign.value) : ty_mixed;
         /* determine target type & mutability */
         const Type *tt = NULL;

@@ -1295,6 +1295,39 @@ static Expr *parse_closure_after_fn(Parser *p) {
     return e;
 }
 
+/* '[' array literal; a bare comma ("[$a, , $c]") is an empty destructuring
+ * slot, represented as a NULL entry in elems. */
+static Expr *parse_primary_lbracket(Parser *p) {
+    const Token *t = ts_peek(p->ts);
+    ts_advance(p->ts);
+    Expr *e = expr_new(EX_ARRAY_LIT, *t);
+    skip_nl(p);
+    while (!ts_check(p->ts, T_RBRACKET) && !ts_check(p->ts, T_EOF)) {
+        skip_nl(p);
+        if (ts_check(p->ts, T_COMMA)) {
+            /* empty slot: list(,,$c) style skip position */
+            ptrvec_push(&e->u.arr.elems, NULL);
+            ts_advance(p->ts);
+            skip_nl(p);
+            continue;
+        }
+        Expr *k = parse_ternary(p);
+        if (ts_match(p->ts, T_DOUBLEARROW)) {
+            Expr *v = parse_ternary(p);
+            ptrvec_push(&e->u.map.keys, k);
+            ptrvec_push(&e->u.map.vals, v);
+        } else {
+            ptrvec_push(&e->u.arr.elems, k);
+        }
+        skip_nl(p);
+        if (!ts_match(p->ts, T_COMMA)) break;
+        skip_nl(p);
+    }
+    ts_expect(p->ts, T_RBRACKET, "']' to close literal");
+    skip_nl(p);
+    return e;
+}
+
 static Expr *parse_primary(Parser *p) {
     const Token *t = ts_peek(p->ts);
     switch (t->kind) {
@@ -1421,28 +1454,8 @@ static Expr *parse_primary(Parser *p) {
         Expr *e = expr_new(EX_TUPLE_LIT, *t); /* empty () — should not happen */
         return e;
     }
-    case T_LBRACKET: {
-        ts_advance(p->ts);
-        Expr *e = expr_new(EX_ARRAY_LIT, *t);
-        skip_nl(p);
-        while (!ts_check(p->ts, T_RBRACKET) && !ts_check(p->ts, T_EOF)) {
-            skip_nl(p);
-            Expr *k = parse_ternary(p);
-            if (ts_match(p->ts, T_DOUBLEARROW)) {
-                Expr *v = parse_ternary(p);
-                ptrvec_push(&e->u.map.keys, k);
-                ptrvec_push(&e->u.map.vals, v);
-            } else {
-                ptrvec_push(&e->u.arr.elems, k);
-            }
-            skip_nl(p);
-            if (!ts_match(p->ts, T_COMMA)) break;
-            skip_nl(p);
-        }
-        ts_expect(p->ts, T_RBRACKET, "']' to close literal");
-        skip_nl(p);
-        return e;
-    }
+    case T_LBRACKET:
+        return parse_primary_lbracket(p);
     case T_IDENT: {
         /* function call, class name, or plain identifier */
         const Token *nm = ts_advance(p->ts);
@@ -1459,6 +1472,12 @@ static Expr *parse_primary(Parser *p) {
         }
         Expr *e = expr_new(EX_VAR, *nm);
         e->u.var.name = name;
+        return e;
+    }
+    case T_LBRACKET: {
+        /* array literal, or destructuring when later followed by '='
+         * (checked in parse_assign's default branch) */
+        Expr *e = parse_primary_lbracket(p);
         return e;
     }
     default:

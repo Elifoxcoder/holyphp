@@ -35,6 +35,7 @@ struct Codegen {
     int helper_depth;     /* try-helper nesting level (0 = normal code) */
     Buf try_bufs[8];      /* file-scope try-helper defs, per nesting level */
     int loop_depth;       /* loop/switch nesting (break/continue legality) */
+    Expr *cur_assign;     /* assignment currently emitted (destructuring) */
 };
 
 static void emit_stmt(Codegen *g, Stmt *s);
@@ -1993,6 +1994,16 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         break;
     }
     case ST_EXPR: {
+        /* PHP list destructuring expands into a statement block */
+        if (s->u.expr.expr->kind == EX_ASSIGN &&
+            s->u.expr.expr->u.assign.target->kind == EX_ARRAY_LIT &&
+            s->u.expr.expr->u.assign.op.kind == T_ASSIGN) {
+            Expr *outer = g->cur_assign;
+            g->cur_assign = s->u.expr.expr;
+            emit_list_destructure(g, s->u.expr.expr);
+            g->cur_assign = outer;
+            break;
+        }
         Buf e;
         buf_init(&e);
         emit_expr(g, s->u.expr.expr, &e);
