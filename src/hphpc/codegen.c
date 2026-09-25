@@ -1192,6 +1192,69 @@ static void emit_closure(Codegen *g, AstFn *fn) {
     (void)g;
 }
 
+static void emit_assign(Codegen *g, Expr *e, Buf *dst);
+
+/* PHP list destructuring: [$a, , $c] = expr;  /  ["k" => $v] = expr;
+ * The source is evaluated once into a hidden hval temp, each pattern slot
+ * becomes one assignment (array values are cloned: PHP value semantics). */
+static void emit_list_destructure(Codegen *g, Expr *e) {
+    Expr *pat = e->u.assign.target;
+    bool keyed = pat->u.map.keys.len > 0;
+    Buf src;
+    buf_init(&src);
+    emit_expr(g, e->u.assign.value, &src);
+    const char *sv = buf_take(&src);
+    const Type *st = e->u.assign.value->type;
+    bool sarr = st && (st->kind == TY_ARRAY || st->kind == TY_VEC);
+    line(g, "{");
+    g->depth++;
+    if (sarr) line(g, "hval _src = hp_of_arr(%s);", sv);
+    else line(g, "hval _src = %s;", sv);
+    free((void *)sv);
+    if (keyed) line(g, "hval _ks = hp_arr_keys(_src.u.a);");
+    size_t n = keyed ? pat->u.map.vals.len : pat->u.arr.elems.len;
+    for (size_t i = 0; i < n; i++) {
+        Expr *tgt = keyed ? (Expr *)pat->u.map.vals.items[i]
+                          : (Expr *)pat->u.arr.elems.items[i];
+        if (!tgt) continue;   /* [$a, , $c] skip slot */
+        char tmp[24];
+        snprintf(tmp, sizeof tmp, "_v%zu", i);
+        if (keyed) {
+            Expr *k = (Expr *)pat->u.map.keys.items[i];
+            Buf kb;
+            buf_init(&kb);
+            to_hval(g, k, &kb);
+            line(g, "hval %s = hp_arr_get(_src.u.a, %s);", tmp, buf_take(&kb));
+        } else {
+            line(g, "hval %s = ((size_t)%zu < hp_arr_len(_src.u.a)) ? _src.u.a->vals[%zu] : hp_null;",
+                 tmp, i, i);
+        }
+        if (tgt->kind != EX_VAR)
+            fatal("%s:%zu:%zu: unsupported destructuring target (only $var)",
+                  tgt->tok.file ? tgt->tok.file : "?", tgt->tok.line, tgt->tok.col);
+        const char *name = var_name(tgt->u.var.sym);
+        VarSym *sym = (VarSym *)tgt->u.var.sym;
+        bool box = sym && (sym->captured_byref || sym->is_program_global);
+        if (sym && sym->captured_byref) name = fmt("(*%s)", name);
+        const Type *tt = sym ? sym->type : NULL;
+        if (box)
+            line(g, "%s = %s;", name, tmp);
+        else if (tt && (tt->kind == TY_ARRAY || tt->kind == TY_VEC ||
+                        tt->kind == TY_MAP || tt->kind == TY_SET))
+            line(g, "%s = (%s.tag == HV_ARR ? hp_arr_clone(%s.u.a) : NULL);", name, tmp, tmp);
+        else if (tt && tt->kind == TY_STRING)
+            line(g, "%s = hp_val_to_str(%s);", name, tmp);
+        else if (tt && (tt->kind == TY_FLOAT || tt->kind == TY_F32 || tt->kind == TY_F64))
+            line(g, "%s = hp_val_to_float(%s);", name, tmp);
+        else if (tt && (type_is_integral(tt->kind) || tt->kind == TY_BOOL))
+            line(g, "%s = hp_val_to_int(%s);", name, tmp);
+        else
+            line(g, "%s = %s;", name, tmp);
+    }
+    g->depth--;
+    line(g, "}");
+}
+
 static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
     Expr *tgt = e->u.assign.target;
     TokKind op = e->u.assign.op.kind;
@@ -1207,6 +1270,24 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
                 /* typed declaration without initializer: "$x: int;" */
                 const Type *zt = tgt->u.var.sym ? ((VarSym *)tgt->u.var.sym)->type : NULL;
                 buf_printf(dst, "(%s = %s)", name, zero_init_of(zt));
+                return;
+            }
+            if (op == T_QQASSIGN) {
+                /* PHP ??= : assign only when the target was null; the value
+                 * expression is only evaluated in the null branch */
+                Buf v;
+                buf_init(&v);
+                emit_expr(g, e->u.assign.value, &v);
+                const char *vs = buf_take(&v);
+                const Type *vt2 = e->u.assign.value->type;
+                bool arrv = vt2 && (vt2->kind == TY_ARRAY || vt2->kind == TY_VEC);
+                if (tgt_is_box)
+                    buf_printf(dst, "((%s.tag == HV_NULL) ? (%s = hv(%s)) : (%s))", name, name, vs, name);
+                else if (arrv)
+                    buf_printf(dst, "((%s == NULL) ? (%s = %s) : (%s))", name, name, vs, name);
+                else
+                    buf_printf(dst, "((%s.tag == HV_NULL) ? (%s = hv(%s)) : (%s))", name, name, vs, name);
+                free((void *)vs);
                 return;
             }
             Buf v;
