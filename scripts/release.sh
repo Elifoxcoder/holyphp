@@ -136,7 +136,12 @@ mkdir -p "$MANIFEST_DIR"
 MANIFEST_SCHEMA_VERSION="${HPHP_MANIFEST_SCHEMA_VERSION:-1.12.0}"
 SCHEMA="$MANIFEST_SCHEMA_VERSION"
 
-cat > "$MANIFEST_DIR/HolyPHP.yaml" <<EOF
+# Manifest filenames must be the PackageIdentifier plus the manifest type, or
+# the winget-pkgs pipeline rejects the submission with a Manifest-Path-Error.
+# e.g. HolyPHP.HolyPHP.installer.yaml, not HolyPHP.installer.yaml.
+ID="HolyPHP.HolyPHP"
+
+cat > "$MANIFEST_DIR/$ID.yaml" <<EOF
 # yaml-language-server: \$schema=https://aka.ms/winget-manifest.version.$SCHEMA.schema.json
 
 PackageIdentifier: HolyPHP.HolyPHP
@@ -146,7 +151,7 @@ ManifestType: version
 ManifestVersion: $SCHEMA
 EOF
 
-cat > "$MANIFEST_DIR/HolyPHP.locale.en-US.yaml" <<EOF
+cat > "$MANIFEST_DIR/$ID.locale.en-US.yaml" <<EOF
 # yaml-language-server: \$schema=https://aka.ms/winget-manifest.defaultLocale.$SCHEMA.schema.json
 
 PackageIdentifier: HolyPHP.HolyPHP
@@ -172,7 +177,7 @@ ManifestType: defaultLocale
 ManifestVersion: $SCHEMA
 EOF
 
-cat > "$MANIFEST_DIR/HolyPHP.installer.yaml" <<EOF
+cat > "$MANIFEST_DIR/$ID.installer.yaml" <<EOF
 # yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.$SCHEMA.schema.json
 
 PackageIdentifier: HolyPHP.HolyPHP
@@ -200,6 +205,16 @@ ManifestVersion: $SCHEMA
 EOF
 
 echo "==> 7/7 validating the manifest"
+# Cheap structural checks first: these are the two mistakes the winget-pkgs
+# pipeline rejects, and `winget validate` does not catch either one.
+for f in "$ID.yaml" "$ID.locale.en-US.yaml" "$ID.installer.yaml"; do
+  [[ -f "$MANIFEST_DIR/$f" ]] || die "manifest file missing: $MANIFEST_DIR/$f (must be named after PackageIdentifier)"
+done
+grep -q "^PackageIdentifier: $ID$" "$MANIFEST_DIR/$ID.yaml" \
+  || die "PackageIdentifier in the version manifest must be exactly '$ID'"
+grep -q 'ReleaseDate: "' "$MANIFEST_DIR/$ID.installer.yaml" \
+  || die "ReleaseDate must be quoted so YAML does not parse it as a date"
+echo "    filenames and quoting ok"
 if command -v winget >/dev/null 2>&1; then
   flat=$(mktemp -d)
   cp "$MANIFEST_DIR"/*.yaml "$flat"/
