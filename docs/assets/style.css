@@ -144,6 +144,15 @@ td code { white-space: nowrap; }
 .dl-btn.linux:hover { border-color: var(--ember); color: var(--fg); background: var(--code-bg); }
 .dl-btn.linux b { color: var(--fg); }
 
+/* ---------- winget block ---------- */
+.winget {
+  margin: 22px 0 4px; padding: 14px 16px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--code-bg);
+}
+.winget-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.winget-head b { color: var(--ember); font-size: 15px; }
+.winget-head span { color: var(--dim); font-size: 13px; }
+
 /* ---------- syntax highlighting (hphp) ---------- */
 .tok-kw { color: var(--purple-hi); }
 .tok-fn { color: #61afef; }

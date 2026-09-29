@@ -32,12 +32,12 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#define HPHP_VERSION "0.2.0"
+#define HPHP_VERSION "1.0.1"
 
 /* Used by install/search/publish when the user has not configured a registry
  * (no registry_url file, no $HPHP_REGISTRY). Hosted alongside the project;
  * see registry/README.md. */
-#define PKG_DEFAULT_REGISTRY "http://registry.holyphp.org:8930"
+#define PKG_DEFAULT_REGISTRY "http://hphp.ch:8930"
 
 #include "runtime_embed.h" /* the runtime, embedded in this binary */
 #include "pkgcore.h"

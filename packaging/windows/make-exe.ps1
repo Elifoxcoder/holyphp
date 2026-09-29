@@ -29,20 +29,29 @@ $out    = Join-Path $PSScriptRoot 'out'
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
 # ---------------------------------------------------------------- 1. payload
+# Always re-stage from the repo root when a freshly built compiler is there.
+# This used to copy only when the staged file was missing, so every build
+# after the first silently packaged a STALE hphp.exe -- the installer shipped
+# whatever the stage dir happened to hold, not what was just compiled.
 $toolchain = Join-Path $stage 'hphp\hphp.exe'
-if (-not (Test-Path $toolchain)) {
-    if (Test-Path (Join-Path $root 'hphp.exe')) {
-        Write-Host 'staging hphp.exe from repo root'
-    } else {
-        Write-Host 'hphp.exe not found -- building it first (bash scripts/build.sh)'
-        Push-Location $root
-        try { bash scripts/build.sh } finally { Pop-Location }
-        if (-not (Test-Path (Join-Path $root 'hphp.exe'))) {
-            throw 'build did not produce hphp.exe at the repo root'
-        }
+if (-not (Test-Path (Join-Path $root 'hphp.exe'))) {
+    Write-Host 'hphp.exe not found -- building it first (bash scripts/build.sh)'
+    Push-Location $root
+    try { bash scripts/build.sh } finally { Pop-Location }
+    if (-not (Test-Path (Join-Path $root 'hphp.exe'))) {
+        throw 'build did not produce hphp.exe at the repo root'
     }
-    New-Item -ItemType Directory -Force -Path (Join-Path $stage 'hphp') | Out-Null
-    Copy-Item -Force (Join-Path $root 'hphp.exe') $toolchain
+}
+New-Item -ItemType Directory -Force -Path (Join-Path $stage 'hphp') | Out-Null
+Write-Host 'staging hphp.exe from repo root'
+Copy-Item -Force (Join-Path $root 'hphp.exe') $toolchain
+
+# Guard against exactly the regression above: the staged payload must match
+# the freshly built compiler, otherwise the installer embeds a stale binary.
+$builtHash  = (Get-FileHash (Join-Path $root 'hphp.exe') -Algorithm SHA256).Hash
+$stagedHash = (Get-FileHash $toolchain -Algorithm SHA256).Hash
+if ($builtHash -ne $stagedHash) {
+    throw "staged hphp.exe does not match the build ($stagedHash != $builtHash)"
 }
 
 # ------------------------------------------------------------- 2. find ISCC

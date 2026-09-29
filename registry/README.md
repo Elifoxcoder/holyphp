@@ -23,7 +23,7 @@ hphp pkg install websocket                 # then install away
 hphp pkg search
 ```
 
-The public community registry runs at `http://91.216.248.93:8930` and is the
+The public community registry runs at `http://hphp.ch:8930` and is the
 compiled-in default of the released compilers — `hphp pkg install thread`
 works with no configuration at all.
 
