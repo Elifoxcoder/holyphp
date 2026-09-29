@@ -5,1645 +5,2135 @@
    "name": "strlen",
    "sig": "strlen(mixed $v): int",
    "args": 1,
-   "desc": "string|array → int",
+   "desc": "Length of a string in bytes (not characters). For arrays use count().",
    "unsafe": false
   },
   {
    "name": "count",
    "sig": "count(mixed $v): int",
    "args": 1,
-   "desc": "string|array → int",
+   "desc": "Number of elements in an array, or length of a string. Aliased by sizeof().",
    "unsafe": false
   },
   {
    "name": "sizeof",
    "sig": "sizeof(mixed $v): int",
    "args": 1,
-   "desc": "string|array → int",
+   "desc": "Alias of count(): elements in an array, bytes in a string.",
    "unsafe": false
   },
   {
    "name": "strtoupper",
    "sig": "strtoupper(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Converts every ASCII letter in the string to uppercase.",
    "unsafe": false
   },
   {
    "name": "strtolower",
    "sig": "strtolower(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Converts every ASCII letter in the string to lowercase.",
    "unsafe": false
   },
   {
    "name": "ucfirst",
    "sig": "ucfirst(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Uppercases the first character of the string, leaves the rest untouched.",
    "unsafe": false
   },
   {
    "name": "lcfirst",
    "sig": "lcfirst(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Lowercases the first character of the string, leaves the rest untouched.",
    "unsafe": false
   },
   {
    "name": "trim",
    "sig": "trim(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Strips leading and trailing whitespace (space, tab, newline, CR, NUL).",
    "unsafe": false
   },
   {
    "name": "ltrim",
    "sig": "ltrim(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Strips leading whitespace only. Optional second argument: character list to strip.",
    "unsafe": false
   },
   {
    "name": "rtrim",
    "sig": "rtrim(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Strips trailing whitespace only. Alias: chop(). Optional second argument: character list.",
    "unsafe": false
   },
   {
    "name": "chop",
    "sig": "chop(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Alias of rtrim(): strips trailing whitespace.",
    "unsafe": false
   },
   {
    "name": "strrev",
    "sig": "strrev(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Reverses the string byte by byte.",
+   "unsafe": false
+  },
+  {
+   "name": "str_repeat",
+   "sig": "str_repeat(int $times, string $s): string",
+   "args": 2,
+   "desc": "Repeats the string n times: str_repeat(\"ab\", 3) -> \"ababab\".",
    "unsafe": false
   },
   {
    "name": "str_pad",
    "sig": "str_pad(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Pads the string to the given length with a pad string (default \" \"), repeated on the right.",
    "unsafe": false
   },
   {
    "name": "str_replace",
    "sig": "str_replace(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "str_replace($search, $replace, $subject) — replaces every occurrence of $search in $subject.",
    "unsafe": false
   },
   {
    "name": "substr",
    "sig": "substr(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "substr($s, $start[, $len]) — extracts up to $len bytes starting at $start. Negative $start counts from the end; omitted $len means \"to the end\".",
    "unsafe": false
   },
   {
    "name": "strstr",
    "sig": "strstr(string $haystack, string $needle): string",
    "args": 2,
-   "desc": "(string, string) → string",
+   "desc": "Returns the part of $haystack from the first occurrence of $needle to the end, or false if not found.",
    "unsafe": false
   },
   {
    "name": "strchr",
    "sig": "strchr(string $haystack, string $needle): string",
    "args": 2,
-   "desc": "(string, string) → string",
+   "desc": "Alias of strstr().",
    "unsafe": false
   },
   {
    "name": "strpos",
-   "sig": "strpos(string $haystack, string $needle): int",
-   "args": 2,
-   "desc": "(string, string) → string",
+   "sig": "strpos(...$args): mixed",
+   "args": -2,
+   "desc": "Byte position of the first occurrence of $needle in $haystack, or false when absent. Use !== false to test.",
    "unsafe": false
   },
   {
    "name": "str_contains",
    "sig": "str_contains(string $haystack, string $needle): bool",
    "args": 2,
-   "desc": "(string, string) → string",
+   "desc": "true when $needle occurs anywhere in $haystack (PHP 8 style, no position needed).",
    "unsafe": false
   },
   {
    "name": "str_starts_with",
    "sig": "str_starts_with(string $haystack, string $needle): bool",
    "args": 2,
-   "desc": "(string, string) → string",
+   "desc": "true when $haystack begins with $needle.",
    "unsafe": false
   },
   {
    "name": "str_ends_with",
    "sig": "str_ends_with(string $haystack, string $needle): bool",
    "args": 2,
-   "desc": "(string, string) → string",
+   "desc": "true when $haystack ends with $needle.",
    "unsafe": false
   },
   {
    "name": "strcmp",
    "sig": "strcmp(string $a, string $b): int",
    "args": 2,
-   "desc": "(string, string) → int",
+   "desc": "Byte-wise comparison: returns < 0, 0, or > 0 as $a sorts before, equal to, or after $b.",
    "unsafe": false
   },
   {
    "name": "strncmp",
    "sig": "strncmp(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Like strcmp() but compares at most the first n bytes (third argument).",
    "unsafe": false
   },
   {
    "name": "strncasecmp",
    "sig": "strncasecmp(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Case-insensitive strncmp(): first n bytes, returns -1/0/1 style result.",
    "unsafe": false
   },
   {
    "name": "strcasecmp",
    "sig": "strcasecmp(string $a, string $b): int",
    "args": 2,
-   "desc": "(string, string) → int",
+   "desc": "Case-insensitive strcmp().",
+   "unsafe": false
+  },
+  {
+   "name": "explode",
+   "sig": "explode(string $haystack, string $needle): mixed",
+   "args": 2,
+   "desc": "explode($separator, $s) - splits the string at every separator into an array. The separator cannot be empty.",
+   "unsafe": false
+  },
+  {
+   "name": "split",
+   "sig": "split(string $haystack, string $needle): mixed",
+   "args": 2,
+   "desc": "Alias of explode().",
    "unsafe": false
   },
   {
    "name": "implode",
    "sig": "implode(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Joins array elements with a glue string: implode($glue, $arr) or implode($arr).",
    "unsafe": false
   },
   {
    "name": "join",
    "sig": "join(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Alias of implode().",
    "unsafe": false
   },
   {
    "name": "nl2br",
    "sig": "nl2br(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Inserts \"<br />\" before every newline. Newlines are kept.",
    "unsafe": false
   },
   {
    "name": "number_format",
    "sig": "number_format(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Formats a number with grouped thousands: number_format($n[, $decimals[, $dec_point, $thousands_sep]]). Defaults: 0 decimals, \".\", \",\".",
    "unsafe": false
   },
   {
    "name": "unset",
    "sig": "unset(...$args): void",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "unset($arr[\"k\"]) removes the key from the array; unset($var) is not needed for locals.",
    "unsafe": false
   },
   {
    "name": "json_encode",
    "sig": "json_encode(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Encodes a value as JSON. Flags: JSON_PRETTY_PRINT (indented), JSON_UNESCAPED_SLASHES (keep /), JSON_NUMERIC_CHECK, JSON_FORCE_OBJECT. Combine with |.",
+   "unsafe": false
+  },
+  {
+   "name": "json_encode_pretty",
+   "sig": "json_encode_pretty(string $s): string",
+   "args": 1,
+   "desc": "json_encode() with JSON_PRETTY_PRINT pre-applied — convenience wrapper.",
+   "unsafe": false
+  },
+  {
+   "name": "json_decode",
+   "sig": "json_decode(string $s): mixed",
+   "args": 1,
+   "desc": "Decodes a JSON string into arrays/maps/scalars. Optional second argument ($assoc) is accepted for PHP compatibility and ignored.",
+   "unsafe": false
+  },
+  {
+   "name": "preg_match",
+   "sig": "preg_match(...$args): mixed",
+   "args": -2,
+   "desc": "preg_match($pattern, $subject[, &$matches]) — tries the pattern once on $subject. Returns 1 and fills $matches (index 0 = full match, 1..n = capture groups) on success, false on no match or bad pattern. Patterns use /.../ delimiters with flags i (case-insensitive), s (dotall), m (multiline).",
+   "unsafe": false
+  },
+  {
+   "name": "preg_match_all",
+   "sig": "preg_match_all(...$args): mixed",
+   "args": -2,
+   "desc": "preg_match_all($pattern, $subject[, &$matches]) — finds every non-overlapping match. Returns the number of matches and fills $matches with one array per match (each like preg_match's $matches).",
+   "unsafe": false
+  },
+  {
+   "name": "preg_replace",
+   "sig": "preg_replace(...$args): string",
+   "args": -2,
+   "desc": "preg_replace($pattern, $replacement, $subject) — replaces every match. $replacement may reference captures as $1, $2, … Returns the modified string.",
+   "unsafe": false
+  },
+  {
+   "name": "preg_split",
+   "sig": "preg_split(...$args): mixed",
+   "args": -2,
+   "desc": "preg_split($pattern, $subject) — splits $subject at every match of the pattern and returns the pieces as an array.",
+   "unsafe": false
+  },
+  {
+   "name": "preg_grep",
+   "sig": "preg_grep(...$args): mixed",
+   "args": -2,
+   "desc": "preg_grep($pattern, $array) — returns the elements of $array that match the pattern (keys are re-indexed 0..n).",
+   "unsafe": false
+  },
+  {
+   "name": "sha256",
+   "sig": "sha256(string $s): string",
+   "args": 1,
+   "desc": "SHA-256 hash as 64-char hex. The general-purpose hash of this runtime.",
+   "unsafe": false
+  },
+  {
+   "name": "hash_hmac",
+   "sig": "hash_hmac(...$args): mixed",
+   "args": -2,
+   "desc": "hash_hmac(\"sha256\", $data, $key) — keyed HMAC-SHA256 for signing messages.",
+   "unsafe": false
+  },
+  {
+   "name": "password_hash",
+   "sig": "password_hash(string $s): string",
+   "args": 1,
+   "desc": "Creates a salted password hash ($hphp$4096$salt$digest, PBKDF2-SHA256, 4096 rounds). Store this string; never store plain passwords.",
+   "unsafe": false
+  },
+  {
+   "name": "password_verify",
+   "sig": "password_verify(string $haystack, string $needle): bool",
+   "args": 2,
+   "desc": "password_verify($plain, $hash) — recomputes the digest with the hash's salt and compares timing-safely. true when the password matches.",
+   "unsafe": false
+  },
+  {
+   "name": "random_bytes",
+   "sig": "random_bytes(int $n): string",
+   "args": 1,
+   "desc": "random_bytes($n) — $n cryptographically secure random bytes as a raw binary string (max 1024).",
+   "unsafe": false
+  },
+  {
+   "name": "hash_equals",
+   "sig": "hash_equals(string $haystack, string $needle): bool",
+   "args": 2,
+   "desc": "Timing-safe string comparison for verifying hashes/signatures — always use it for secrets instead of ===.",
+   "unsafe": false
+  },
+  {
+   "name": "mktime",
+   "sig": "mktime(...$args): int",
+   "args": -2,
+   "desc": "mktime($h, $m, $s, $month, $day, $year) — builds a Unix timestamp from local date/time parts.",
+   "unsafe": false
+  },
+  {
+   "name": "strtotime",
+   "sig": "strtotime(string $s): int",
+   "args": 1,
+   "desc": "Parses a date/time string (\"2024-03-15 12:30:00\", \"2024-03-15\", \"12:30:00\") into a Unix timestamp; 0 on failure.",
+   "unsafe": false
+  },
+  {
+   "name": "http_post",
+   "sig": "http_post(...$args): mixed",
+   "args": -2,
+   "desc": "http_post($url, $body[, $headers]) — HTTP POST with the body string and optional header lines (e.g. \"Content-Type: application/json\"). Same return shape as http_get().",
+   "unsafe": false
+  },
+  {
+   "name": "parse_url",
+   "sig": "parse_url(string $s): mixed",
+   "args": 1,
+   "desc": "parse_url($url) — map with scheme, user, host, port, path, query, fragment; missing parts are empty strings, port defaults to 80/443.",
+   "unsafe": false
+  },
+  {
+   "name": "http_build_query",
+   "sig": "http_build_query(string $s): string",
+   "args": 1,
+   "desc": "Turns a map into an urlencoded query string: [\"a\" => \"x y\"] → \"a=x+y\".",
+   "unsafe": false
+  },
+  {
+   "name": "mysql_connect",
+   "sig": "mysql_connect(...$args): mixed",
+   "args": -2,
+   "desc": "mysql_connect($host[, $port[, $user[, $pass[, $db]]]]) — opens a MySQL/MariaDB connection (native wire protocol, TCP). Returns a connection handle or false.",
+   "unsafe": false
+  },
+  {
+   "name": "mysql_query",
+   "sig": "mysql_query(...$args): mixed",
+   "args": -2,
+   "desc": "mysql_query($conn, $sql) — runs a SELECT/SHOW and returns the rows as an array of maps (column name => value), false on error. For INSERT/UPDATE/DELETE use mysql_exec().",
+   "unsafe": false
+  },
+  {
+   "name": "mysql_exec",
+   "sig": "mysql_exec(...$args): mixed",
+   "args": -2,
+   "desc": "mysql_exec($conn, $sql) — runs a statement and returns the number of affected rows, false on error.",
+   "unsafe": false
+  },
+  {
+   "name": "mysql_insert_id",
+   "sig": "mysql_insert_id(...$args): int",
+   "args": -2,
+   "desc": "AUTO_INCREMENT value generated by the last INSERT on this connection.",
+   "unsafe": false
+  },
+  {
+   "name": "mysql_close",
+   "sig": "mysql_close(...$args): bool",
+   "args": -2,
+   "desc": "Closes the MySQL connection.",
+   "unsafe": false
+  },
+  {
+   "name": "mysql_escape",
+   "sig": "mysql_escape(string $s): string",
+   "args": 1,
+   "desc": "Escapes a string for safe embedding in SQL text (see the crypto group entry).",
    "unsafe": false
   },
   {
    "name": "md5",
    "sig": "md5(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "MD5 hash as 32-char hex. Fast but broken for security — checksums only.",
    "unsafe": false
   },
   {
    "name": "sha1",
    "sig": "sha1(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "SHA-1 hash as 40-char hex. Also legacy — prefer sha256().",
    "unsafe": false
   },
   {
    "name": "crc32",
    "sig": "crc32(string $s): int",
    "args": 1,
-   "desc": "string → string",
+   "desc": "CRC-32 checksum of the data as an integer — detects accidental corruption, not tampering.",
    "unsafe": false
   },
   {
    "name": "base64_encode",
    "sig": "base64_encode(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Encodes bytes as Base64 text (with = padding) — for safe transport in JSON, URLs-after-urlencode, etc.",
    "unsafe": false
   },
   {
    "name": "base64_decode",
    "sig": "base64_decode(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Decodes Base64 back to raw bytes. Invalid characters are skipped.",
    "unsafe": false
   },
   {
    "name": "urlencode",
    "sig": "urlencode(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Encodes a string for use in a query string: space becomes +, reserved chars become %XX.",
    "unsafe": false
   },
   {
    "name": "urldecode",
    "sig": "urldecode(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Inverse of urlencode().",
    "unsafe": false
   },
   {
    "name": "htmlentities",
    "sig": "htmlentities(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Converts & \" ' < > (and more) to their HTML entities so the string is safe to embed as text.",
    "unsafe": false
   },
   {
    "name": "htmlspecialchars",
    "sig": "htmlspecialchars(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Converts only the five HTML-critical characters & \" ' < > to entities.",
    "unsafe": false
   },
   {
    "name": "sprintf",
    "sig": "sprintf(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "printf-style formatting that returns the string. Supports %d %s %f %x %o %b %e %c, width, precision and \"-\" left-align.",
    "unsafe": false
   },
   {
    "name": "printf",
    "sig": "printf(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Like sprintf() but prints the result and returns its length.",
    "unsafe": false
   },
   {
    "name": "vsprintf",
    "sig": "vsprintf(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "sprintf() with the arguments taken from an array.",
    "unsafe": false
   },
   {
    "name": "ord",
    "sig": "ord(string $s): int",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Byte value of the first character of the string (0–255).",
+   "unsafe": false
+  },
+  {
+   "name": "chr",
+   "sig": "chr(int $n): string",
+   "args": 1,
+   "desc": "One-character string for the given byte value.",
    "unsafe": false
   },
   {
    "name": "bin2hex",
    "sig": "bin2hex(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Hexadecimal representation of the bytes, two chars per byte: bin2hex(\"AB\") → \"4142\".",
    "unsafe": false
   },
   {
    "name": "hex2bin",
    "sig": "hex2bin(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Decodes a hexadecimal string back into raw bytes.",
+   "unsafe": false
+  },
+  {
+   "name": "str_split",
+   "sig": "str_split(...$args): mixed",
+   "args": -2,
+   "desc": "str_split($s[, $len]) - cuts the string into chunks of $len characters (default 1) and returns them as an array.",
    "unsafe": false
   },
   {
    "name": "ucwords",
    "sig": "ucwords(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Uppercases the first letter of every whitespace-separated word.",
    "unsafe": false
   },
   {
    "name": "wordwrap",
    "sig": "wordwrap(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Wraps a string to a given width by inserting breaks (default \"\\n\") at word boundaries.",
    "unsafe": false
   },
   {
    "name": "similar_text",
    "sig": "similar_text(string $haystack, string $needle): int",
    "args": 2,
-   "desc": "(string, string) → string",
+   "desc": "Number of matching characters between the two strings (a rough similarity measure).",
    "unsafe": false
   },
   {
    "name": "levenshtein",
    "sig": "levenshtein(string $haystack, string $needle): int",
    "args": 2,
-   "desc": "(string, string) → string",
+   "desc": "Edit distance (insertions, deletions, substitutions) between the two strings.",
    "unsafe": false
   },
   {
    "name": "array",
    "sig": "array(...$values): mixed",
    "args": -1,
-   "desc": "variadic → array",
+   "desc": "Creates an array from the given values (or \"key\" => value pairs). Usually written as the [...] literal instead.",
    "unsafe": false
   },
   {
    "name": "array_keys",
    "sig": "array_keys(array $a): mixed",
    "args": 1,
-   "desc": "array → array (keys)",
+   "desc": "Returns all keys of the array as a new list array.",
    "unsafe": false
   },
   {
    "name": "array_values",
    "sig": "array_values(array $a): mixed",
    "args": 1,
-   "desc": "array → array (values)",
+   "desc": "Returns all values of the array as a freshly indexed list (0..n-1).",
    "unsafe": false
   },
   {
    "name": "array_merge",
    "sig": "array_merge(...$args): mixed",
    "args": -1,
-   "desc": "flexible signature",
+   "desc": "Merges two or more arrays; later arrays overwrite string keys of earlier ones, numeric keys are appended.",
    "unsafe": false
   },
   {
    "name": "array_slice",
    "sig": "array_slice(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "array_slice($arr, $offset[, $length]) — extracts a section of the array. Negative $offset counts from the end.",
    "unsafe": false
   },
   {
    "name": "array_reverse",
    "sig": "array_reverse(array $a): mixed",
    "args": 1,
-   "desc": "array → array",
+   "desc": "Returns the array with elements in reverse order.",
    "unsafe": false
   },
   {
    "name": "array_sum",
    "sig": "array_sum(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Sum of all numeric values in the array (non-numerics count as 0).",
    "unsafe": false
   },
   {
    "name": "array_product",
    "sig": "array_product(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Product of all numeric values in the array.",
    "unsafe": false
   },
   {
    "name": "array_unique",
    "sig": "array_unique(array $a): mixed",
    "args": 1,
-   "desc": "array → array",
+   "desc": "Removes duplicate values, keeping the first occurrence of each.",
    "unsafe": false
   },
   {
    "name": "in_array",
    "sig": "in_array(...$args): bool",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "in_array($needle, $haystack) — true when the value occurs in the array.",
    "unsafe": false
   },
   {
    "name": "array_key_exists",
    "sig": "array_key_exists(...$args): bool",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "true when $key exists in the array (also for string keys and null values).",
    "unsafe": false
   },
   {
    "name": "isset",
    "sig": "isset(...$args): bool",
    "args": -1,
-   "desc": "flexible signature",
+   "desc": "isset($arr[\"k\"]) — true when the key exists and the value is not null.",
    "unsafe": false
   },
   {
    "name": "range",
    "sig": "range(int $start, int $end): mixed",
    "args": 2,
-   "desc": "(int, int) → array",
+   "desc": "range($start, $end) — list of integers from $start to $end inclusive (also counts down).",
    "unsafe": false
   },
   {
    "name": "compact",
    "sig": "compact(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Builds an array from the named local variables: compact(\"a\", \"b\") → [\"a\" => $a, \"b\" => $b].",
+   "unsafe": false
+  },
+  {
+   "name": "array_column",
+   "sig": "array_column(...$args): mixed",
+   "args": -2,
+   "desc": "array_column($rows, $col) — picks one column out of an array of maps, indexed 0..n.",
+   "unsafe": false
+  },
+  {
+   "name": "array_chunk",
+   "sig": "array_chunk(...$args): mixed",
+   "args": -2,
+   "desc": "array_chunk($arr, $size) — splits the array into chunks of at most $size elements.",
+   "unsafe": false
+  },
+  {
+   "name": "array_pad",
+   "sig": "array_pad(...$args): mixed",
+   "args": -2,
+   "desc": "array_pad($arr, $size, $value) — grows the array to $size by filling with $value (negative size pads left).",
+   "unsafe": false
+  },
+  {
+   "name": "array_replace",
+   "sig": "array_replace(...$args): mixed",
+   "args": -2,
+   "desc": "array_replace($a, $b, …) — elements of later arrays overwrite those of earlier ones, keys preserved.",
+   "unsafe": false
+  },
+  {
+   "name": "array_fill_keys",
+   "sig": "array_fill_keys(...$args): mixed",
+   "args": -2,
+   "desc": "array_fill_keys([\"a\",\"b\"], $v) — map with those keys, each mapped to $v.",
+   "unsafe": false
+  },
+  {
+   "name": "array_key_first",
+   "sig": "array_key_first(...$args): mixed",
+   "args": -2,
+   "desc": "First key of the array (null when empty).",
+   "unsafe": false
+  },
+  {
+   "name": "array_key_last",
+   "sig": "array_key_last(...$args): mixed",
+   "args": -2,
+   "desc": "Last key of the array (null when empty).",
+   "unsafe": false
+  },
+  {
+   "name": "usort",
+   "sig": "usort(...$args): bool",
+   "args": -2,
+   "desc": "usort($arr, $cmp) — sorts by value in place using a comparator closure returning -1/0/1.",
+   "unsafe": false
+  },
+  {
+   "name": "uasort",
+   "sig": "uasort(...$args): bool",
+   "args": -2,
+   "desc": "usort with key association preserved (for maps).",
+   "unsafe": false
+  },
+  {
+   "name": "uksort",
+   "sig": "uksort(...$args): bool",
+   "args": -2,
+   "desc": "Sorts the map in place by key using a comparator closure.",
+   "unsafe": false
+  },
+  {
+   "name": "array_walk",
+   "sig": "array_walk(...$args): bool",
+   "args": -2,
+   "desc": "array_walk($arr, $fn) — calls $fn($value, $key) for every element; the closure may modify $value via a by-ref parameter.",
+   "unsafe": false
+  },
+  {
+   "name": "array_walk_recursive",
+   "sig": "array_walk_recursive(...$args): bool",
+   "args": -2,
+   "desc": "Like array_walk() but descends into nested arrays.",
+   "unsafe": false
+  },
+  {
+   "name": "substr_count",
+   "sig": "substr_count(string $haystack, string $needle): int",
+   "args": 2,
+   "desc": "Counts how many times $needle occurs in $haystack.",
+   "unsafe": false
+  },
+  {
+   "name": "str_shuffle",
+   "sig": "str_shuffle(string $s): string",
+   "args": 1,
+   "desc": "Randomly shuffles the characters of the string (not cryptographically secure).",
+   "unsafe": false
+  },
+  {
+   "name": "strip_tags",
+   "sig": "strip_tags(...$args): string",
+   "args": -2,
+   "desc": "Removes HTML and PHP tags from the string.",
+   "unsafe": false
+  },
+  {
+   "name": "html_entity_decode",
+   "sig": "html_entity_decode(string $s): string",
+   "args": 1,
+   "desc": "Inverse of htmlentities(): \"&amp;\" becomes \"&\" again.",
    "unsafe": false
   },
   {
    "name": "array_map",
    "sig": "array_map(...$args): mixed",
    "args": -1,
-   "desc": "flexible signature",
+   "desc": "array_map($fn, $arr[, $arr2, …]) — applies the closure to every element and returns the results. With several arrays the closure gets one argument per array.",
    "unsafe": false
   },
   {
    "name": "array_filter",
    "sig": "array_filter(...$args): mixed",
    "args": -1,
-   "desc": "flexible signature",
+   "desc": "array_filter($arr[, $fn]) — keeps elements where $fn returns true; without $fn keeps all truthy elements. Keys are preserved.",
    "unsafe": false
   },
   {
    "name": "array_reduce",
    "sig": "array_reduce(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "array_reduce($arr, $fn[, $initial]) — folds the array left-to-right: $fn($carry, $item).",
    "unsafe": false
   },
   {
    "name": "array_flip",
    "sig": "array_flip(array $a): mixed",
    "args": 1,
-   "desc": "array → array",
+   "desc": "Swaps keys and values: [\"a\" => 1] becomes [1 => \"a\"].",
    "unsafe": false
   },
   {
    "name": "array_fill",
    "sig": "array_fill(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "array_fill($start, $num, $value) — $num copies of $value starting at index $start.",
    "unsafe": false
   },
   {
    "name": "array_combine",
    "sig": "array_combine(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "array_combine($keys, $values) — builds a map using one array as keys and the other as values.",
    "unsafe": false
   },
   {
    "name": "array_diff",
    "sig": "array_diff(...$args): mixed",
    "args": -1,
-   "desc": "flexible signature",
+   "desc": "array_diff($a, $b, …) — values of $a that do not appear in any other array.",
    "unsafe": false
   },
   {
    "name": "array_intersect",
    "sig": "array_intersect(...$args): mixed",
    "args": -1,
-   "desc": "flexible signature",
+   "desc": "array_intersect($a, $b, …) — values of $a that appear in all other arrays.",
    "unsafe": false
   },
   {
    "name": "array_push",
    "sig": "array_push(...$args): int",
    "args": -1,
-   "desc": "flexible signature",
+   "desc": "Appends one or more values to the end of the array; returns the new count. $arr[] = v is preferred.",
    "unsafe": false
   },
   {
    "name": "array_pop",
    "sig": "array_pop(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Removes and returns the last element of the array (null when empty).",
    "unsafe": false
   },
   {
    "name": "array_shift",
    "sig": "array_shift(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Removes and returns the first element, re-indexing the rest (null when empty).",
    "unsafe": false
   },
   {
    "name": "array_unshift",
    "sig": "array_unshift(...$args): int",
    "args": -1,
-   "desc": "flexible signature",
+   "desc": "Prepends one or more values to the front of the array; returns the new count.",
    "unsafe": false
   },
   {
    "name": "array_splice",
    "sig": "array_splice(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "array_splice($arr, $offset[, $length[, $replacement]]) — removes a section and optionally replaces it; returns the removed elements.",
    "unsafe": false
   },
   {
    "name": "shuffle",
    "sig": "shuffle(...$args): bool",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Randomly reorders the array in place (not cryptographically secure).",
    "unsafe": false
   },
   {
    "name": "sort",
    "sig": "sort(array &$a): bool",
    "args": 1,
-   "desc": "in-place sort",
+   "desc": "Sorts the array in place by value, ascending, re-indexing 0..n.",
    "unsafe": false
   },
   {
    "name": "rsort",
    "sig": "rsort(array &$a): bool",
    "args": 1,
-   "desc": "in-place sort",
+   "desc": "Sorts the array in place by value, descending, re-indexing.",
    "unsafe": false
   },
   {
    "name": "ksort",
    "sig": "ksort(array &$a): bool",
    "args": 1,
-   "desc": "in-place sort",
+   "desc": "Sorts the map in place by key, ascending, keeping key/value association.",
    "unsafe": false
   },
   {
    "name": "krsort",
    "sig": "krsort(array &$a): bool",
    "args": 1,
-   "desc": "in-place sort",
+   "desc": "Sorts the map in place by key, descending.",
    "unsafe": false
   },
   {
    "name": "asort",
    "sig": "asort(array &$a): bool",
    "args": 1,
-   "desc": "in-place sort",
+   "desc": "Sorts the map in place by value, ascending, keeping key/value association.",
    "unsafe": false
   },
   {
    "name": "array_search",
    "sig": "array_search(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Returns the key of the first element equal to $needle, or false when not found.",
    "unsafe": false
   },
   {
    "name": "end",
    "sig": "end(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Advances the internal pointer to the last element and returns its value.",
    "unsafe": false
   },
   {
    "name": "reset",
    "sig": "reset(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Rewinds the internal pointer to the first element and returns its value.",
    "unsafe": false
   },
   {
    "name": "max",
    "sig": "max(...$numbers): mixed",
    "args": -1,
-   "desc": "variadic numeric",
+   "desc": "Largest of the given numbers or array elements (variadic).",
    "unsafe": false
   },
   {
    "name": "min",
    "sig": "min(...$numbers): mixed",
    "args": -1,
-   "desc": "variadic numeric",
+   "desc": "Smallest of the given numbers or array elements (variadic).",
    "unsafe": false
   },
   {
    "name": "rand",
    "sig": "rand(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "rand() → pseudo-random int, or rand($min, $max) within the inclusive range (not secure).",
    "unsafe": false
   },
   {
    "name": "mt_rand",
    "sig": "mt_rand(...$args): float",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Mersenne-Twister pseudo-random: mt_rand() or mt_rand($min, $max) (faster, still not secure).",
    "unsafe": false
   },
   {
    "name": "srand",
    "sig": "srand(...$args): void",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Seeds rand() — only useful to get reproducible sequences.",
    "unsafe": false
   },
   {
    "name": "mt_srand",
    "sig": "mt_srand(...$args): void",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Seeds mt_rand() — only useful to get reproducible sequences.",
    "unsafe": false
   },
   {
    "name": "random_int",
    "sig": "random_int(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Cryptographically secure random integer in [$min, $max]. Prefer this over rand().",
    "unsafe": false
   },
   {
    "name": "fgetc",
    "sig": "fgetc(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Reads a single character from a file handle.",
    "unsafe": false
   },
   {
    "name": "abs",
    "sig": "abs(mixed $number): mixed",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Absolute value; keeps the input type (int stays int, float stays float).",
    "unsafe": false
   },
   {
    "name": "round",
    "sig": "round(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "round($n[, $precision[, $mode]]) — rounds to $precision decimals (default 0). $mode: PHP_ROUND_HALF_UP (default), _HALF_DOWN, _HALF_EVEN, _HALF_ODD.",
    "unsafe": false
   },
   {
    "name": "floor",
    "sig": "floor(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Largest integer value ≤ $n, returned as float.",
    "unsafe": false
   },
   {
    "name": "ceil",
    "sig": "ceil(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Smallest integer value ≥ $n, returned as float.",
    "unsafe": false
   },
   {
    "name": "sqrt",
    "sig": "sqrt(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Square root as float.",
    "unsafe": false
   },
   {
    "name": "pow",
    "sig": "pow(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "pow($base, $exp) — $base raised to $exp.",
    "unsafe": false
   },
   {
    "name": "intdiv",
    "sig": "intdiv(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Integer division truncating toward zero: intdiv(7, 2) === 3.",
    "unsafe": false
   },
   {
    "name": "fmod",
    "sig": "fmod(...$args): float",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Floating-point remainder of $x / $y.",
    "unsafe": false
   },
   {
    "name": "sin",
    "sig": "sin(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Sine of the angle in radians.",
    "unsafe": false
   },
   {
    "name": "cos",
    "sig": "cos(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Cosine of the angle in radians.",
    "unsafe": false
   },
   {
    "name": "tan",
    "sig": "tan(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Tangent of the angle in radians.",
    "unsafe": false
   },
   {
    "name": "atan",
    "sig": "atan(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Arctangent in radians.",
    "unsafe": false
   },
   {
    "name": "atan2",
    "sig": "atan2(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Angle of the point (y, x) — note the argument order.",
    "unsafe": false
   },
   {
    "name": "asin",
    "sig": "asin(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Arcsine in radians.",
    "unsafe": false
   },
   {
    "name": "acos",
    "sig": "acos(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Arccosine in radians.",
    "unsafe": false
   },
   {
    "name": "log",
    "sig": "log(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Natural logarithm (ln). Optional second argument is the base.",
    "unsafe": false
   },
   {
    "name": "log2",
    "sig": "log2(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Binary logarithm (base 2).",
    "unsafe": false
   },
   {
    "name": "log10",
    "sig": "log10(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Common logarithm (base 10).",
    "unsafe": false
   },
   {
    "name": "exp",
    "sig": "exp(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "e raised to the given power.",
    "unsafe": false
   },
   {
    "name": "is_nan",
    "sig": "is_nan(mixed $number): bool",
    "args": 1,
-   "desc": "number → number",
+   "desc": "true for the special Not-a-Number float value.",
    "unsafe": false
   },
   {
    "name": "is_finite",
    "sig": "is_finite(mixed $number): bool",
    "args": 1,
-   "desc": "number → number",
+   "desc": "true when the float is neither infinite nor NaN.",
    "unsafe": false
   },
   {
    "name": "is_infinite",
    "sig": "is_infinite(mixed $number): bool",
    "args": 1,
-   "desc": "number → number",
+   "desc": "true for ±infinity.",
    "unsafe": false
   },
   {
    "name": "pi",
    "sig": "pi(...$args): float",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Returns π as float. The constant M_PI is equivalent.",
    "unsafe": false
   },
   {
    "name": "M_PI",
    "sig": "M_PI(...$args): float",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "The constant π as a callable fallback — prefer the constant.",
    "unsafe": false
   },
   {
    "name": "deg2rad",
    "sig": "deg2rad(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Converts degrees to radians.",
    "unsafe": false
   },
   {
    "name": "rad2deg",
    "sig": "rad2deg(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Converts radians to degrees.",
    "unsafe": false
   },
   {
    "name": "hypot",
    "sig": "hypot(...$args): float",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "hypot($a, $b) — length of the hypotenuse sqrt(a² + b²), overflow-safe.",
    "unsafe": false
   },
   {
    "name": "lcg_value",
    "sig": "lcg_value(...$args): float",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Pseudo-random float in [0, 1) from the combined linear congruential generator (not secure).",
    "unsafe": false
   },
   {
    "name": "is_int",
    "sig": "is_int(mixed $number): bool",
    "args": 1,
-   "desc": "number → number",
+   "desc": "true when the value is an integer. Aliases: is_integer().",
    "unsafe": false
   },
   {
    "name": "is_integer",
    "sig": "is_integer(mixed $number): bool",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Alias of is_int().",
    "unsafe": false
   },
   {
    "name": "is_float",
    "sig": "is_float(mixed $number): bool",
    "args": 1,
-   "desc": "number → number",
+   "desc": "true when the value is a float.",
    "unsafe": false
   },
   {
    "name": "is_string",
    "sig": "is_string(mixed $number): bool",
    "args": 1,
-   "desc": "number → number",
+   "desc": "true when the value is a string.",
    "unsafe": false
   },
   {
    "name": "is_bool",
    "sig": "is_bool(mixed $number): bool",
    "args": 1,
-   "desc": "number → number",
+   "desc": "true when the value is true or false.",
    "unsafe": false
   },
   {
    "name": "is_array",
    "sig": "is_array(mixed $number): bool",
    "args": 1,
-   "desc": "number → number",
+   "desc": "true when the value is an array or map.",
    "unsafe": false
   },
   {
    "name": "is_null",
    "sig": "is_null(mixed $number): bool",
    "args": 1,
-   "desc": "number → number",
+   "desc": "true when the value is null.",
    "unsafe": false
   },
   {
    "name": "is_numeric",
    "sig": "is_numeric(mixed $number): bool",
    "args": 1,
-   "desc": "number → number",
+   "desc": "true when the value is a number or a numeric string like \"42\" or \"3.5\".",
    "unsafe": false
   },
   {
    "name": "intval",
    "sig": "intval(mixed $number): int",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Converts to int, truncating floats and parsing the leading integer of strings (0 when not numeric).",
    "unsafe": false
   },
   {
    "name": "floatval",
    "sig": "floatval(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Converts to float. Alias: doubleval().",
    "unsafe": false
   },
   {
    "name": "doubleval",
    "sig": "doubleval(mixed $number): float",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Alias of floatval().",
    "unsafe": false
   },
   {
    "name": "strval",
    "sig": "strval(mixed $number): string",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Converts the value to its string representation.",
    "unsafe": false
   },
   {
    "name": "boolval",
    "sig": "boolval(mixed $number): bool",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Converts to bool using PHP truthiness (0, \"\", \"0\", [], null are false).",
    "unsafe": false
   },
   {
    "name": "gettype",
    "sig": "gettype(mixed $number): string",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Type name as a string: \"int\", \"float\", \"string\", \"bool\", \"array\", \"null\", …",
    "unsafe": false
   },
   {
    "name": "var_dump",
    "sig": "var_dump(...$args): void",
    "args": -1,
-   "desc": "flexible signature",
+   "desc": "Prints type and value of one or more expressions, recursively for arrays — the main debugging tool.",
    "unsafe": false
   },
   {
    "name": "print_r",
    "sig": "print_r(...$args): string",
    "args": -1,
-   "desc": "flexible signature",
+   "desc": "Human-readable dump of a value (arrays indented). Returns the text instead of printing it.",
    "unsafe": false
   },
   {
    "name": "var_export",
    "sig": "var_export(...$args): string",
    "args": -1,
-   "desc": "flexible signature",
+   "desc": "Returns a string of PHP code that would recreate the value.",
    "unsafe": false
   },
   {
    "name": "serialize",
    "sig": "serialize(mixed $number): string",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Serializes the value into a storable string (HolyPHP's own format — do not exchange with PHP's).",
    "unsafe": false
   },
   {
    "name": "unserialize",
    "sig": "unserialize(mixed $number): mixed",
    "args": 1,
-   "desc": "number → number",
+   "desc": "Restores a value serialized by serialize(). Never unserialize untrusted input.",
    "unsafe": false
   },
   {
    "name": "readline",
    "sig": "readline(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Prints the prompt and reads one line from stdin (for interactive scripts).",
    "unsafe": false
   },
   {
    "name": "file_get_contents",
    "sig": "file_get_contents(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Reads an entire file into a string. Throws when the file cannot be opened.",
    "unsafe": false
   },
   {
    "name": "file_put_contents",
-   "sig": "file_put_contents(string $haystack, string $needle): int",
-   "args": 2,
-   "desc": "(string, string) → string",
+   "sig": "file_put_contents(...$args): int",
+   "args": -2,
+   "desc": "file_put_contents($path, $data[, $flags]) — writes the string/binary data to the file. Flag PHP_FILE_APPEND appends instead of truncating.",
    "unsafe": false
   },
   {
    "name": "file_exists",
    "sig": "file_exists(string $s): bool",
    "args": 1,
-   "desc": "string → string",
+   "desc": "true when a file or directory exists at the path.",
    "unsafe": false
   },
   {
    "name": "is_dir",
    "sig": "is_dir(string $s): bool",
    "args": 1,
-   "desc": "string → string",
+   "desc": "true when the path is an existing directory.",
    "unsafe": false
   },
   {
    "name": "filesize",
    "sig": "filesize(string $s): int",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Size of the file in bytes.",
    "unsafe": false
   },
   {
    "name": "mkdir",
-   "sig": "mkdir(string $s): bool",
-   "args": 1,
-   "desc": "string → string",
+   "sig": "mkdir(...$args): bool",
+   "args": -2,
+   "desc": "mkdir($path[, $recursive]) — creates a directory; with $recursive true it creates parents too.",
    "unsafe": false
   },
   {
    "name": "rmdir",
    "sig": "rmdir(string $s): bool",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Removes an (empty) directory.",
    "unsafe": false
   },
   {
    "name": "unlink",
    "sig": "unlink(string $s): bool",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Deletes a file. Returns true on success.",
    "unsafe": false
   },
   {
    "name": "rename",
    "sig": "rename(string $haystack, string $needle): bool",
    "args": 2,
-   "desc": "(string, string) → string",
+   "desc": "Renames or moves a file (also across directories).",
    "unsafe": false
   },
   {
    "name": "copy",
    "sig": "copy(string $haystack, string $needle): bool",
    "args": 2,
-   "desc": "(string, string) → string",
+   "desc": "Copies the file's contents to a new path.",
    "unsafe": false
   },
   {
    "name": "fgets",
    "sig": "fgets(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Reads one line (up to and including the newline) from a file handle. Returns false at end of file.",
    "unsafe": false
   },
   {
    "name": "fwrite",
    "sig": "fwrite(string $haystack, string $needle): int",
    "args": 2,
-   "desc": "(string, string) → string",
+   "desc": "fwrite($handle, $data) — writes the data; returns the number of bytes written.",
    "unsafe": false
   },
   {
    "name": "fopen",
    "sig": "fopen(string $haystack, string $needle): mixed",
    "args": 2,
-   "desc": "(string, string) → string",
+   "desc": "fopen($path, $mode) — opens a file handle for streaming (\"r\" read, \"w\" truncate+write, \"a\" append, \"rb\"/\"wb\" binary).",
    "unsafe": false
   },
   {
    "name": "fclose",
    "sig": "fclose(string $s): bool",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Closes a file handle opened by fopen(). Always do this for written files.",
+   "unsafe": false
+  },
+  {
+   "name": "scandir",
+   "sig": "scandir(string $s): mixed",
+   "args": 1,
+   "desc": "Lists the entries of a directory as an array (including \".\" and \"..\").",
+   "unsafe": false
+  },
+  {
+   "name": "dirname",
+   "sig": "dirname(string $s): string",
+   "args": 1,
+   "desc": "Directory part of a path: dirname(\"a/b/c.txt\") → \"a/b\".",
+   "unsafe": false
+  },
+  {
+   "name": "basename",
+   "sig": "basename(...$args): string",
+   "args": -2,
+   "desc": "File name part of a path: basename(\"a/b/c.txt\") → \"c.txt\". Optional second argument strips a suffix.",
+   "unsafe": false
+  },
+  {
+   "name": "pathinfo",
+   "sig": "pathinfo(...$args): mixed",
+   "args": -2,
+   "desc": "pathinfo($path) — map with dirname, basename, extension and filename.",
+   "unsafe": false
+  },
+  {
+   "name": "realpath",
+   "sig": "realpath(string $s): mixed",
+   "args": 1,
+   "desc": "Resolves relative parts and returns the canonical absolute path (false when it does not exist).",
+   "unsafe": false
+  },
+  {
+   "name": "is_file",
+   "sig": "is_file(string $s): bool",
+   "args": 1,
+   "desc": "true when the path is an existing regular file.",
+   "unsafe": false
+  },
+  {
+   "name": "is_readable",
+   "sig": "is_readable(string $s): bool",
+   "args": 1,
+   "desc": "true when the file exists and can be read.",
+   "unsafe": false
+  },
+  {
+   "name": "is_writable",
+   "sig": "is_writable(string $s): bool",
+   "args": 1,
+   "desc": "true when the file exists and can be written.",
+   "unsafe": false
+  },
+  {
+   "name": "touch",
+   "sig": "touch(string $s): bool",
+   "args": 1,
+   "desc": "Creates the file if missing, otherwise updates its modification time.",
+   "unsafe": false
+  },
+  {
+   "name": "glob",
+   "sig": "glob(string $s): mixed",
+   "args": 1,
+   "desc": "glob($pattern) - file paths matching a shell wildcard pattern (\"*.hphp\", \"src/*/*.c\") as an array.",
+   "unsafe": false
+  },
+  {
+   "name": "sys_get_temp_dir",
+   "sig": "sys_get_temp_dir(): string",
+   "args": 0,
+   "desc": "Path of the system's temporary directory.",
+   "unsafe": false
+  },
+  {
+   "name": "checkdate",
+   "sig": "checkdate(...$args): bool",
+   "args": -2,
+   "desc": "checkdate($month, $day, $year) — true when the date is a valid calendar date (knows leap years).",
+   "unsafe": false
+  },
+  {
+   "name": "fread",
+   "sig": "fread(...$args): string",
+   "args": -2,
+   "desc": "fread($handle, $max) — reads up to $max bytes from a file handle.",
+   "unsafe": false
+  },
+  {
+   "name": "feof",
+   "sig": "feof(...$args): bool",
+   "args": -2,
+   "desc": "true when the file handle has reached end of file.",
+   "unsafe": false
+  },
+  {
+   "name": "http_get",
+   "sig": "http_get(string $s): mixed",
+   "args": 1,
+   "desc": "http_get($url) — performs an HTTP GET (http:// only, no TLS) and returns [\"status\" => 200, \"body\" => …, \"contentType\" => …], or false on failure.",
+   "unsafe": false
+  },
+  {
+   "name": "http_request",
+   "sig": "http_request(...$args): mixed",
+   "args": -2,
+   "desc": "http_request($url, $method, $body, $headers) — generic HTTP request for custom verbs (PUT, DELETE, …).",
    "unsafe": false
   },
   {
    "name": "stream_socket_server",
    "sig": "stream_socket_server(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "stream_socket_server(\"host:port\") — binds and listens on a TCP socket; returns a server handle (or -1).",
    "unsafe": false
   },
   {
    "name": "stream_socket_client",
    "sig": "stream_socket_client(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "stream_socket_client(\"host:port\") — connects to a TCP server; returns a socket handle (or -1).",
    "unsafe": false
   },
   {
    "name": "stream_socket_accept",
    "sig": "stream_socket_accept(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Accepts one incoming connection from a server handle (blocks until a client arrives).",
+   "unsafe": false
+  },
+  {
+   "name": "stream_socket_accept2",
+   "sig": "stream_socket_accept2(...$args): mixed",
+   "args": -2,
+   "desc": "Like stream_socket_accept() but with a timeout in milliseconds.",
    "unsafe": false
   },
   {
    "name": "stream_set_blocking",
    "sig": "stream_set_blocking(...$args): bool",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Switches a socket handle between blocking and non-blocking mode.",
+   "unsafe": false
+  },
+  {
+   "name": "stream_ready",
+   "sig": "stream_ready(...$args): mixed",
+   "args": -2,
+   "desc": "Checks which of the given socket handles are readable (select-style); returns the ready handles as an array.",
    "unsafe": false
   },
   {
    "name": "stream_recv",
    "sig": "stream_recv(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "stream_recv($sock[, $max]) — receives up to $max bytes (default 4096) from the socket as a string.",
    "unsafe": false
   },
   {
    "name": "stream_send",
    "sig": "stream_send(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "stream_send($sock, $data) — sends the string over the socket; returns the bytes sent.",
    "unsafe": false
   },
   {
    "name": "stream_eof",
    "sig": "stream_eof(...$args): bool",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "true when the peer closed the connection.",
    "unsafe": false
   },
   {
    "name": "stream_peer",
    "sig": "stream_peer(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "IP:port of the remote end of the socket.",
    "unsafe": false
   },
   {
    "name": "stream_close",
    "sig": "stream_close(...$args): bool",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Closes a socket handle.",
    "unsafe": false
   },
   {
    "name": "getcwd",
    "sig": "getcwd(): string",
    "args": 0,
-   "desc": "no arguments",
+   "desc": "Current working directory of the process.",
+   "unsafe": false
+  },
+  {
+   "name": "decbin",
+   "sig": "decbin(int $n): string",
+   "args": 1,
+   "desc": "Integer to binary string: decbin(10) -> \"1010\".",
+   "unsafe": false
+  },
+  {
+   "name": "decoct",
+   "sig": "decoct(int $n): string",
+   "args": 1,
+   "desc": "Integer to octal string: decoct(8) -> \"10\".",
+   "unsafe": false
+  },
+  {
+   "name": "dechex",
+   "sig": "dechex(int $n): string",
+   "args": 1,
+   "desc": "Integer to hexadecimal string: dechex(255) -> \"ff\".",
    "unsafe": false
   },
   {
    "name": "bindec",
    "sig": "bindec(string $s): int",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Parses a binary string (\"1010\") into an integer.",
    "unsafe": false
   },
   {
    "name": "octdec",
    "sig": "octdec(string $s): int",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Parses an octal string (\"777\") into an integer.",
    "unsafe": false
   },
   {
    "name": "hexdec",
    "sig": "hexdec(string $s): int",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Parses a hexadecimal string (\"ff\") into an integer.",
    "unsafe": false
   },
   {
    "name": "getenv",
    "sig": "getenv(string $s): string",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Value of the environment variable (empty string when unset).",
    "unsafe": false
   },
   {
    "name": "putenv",
    "sig": "putenv(string $s): bool",
    "args": 1,
-   "desc": "string → string",
+   "desc": "putenv(\"NAME=value\") — sets an environment variable for this process.",
    "unsafe": false
   },
   {
    "name": "php_uname",
    "sig": "php_uname(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Operating system description string, e.g. \"Windows NT …\".",
    "unsafe": false
   },
   {
    "name": "phpversion",
    "sig": "phpversion(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Version of the HolyPHP runtime (duplicate entry kept for lookup stability).",
    "unsafe": false
   },
   {
    "name": "php_sapi_name",
    "sig": "php_sapi_name(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Interface name — \"cli\" for command line builds.",
    "unsafe": false
   },
   {
    "name": "microtime",
    "sig": "microtime(...$args): float",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Current time as float seconds with microsecond precision (e.g. 1691234567.1234).",
    "unsafe": false
   },
   {
    "name": "hrtime",
    "sig": "hrtime(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "High-resolution monotonic counter in nanoseconds — use for benchmarking, immune to clock changes.",
    "unsafe": false
   },
   {
    "name": "memory_get_usage",
    "sig": "memory_get_usage(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Bytes currently allocated by the runtime's heap.",
    "unsafe": false
   },
   {
    "name": "memory_get_peak_usage",
    "sig": "memory_get_peak_usage(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Largest amount of memory the process has used so far.",
    "unsafe": false
   },
   {
    "name": "gc_collect_cycles",
    "sig": "gc_collect_cycles(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Forces a garbage-collection pass; returns the number of freed objects.",
    "unsafe": false
   },
   {
    "name": "sys_getloadavg",
    "sig": "sys_getloadavg(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "System load average as an array (platform-dependent, mostly informational).",
    "unsafe": false
   },
   {
    "name": "php_logo_guid",
    "sig": "php_logo_guid(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Returns the logo identifier (kept for PHP-compat novelty; safe to ignore).",
    "unsafe": false
   },
   {
    "name": "date",
-   "sig": "date(string $s): string",
-   "args": 1,
-   "desc": "string → string",
+   "sig": "date(...$args): string",
+   "args": -2,
+   "desc": "date($format[, $timestamp]) — formats the timestamp (default: now) according to $format. Supported: Y y m n d j H G i s a A D l M N W t L U.",
    "unsafe": false
   },
   {
    "name": "time",
    "sig": "time(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Current Unix timestamp — seconds since 1970-01-01 UTC.",
+   "unsafe": false
+  },
+  {
+   "name": "usleep",
+   "sig": "usleep(int $n): void",
+   "args": 1,
+   "desc": "Pauses the program for the given number of microseconds.",
+   "unsafe": false
+  },
+  {
+   "name": "sleep",
+   "sig": "sleep(int $n): int",
+   "args": 1,
+   "desc": "Pauses the program for the given number of seconds.",
    "unsafe": false
   },
   {
    "name": "exit",
    "sig": "exit(...$args): void",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Terminates the program immediately with the given exit code (default 0). Alias: die().",
    "unsafe": false
   },
   {
    "name": "die",
    "sig": "die(...$args): void",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Alias of exit().",
    "unsafe": false
   },
   {
    "name": "php_sapi",
    "sig": "php_sapi(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Alias of php_sapi_name().",
+   "unsafe": false
+  },
+  {
+   "name": "ui_dispatch",
+   "sig": "ui_dispatch(int $n): int",
+   "args": 1,
+   "desc": "Runs one iteration of the UI event loop (for manual/embedded loops). Prefer ui_run_main().",
    "unsafe": false
   },
   {
    "name": "ui_run_main",
    "sig": "ui_run_main(): void",
    "args": 0,
-   "desc": "no arguments",
+   "desc": "Starts the UI event loop — call once after building your windows; blocks until the last window closes.",
    "unsafe": false
   },
   {
    "name": "ui_quit",
    "sig": "ui_quit(): void",
    "args": 0,
-   "desc": "no arguments",
+   "desc": "Ends the UI event loop and closes the application.",
    "unsafe": false
   },
   {
    "name": "ui_window",
    "sig": "ui_window(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_window($title, $x, $y, $w, $h) — creates a window; returns its handle.",
    "unsafe": false
   },
   {
    "name": "ui_show",
    "sig": "ui_show(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_show($handle, $visible) — shows or hides a window/control.",
    "unsafe": false
   },
   {
    "name": "ui_title",
    "sig": "ui_title(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Sets the window title.",
    "unsafe": false
   },
   {
    "name": "ui_size",
    "sig": "ui_size(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_size($handle, $w, $h) — resizes a window/control.",
    "unsafe": false
   },
   {
    "name": "ui_pos",
    "sig": "ui_pos(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_pos($handle, $x, $y) — moves a window/control.",
    "unsafe": false
   },
   {
    "name": "ui_close",
    "sig": "ui_close(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Destroys a window/control handle.",
    "unsafe": false
   },
   {
    "name": "ui_alive",
    "sig": "ui_alive(...$args): bool",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "true while the window/event loop is still running.",
    "unsafe": false
   },
   {
    "name": "ui_add",
    "sig": "ui_add(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_add($parent, $kind, $text, $x, $y, $w, $h) — adds a control to a window. $kind: 1=window 2=button 3=label 4=input 5=checkbox 6=list 7=combo 8=progress 9=slider 10=group 11=tab 12=panel 13=menu 14=menuitem 15=picture. Returns the control handle.",
    "unsafe": false
   },
   {
    "name": "ui_set",
    "sig": "ui_set(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Sets the text of a control (label, button, input value, …).",
    "unsafe": false
   },
   {
    "name": "ui_get",
    "sig": "ui_get(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Reads the current text/value of a control (e.g. an input field).",
    "unsafe": false
   },
   {
    "name": "ui_enable",
    "sig": "ui_enable(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_enable($handle, $enabled) — enables/disables a control.",
    "unsafe": false
   },
   {
    "name": "ui_move",
    "sig": "ui_move(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Moves a control inside its parent.",
    "unsafe": false
   },
   {
    "name": "ui_focus",
    "sig": "ui_focus(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Gives the keyboard focus to a control.",
    "unsafe": false
   },
   {
    "name": "ui_items",
    "sig": "ui_items(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Number of items in a list/combo control.",
    "unsafe": false
   },
   {
    "name": "ui_remove",
    "sig": "ui_remove(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_remove($handle, $index) — removes an item from a list/combo.",
    "unsafe": false
   },
   {
    "name": "ui_clear",
    "sig": "ui_clear(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Removes all items from a list/combo (or text from an input).",
    "unsafe": false
   },
   {
    "name": "ui_ctrl_show",
    "sig": "ui_ctrl_show(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Shows/hides a single control.",
    "unsafe": false
   },
   {
    "name": "ui_selected",
    "sig": "ui_selected(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Index of the selected item in a list/combo (-1 when none).",
    "unsafe": false
   },
   {
    "name": "ui_select",
    "sig": "ui_select(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_select($handle, $index) — selects an item programmatically.",
    "unsafe": false
   },
   {
    "name": "ui_item_text",
    "sig": "ui_item_text(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Text of the item at the given index.",
    "unsafe": false
   },
   {
    "name": "ui_check_get",
    "sig": "ui_check_get(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "true when a checkbox is checked.",
    "unsafe": false
   },
   {
    "name": "ui_check_set",
    "sig": "ui_check_set(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_check_set($handle, $checked) — sets a checkbox.",
    "unsafe": false
   },
   {
    "name": "ui_progress",
    "sig": "ui_progress(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_progress($handle, $percent) — sets a progress bar (0–100).",
    "unsafe": false
   },
   {
    "name": "ui_slider_get",
    "sig": "ui_slider_get(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Current value of a slider.",
    "unsafe": false
   },
   {
    "name": "ui_slider_set",
    "sig": "ui_slider_set(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Sets a slider's value.",
    "unsafe": false
   },
   {
    "name": "ui_bg",
    "sig": "ui_bg(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_bg($handle, $color) — background color (RGB int, e.g. 0xFF0000 for red).",
    "unsafe": false
   },
   {
    "name": "ui_fg",
    "sig": "ui_fg(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Foreground (text) color as RGB int.",
    "unsafe": false
   },
   {
    "name": "ui_font",
    "sig": "ui_font(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_font($handle, $size[, $bold[, $italic[, $family]]]) — sets a control's font.",
    "unsafe": false
   },
   {
    "name": "ui_menu",
    "sig": "ui_menu(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Creates a menu bar / menu for a window.",
    "unsafe": false
   },
   {
    "name": "ui_menu_item",
    "sig": "ui_menu_item(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Appends an item to a menu; returns its handle (for ui_on callbacks).",
    "unsafe": false
   },
   {
    "name": "ui_menu_sep",
    "sig": "ui_menu_sep(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Appends a separator line to a menu.",
    "unsafe": false
   },
   {
    "name": "ui_menu_check",
    "sig": "ui_menu_check(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_menu_check($handle, $checked) — checkable menu item state.",
    "unsafe": false
   },
   {
    "name": "ui_on",
    "sig": "ui_on(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_on($handle, $event, $callback) — registers a closure for events: \"click\", \"change\", \"select\", \"close\", … The closure receives event-specific arguments.",
    "unsafe": false
   },
   {
    "name": "ui_timer",
    "sig": "ui_timer(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_timer($ms, $callback) — runs the closure every $ms milliseconds until ui_quit().",
    "unsafe": false
   },
   {
    "name": "ui_msg",
    "sig": "ui_msg(...$args): int",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "ui_msg($win, $title, $text[, $type]) — message box. $type: 0=info 1=warning 2=error 3=question.",
    "unsafe": false
   },
   {
    "name": "ui_open_file",
    "sig": "ui_open_file(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Opens the platform file-open dialog; returns the chosen path or false.",
    "unsafe": false
   },
   {
    "name": "ui_save_file",
    "sig": "ui_save_file(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Opens the platform save-file dialog; returns the chosen path or false.",
    "unsafe": false
   },
   {
    "name": "ui_pick_folder",
    "sig": "ui_pick_folder(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Folder-picker dialog; returns the path or false.",
    "unsafe": false
   },
   {
    "name": "ui_pick_color",
    "sig": "ui_pick_color(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Color-picker dialog; returns the RGB int or false.",
    "unsafe": false
   },
   {
    "name": "ui_clip_set",
    "sig": "ui_clip_set(string $s): int",
    "args": 1,
-   "desc": "string → string",
+   "desc": "Copies text to the system clipboard.",
    "unsafe": false
   },
   {
    "name": "ui_clip_get",
    "sig": "ui_clip_get(): string",
    "args": 0,
-   "desc": "no arguments",
+   "desc": "Reads text from the system clipboard.",
    "unsafe": false
+  },
+  {
+   "name": "malloc",
+   "sig": "malloc(int $n): mixed",
+   "args": 1,
+   "desc": "unsafe: allocates n bytes of raw memory; returns a pointer for memcpy/memset/ffi. Must be freed with free().",
+   "unsafe": true
   },
   {
    "name": "free",
    "sig": "free(...$args): void",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "unsafe: frees a raw pointer obtained from FFI. Wrong use corrupts memory — this is why it needs an unsafe block.",
    "unsafe": true
   },
   {
    "name": "memcpy",
    "sig": "memcpy(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "unsafe: copies $n bytes from one raw address to another.",
    "unsafe": true
   },
   {
    "name": "memset",
    "sig": "memset(...$args): mixed",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "unsafe: fills $n bytes at an address with a byte value.",
    "unsafe": true
   },
   {
    "name": "ffi_load",
    "sig": "ffi_load(string $s): mixed",
    "args": 1,
-   "desc": "string → string",
+   "desc": "unsafe: ffi_load(\"mylib.dll\") — loads a shared library for direct native calls. Returns a library handle or false.",
    "unsafe": true
   },
   {
    "name": "ffi_call",
    "sig": "ffi_call(...$args): mixed",
    "args": -1,
-   "desc": "flexible signature",
+   "desc": "unsafe: ffi_call($lib, \"symbol\") — resolves an exported function in a loaded library; call the result with the documented signature.",
    "unsafe": true
   },
   {
    "name": "heap_dump",
    "sig": "heap_dump(...$args): string",
    "args": -2,
-   "desc": "flexible signature",
+   "desc": "Returns a debug dump of the runtime heap (allocation count, sizes).",
    "unsafe": true
   }
  ]

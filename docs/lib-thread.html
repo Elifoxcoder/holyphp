@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>thread — HolyPHP standard library</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<script src="assets/nav.html.js"></script>
+<main>
+  <h1>thread</h1>
+  <p class="lead">Real OS threads for HolyPHP with Go-style channels, mutexes,
+  atomics, barriers and a worker Pool. Shared state is discouraged by design —
+  communicate by sending messages over channels.</p>
+
+  <div>
+    <span class="pill e">stdlib — embedded</span>
+    <span class="pill">real OS threads</span>
+    <span class="pill">Go-style channels</span>
+    <span class="pill">parallel_map</span>
+    <span class="pill p">no data races by design</span>
+  </div>
+
+  <h2>Primitives at a glance</h2>
+  <table>
+    <tr><th>Primitive</th><th>What it does</th></tr>
+    <tr><td><code>thr_spawn($fn)</code></td><td>run a closure on a new OS thread</td></tr>
+    <tr><td><code>thr_join($t)</code></td><td>wait for a thread to finish</td></tr>
+    <tr><td><code>thr_parallel_map($fn, $arr)</code></td><td>map a closure over an array on all cores, order preserved</td></tr>
+    <tr><td><code>chan_new($cap)</code> / <code>chan_send</code> / <code>chan_recv</code></td><td>Go-style channels — rendezvous or buffered ring; <code>chan_close</code> + drained receives like Go</td></tr>
+    <tr><td><code>mutex_new</code> / <code>mutex_lock</code> / <code>mutex_unlock</code></td><td>mutual exclusion (with a <code>Mutex::synchronized</code> wrapper class)</td></tr>
+    <tr><td><code>atomic_new</code> / <code>atomic_add</code> / <code>atomic_get</code></td><td>mutex-backed 64-bit counters, safe across threads</td></tr>
+    <tr><td><code>barrier_new($n)</code> / <code>barrier_wait</code></td><td>release N threads together, arrival indexes like pthreads</td></tr>
+    <tr><td><code>thr_cpu_count()</code></td><td>number of usable cores</td></tr>
+  </table>
+
+  <h2>Channels: the preferred style</h2>
+<pre><code class="hphp">import "thread";
+
+$ch = chan_new(4);            // buffered channel
+
+thr_spawn(function() use ($ch) {
+    foreach (["scan", "parse", "index"] as $step) {
+        chan_send($ch, $step . " done");
+    }
+    chan_close($ch);          // no more sends
+});
+
+while (true) {
+    $msg = chan_recv($ch);
+    if ($msg === false) { break; }     // closed and drained
+    echo $msg . "\n";
+}</code></pre>
+  <div class="note"><b>Rule:</b> captured arrays and objects are COW copies — each
+  thread sees its own snapshot. Never write one captured array from several
+  threads; send results back through a channel instead. That single rule is why
+  there are no data races to debug.</div>
+
+  <h2>Parallel map, one call</h2>
+<pre><code class="hphp">import "thread";
+
+$squares = thr_parallel_map(function($x) { return $x * $x; }, [1,2,3,4,5]);
+// [1, 4, 9, 16, 25] — input order kept regardless of finish order
+
+// chunked variant for big inputs: strided workers + channel collection
+$out = thr_map_chunked(function($x) { return heavy($x); }, $bigArray);</code></pre>
+
+  <h2>The Pool class</h2>
+<pre><code class="hphp">import "thread";
+
+$pool = new Pool(4);                     // 4 strided workers
+$pool->start(function($items, $wid) {
+    foreach ($items as $x) { process($x); }
+});
+foreach ($urls as $u) { $pool->submit($u); }
+$pool->collect($results);
+$pool->waitOne();
+$pool->shutdown();</code></pre>
+
+  <h2>Concurrency + event loop</h2>
+  <p>Threads and <a href="lib-async.html">async</a> compose: run a blocking fetch
+  or a private loop on a worker thread, deliver the outcome through a channel,
+  and the main loop never stalls.</p>
+<pre><code class="hphp">import "async";
+import "thread";
+
+$ch = chan_new(1);
+thr_spawn(function() use ($ch) {
+    async_get("http://slow.service/", function($r) use ($ch) {
+        chan_send($ch, strlen($r));
+    });
+});
+
+$lp = new Loop();
+$lp->every(100, function() use ($ch, $lp) {
+    $n = chan_try_recv($ch);
+    if ($n !== false) { echo "fetched $n bytes\n"; $lp->stop(); }
+});
+$lp->run();</code></pre>
+
+  <h2>Try it</h2>
+<pre><code class="bash">hphp pkg install thread
+hphp run examples/thr_demo.hphp</code></pre>
+  <p class="small muted">Ships embedded in the compiler — <code>import "thread"</code>
+  works offline. Source: <code>lib/thread/thread.hphp</code>.</p>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

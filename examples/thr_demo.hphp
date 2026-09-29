@@ -1,0 +1,88 @@
+// thr_demo.hphp — smoke test for the native threading primitives.
+//
+//   1. rendezvous channel handoff between two threads
+//   2. 8 workers racing on an atomic counter (must be exact)
+//   3. mutex-protected map writes
+//   4. barrier release timing
+//   5. thr_parallel_map over 10 items
+
+/* --- 1. channel handoff ------------------------------------------- */
+$ch = chan_new(0);                          // unbuffered: true rendezvous
+thr_spawn(function() use ($ch) {
+    thr_sleep_ms(80);
+    chan_send($ch, "hello from the worker");
+});
+$t0 = microtime();
+$msg = chan_recv($ch);
+$dt = (microtime() - $t0) * 1000;
+echo "1. recv after " . intval($dt) . " ms: $msg\n";
+if ($dt < 60) { echo "   FAIL: returned too early\n"; exit(1); }
+
+/* --- 2. atomic counter race --------------------------------------- */
+$c = atomic_new(0);
+for ($i = 0; $i < 8; $i++) {
+    thr_spawn(function() use ($c) {
+        for ($j = 0; $j < 5000; $j++) { atomic_add($c, 1); }
+    });
+}
+thr_sleep_ms(700);
+$cnt = atomic_get($c);
+echo "2. atomic counter: $cnt (want 40000)\n";
+if ($cnt != 40000) { echo "   FAIL: lost updates\n"; exit(1); }
+
+/* --- 3. per-thread aggregation, results via channel ----------------
+ * NOTE: captured arrays are COW copies — a thread must never write a
+ * captured array directly. Aggregate locally, send the result back. */
+$res = chan_new(4);
+for ($i = 0; $i < 4; $i++) {
+    thr_spawn(function() use ($res) {
+        $hits = 0;
+        for ($j = 0; $j < 1000; $j++) { $hits++; }
+        chan_send($res, $hits);
+    });
+}
+$sum = 0;
+for ($i = 0; $i < 4; $i++) { $sum += chan_recv($res); }
+echo "3. per-thread hits summed: $sum (want 4000)\n";
+if ($sum != 4000) { echo "   FAIL: lost updates\n"; exit(1); }
+
+/* --- 4. barrier: release is simultaneous, results via channel ------ */
+$bar = barrier_new(3);
+$bch = chan_new(3);
+for ($i = 0; $i < 3; $i++) {
+    thr_spawn(function() use ($bar, $bch, $i) {
+        thr_sleep_ms(30 * (3 - $i));       // thread 2 arrives first
+        $idx = barrier_wait($bar);
+        chan_send($bch, $i * 10 + $idx);   // id*10 + arrival index
+    });
+}
+$got = [];
+for ($i = 0; $i < 3; $i++) { $got[] = chan_recv($bch); }
+sort($got);
+echo "4. barrier (id,arrival): ";
+foreach ($got as $v) { echo "$v "; }
+echo "\n";
+if ($got[0] % 10 + $got[1] % 10 + $got[2] % 10 != 3) { echo "   FAIL\n"; exit(1); }
+
+/* --- 5. parallel map ----------------------------------------------- */
+$nums = [];
+for ($i = 1; $i <= 10; $i++) { $nums[] = $i; }
+$sq = thr_parallel_map(function($x) { return $x * $x; }, $nums, 4);
+echo "5. parallel_map: ";
+$sumsq = 0;
+foreach ($sq as $v) { echo "$v "; $sumsq += $v; }
+echo "  sum=$sumsq\n";
+if ($sumsq != 385) { echo "   FAIL\n"; exit(1); }
+
+/* --- 6. channel close semantics ------------------------------------ */
+$ch2 = chan_new(2);
+chan_send($ch2, 10);
+chan_send($ch2, 20);
+chan_close($ch2);
+$a = chan_recv($ch2);
+$b = chan_recv($ch2);
+$drained = chan_recv($ch2);
+echo "6. close-drain: $a $b drained=" . ($drained === false ? "true" : "false") . "\n";
+if ($a !== 10 || $b !== 20 || $drained !== false) { echo "   FAIL\n"; exit(1); }
+
+echo "ALL THREAD TESTS PASSED\n";

@@ -6,7 +6,7 @@
 // Shows: windows, buttons, labels, inputs, checkboxes, list boxes, combo
 // boxes, progress bar, slider, groups, menus, timers, message boxes,
 // file dialogs and the clipboard.
-import "ui.hphp";
+import "ui";
 
 $app = new App("HolyPHP UI Demo", 640, 420);
 $label_font = 10;

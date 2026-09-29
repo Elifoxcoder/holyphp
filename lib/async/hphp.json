@@ -1,0 +1,7 @@
+{
+  "name": "async",
+  "version": "1.0.0",
+  "entry": "async.hphp",
+  "description": "Cooperative event loop for HolyPHP: timers, socket watchers, an HTTP server and async HTTP GET",
+  "author": "HolyPHP"
+}

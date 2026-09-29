@@ -540,10 +540,17 @@ static const Type *check_bin(Scope *sc, Expr *e) {
     }
     /* comparisons */
     if (op == T_EQ || op == T_NEQ || op == T_NEQ2 || op == T_EQ2 || op == T_LT ||
-        op == T_GT || op == T_LE || op == T_GE || op == T_SPACESHIP) {
+        op == T_GT || op == T_LE || op == T_GE) {
         if (type_is_numeric(lt->kind) && type_is_numeric(rt->kind))
             unify_numeric(lt, rt);
         e->type = ty_bool;
+        return e->type;
+    }
+    /* spaceship yields int -1/0/1 in PHP (not bool) */
+    if (op == T_SPACESHIP) {
+        if (type_is_numeric(lt->kind) && type_is_numeric(rt->kind))
+            unify_numeric(lt, rt);
+        e->type = ty_int;
         return e->type;
     }
     /* logical */
@@ -754,6 +761,28 @@ static const Type *check_method_call(Scope *sc, Expr *e) {
 static const Type *check_builtin_call(Scope *sc, Expr *e, const Builtin *b) {
     size_t na = e->u.call.args.len;
     e->builtin = b->name; /* codegen needs the builtin name too */
+    /* preg_match/preg_match_all with an out-var: declare $matches BEFORE the
+     * arguments are checked so later argument positions see it too. */
+    if (strcmp(b->name, "preg_match") == 0 || strcmp(b->name, "preg_match_all") == 0) {
+        if (na < 2 || na > 3) sema_error(&e->tok, "%s() expects 2 or 3 arguments, got %zu", b->name, na);
+        if (na == 3) {
+            Expr *mv = e->u.call.args.items[2];
+            if (mv->kind != EX_VAR) {
+                sema_error(&mv->tok, "%s(): third argument must be a variable (fills it with the matches)", b->name);
+            } else {
+                if (!scope_find(sc, mv->u.var.name))
+                    mv->u.var.sym = scope_declare(sc, mv->u.var.name, type_array_of(ty_mixed), mv->tok, true);
+                if (mv->u.var.sym) {
+                    ((VarSym *)mv->u.var.sym)->is_auto = true;
+                    ((VarSym *)mv->u.var.sym)->is_preg_out = true;
+                }
+            }
+            e->type = ty_int;
+            for (size_t i = 0; i < na; i++)
+                check_expr(sc, e->u.call.args.items[i]);
+            return e->type;
+        }
+    }
     for (size_t i = 0; i < na; i++)
         check_expr(sc, e->u.call.args.items[i]);
     switch (b->shape) {
@@ -782,7 +811,33 @@ static const Type *check_builtin_call(Scope *sc, Expr *e, const Builtin *b) {
         e->type = ty_int;
         break;
     case B_PRINT:
+        e->type = b->ret;
+        break;
     case B_MISC:
+        /* compact("a", "b", ...): rewrite to a real map literal keyed by
+         * the argument strings, pulling values from local scope. */
+        if (strcmp(b->name, "compact") == 0) {
+            Expr *map = expr_new(EX_MAP_LIT, e->tok);
+            for (size_t i = 0; i < e->u.call.args.len; i++) {
+                Expr *a = e->u.call.args.items[i];
+                if (a->kind != EX_STR) continue;   /* non-literal: dropped */
+                const char *vn = a->u.str.s;
+                VarSym *vs = scope_find(sc, vn);
+                if (!vs) continue;                 /* unknown: skipped, PHP-like */
+                Expr *k = expr_new(EX_STR, a->tok);
+                k->u.str.s = vn;
+                k->type = ty_string;
+                Expr *ref = expr_new(EX_VAR, a->tok);
+                ref->u.var.name = vn;
+                ref->u.var.sym = vs;
+                ref->type = vs->type;
+                ptrvec_push(&map->u.map.keys, k);
+                ptrvec_push(&map->u.map.vals, ref);
+            }
+            *e = *map;
+            e->type = type_array_of(ty_mixed);
+            return e->type;
+        }
         e->type = b->ret;
         break;
     case B_ZERO:
@@ -955,24 +1010,32 @@ static const Type *check_expr(Scope *sc, Expr *e) {
              * level, so a top-level read must still resolve to it. */
             v = program_global_find(e->u.var.name);
         }
-        if (!v && e->u.var.name && strncmp(e->u.var.name, "PHP_", 4) == 0) {
+        if (!v && e->u.var.name && (strncmp(e->u.var.name, "PHP_", 4) == 0 || strncmp(e->u.var.name, "JSON_", 5) == 0 ||
+            strcmp(e->u.var.name, "M_PI") == 0 || strcmp(e->u.var.name, "M_E") == 0)) {
+            /* M_PI / M_E are handled by the codegen constant branch below; here
+             * they only need to pass the unknown-name guard with float type. */
             /* PHP predefined constants: PHP_INT_MAX, PHP_EOL, PHP_OS, ... */
             const char *n = e->u.var.name;
-            if (n == intern("PHP_INT_SIZE") || n == intern("PHP_INT_DIGITS") ||
-                n == intern("PHP_INT_MAX") || n == intern("PHP_INT_MIN") ||
-                n == intern("PHP_ROUND_HALF_UP") || n == intern("PHP_ROUND_HALF_DOWN") ||
-                n == intern("PHP_ROUND_HALF_EVEN") || n == intern("PHP_ROUND_HALF_ODD") ||
-                n == intern("PHP_FILE_APPEND") || n == intern("PHP_FILE_IGNORE_NEW_LINES") ||
-                n == intern("PHP_FILE_SKIP_EMPTY_LINES") || n == intern("PHP_FILE_USE_INCLUDE_PATH"))
+            if (strcmp(n, "PHP_INT_SIZE") == 0 || strcmp(n, "PHP_INT_DIGITS") == 0 ||
+                strcmp(n, "PHP_INT_MAX") == 0 || strcmp(n, "PHP_INT_MIN") == 0 ||
+                strcmp(n, "PHP_ROUND_HALF_UP") == 0 || strcmp(n, "PHP_ROUND_HALF_DOWN") == 0 ||
+                strcmp(n, "PHP_ROUND_HALF_EVEN") == 0 || strcmp(n, "PHP_ROUND_HALF_ODD") == 0 ||
+                strcmp(n, "PHP_FILE_APPEND") == 0 || strcmp(n, "PHP_FILE_IGNORE_NEW_LINES") == 0 ||
+                strcmp(n, "PHP_FILE_SKIP_EMPTY_LINES") == 0 || strcmp(n, "PHP_FILE_USE_INCLUDE_PATH") == 0)
                 e->type = ty_int;
-            else if (n == intern("PHP_FLOAT_EPSILON") || n == intern("PHP_EULER") ||
-                     n == intern("PHP_PI"))
+            else if (strcmp(n, "PHP_FLOAT_EPSILON") == 0 || strcmp(n, "PHP_EULER") == 0 ||
+                     strcmp(n, "PHP_PI") == 0 || strcmp(n, "M_PI") == 0 || strcmp(n, "M_E") == 0) {
                 e->type = ty_float;
-            else if (n == intern("PHP_OS") || n == intern("PHP_EOL") ||
-                     n == intern("PHP_VERSION") || n == intern("PHP_SAPI") ||
-                     n == intern("PHP_UNAME"))
+                return e->type;
+            }
+            else if (strcmp(n, "PHP_OS") == 0 || strcmp(n, "PHP_EOL") == 0 ||
+                     strcmp(n, "PHP_VERSION") == 0 || strcmp(n, "PHP_SAPI") == 0 ||
+                     strcmp(n, "PHP_UNAME") == 0)
                 e->type = ty_string;
-            else if (n == intern("PHP_TRUE") || n == intern("PHP_FALSE") || n == intern("PHP_NULL"))
+            else if (strcmp(n, "JSON_PRETTY_PRINT") == 0 || strcmp(n, "JSON_UNESCAPED_SLASHES") == 0 ||
+                     strcmp(n, "JSON_NUMERIC_CHECK") == 0 || strcmp(n, "JSON_FORCE_OBJECT") == 0)
+                e->type = ty_int;
+            else if (strcmp(n, "PHP_TRUE") == 0 || strcmp(n, "PHP_FALSE") == 0 || strcmp(n, "PHP_NULL") == 0)
                 e->type = ty_mixed;
             else
                 sema_error(&e->tok, "undefined constant %s", n);
@@ -1019,7 +1082,7 @@ static const Type *check_expr(Scope *sc, Expr *e) {
                 const Type *k2 = check_expr(sc, e->u.map.keys.items[i]);
                 const Type *v2 = check_expr(sc, e->u.map.vals.items[i]);
                 /* Every entry contributes: a mixed-value map like
-                 * ["name" => "Elias", "alter" => 25] must be hval-valued,
+                 * ["name" => "Ada", "alter" => 25] must be hval-valued,
                  * otherwise the int entry gets compiled as a string.
                  * Numeric entries are NOT unified either — the runtime keeps
                  * one hval per slot, so declaring [1, 2.5] as float would
@@ -1265,7 +1328,12 @@ static const Type *check_expr(Scope *sc, Expr *e) {
         /* list destructuring "[$a, $b] = expr;" / "[$k => $v] = expr;" */
         if (tgt->kind == EX_ARRAY_LIT && e->u.assign.op.kind == T_ASSIGN) {
             const Type *st = e->u.assign.value ? check_expr(sc, e->u.assign.value) : ty_mixed;
-            bool keyed = tgt->u.map.keys.len > 0;
+            bool keyed = tgt->u.map.vals.len > 0;
+            if (keyed) {
+                /* pattern keys participate in checking so codegen can box them */
+                for (size_t i = 0; i < tgt->u.map.keys.len; i++)
+                    check_expr(sc, (Expr *)tgt->u.map.keys.items[i]);
+            }
             size_t n = keyed ? tgt->u.map.vals.len : tgt->u.arr.elems.len;
             for (size_t i = 0; i < n; i++) {
                 Expr *slot = keyed ? (Expr *)tgt->u.map.vals.items[i]
@@ -1330,9 +1398,9 @@ static const Type *check_expr(Scope *sc, Expr *e) {
             tt = check_expr(sc, tgt);
             sema_error(&tgt->tok, "invalid assignment target");
         }
-        /* compound assignment: a .= b, a += b ... */
+        /* compound assignment: a .= b, a += b ... (??= behaves like =) */
         TokKind op = e->u.assign.op.kind;
-        if (op != T_ASSIGN) {
+        if (op != T_ASSIGN && op != T_QQASSIGN) {
             if (op == T_DOTASSIGN) {
                 if (vt->kind != TY_STRING || (tt && tt->kind != TY_STRING && tt->kind != TY_MIXED))
                     sema_error(&e->u.assign.op, ".= requires string operands");
@@ -1422,6 +1490,14 @@ static const Type *check_expr(Scope *sc, Expr *e) {
             VarSym *v = scope_declare(&fs, pm->name, pm->resolved, pm->name_tok, pm->is_mut);
             pm->sym = v;
             v->is_param = true;
+            /* PHP by-ref parameters alias the caller's variable: the callee
+             * sees writes, the caller sees the callee's writes. Codegen passes
+             * &slot (typed pointer); is_param_ref makes reads/writes emit
+             * (*x) so the body operates through the pointer. */
+            if (pm->by_ref) {
+                v->is_param_ref = true;
+                v->is_mut = true;
+            }
         }
         /* declare use() captures: by-value copies into env hvals; by-ref
          * captures (&$x) alias the outer variable through a shared heap
@@ -1841,6 +1917,11 @@ static void check_fn_body(Scope *parent, AstFn *fn, const Type *self_type) {
         pm->resolved = pt;
         VarSym *v = scope_declare(&sc, pm->name, pt, pm->name_tok, pm->is_mut);
         v->is_param = true;
+        /* by-ref param: alias the caller's slot (see check_fn_body) */
+        if (pm->by_ref) {
+            v->is_param_ref = true;
+            v->is_mut = true;
+        }
         pm->sym = v;
     }
     /* PHP-style: a function with no written return type is checked as if it

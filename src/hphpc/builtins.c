@@ -50,8 +50,8 @@ void builtins_init(void) {
     add("str_pad",       B_MISC,    ty_string, false, false);
     add("str_replace",   B_MISC,    ty_string, false, false);
     add("substr",        B_MISC,    ty_string, false, false);
-    add("strstr",        B_STR2,    ty_string, false, false);
-    add("strchr",        B_STR2,    ty_string, false, false);
+    add("strstr",        B_STR2,    ty_mixed,  false, false);   /* string|false, PHP-style */
+    add("strchr",        B_STR2,    ty_mixed,  false, false);   /* alias, string|false */
     add("strpos",        B_MISC,    ty_mixed,  false, false);   /* (hay, needle[, offset]) -> int|false, PHP-style */
     add("str_contains",  B_STR2,    ty_bool,   false, false);
     add("str_starts_with", B_STR2,  ty_bool,   false, false);
@@ -65,10 +65,43 @@ void builtins_init(void) {
     add("implode",       B_MISC,    ty_string, false, false);
     add("join",          B_MISC,    ty_string, false, false);
     add("nl2br",         B_STR1,    ty_string, false, false);
-    add("number_format", B_MISC,    ty_string, false, false);
+    add("number_format", B_MISC,    ty_string, false, false);   /* (n[, dec[, dsep[, tsep]]]) */
     add("unset",         B_MISC,    ty_void,   false, false);
     add("json_encode",   B_MISC,    ty_string, false, false);
+    add("json_encode_pretty", B_STR1, ty_string, false, false);   /* 2nd impl: flags & 1 = pretty */
     add("json_decode",   B_STR_INT, ty_mixed,  false, false);
+
+    /* regex (PCRE-style, /pattern/flags with i s m) */
+    add("preg_match",      B_MISC, ty_mixed,  false, false);  /* (pat, subj) -> matches|false */
+    add("preg_match_all",  B_MISC, ty_mixed,  false, false);  /* (pat, subj) -> array of matches|false */
+    add("preg_replace",    B_MISC, ty_mixed,  false, false);  /* (pat, rep, subj) -> string|false */
+    add("preg_split",      B_MISC, ty_mixed,  false, false);  /* (pat, subj) -> array */
+    add("preg_grep",       B_MISC, ty_mixed,  false, false);  /* (pat, array) -> filtered */
+
+    /* crypto */
+    add("sha256",           B_STR1, ty_string, false, false);
+    add("hash_hmac",        B_MISC, ty_mixed,  false, false);  /* (algo, data, key[, raw]) */
+    add("password_hash",    B_STR1, ty_string, false, false);
+    add("password_verify",  B_STR2, ty_bool,   false, false);
+    add("random_bytes",     B_INT_INT, ty_string, false, false);
+    add("hash_equals",      B_STR2, ty_bool,   false, false);
+
+    /* time */
+    add("mktime",           B_MISC, ty_int,    false, false);  /* (h, i, s, m, d, y) */
+    add("strtotime",        B_STR1, ty_int,    false, false);
+
+    /* http extras */
+    add("http_post",        B_MISC, ty_mixed,  false, false);  /* (url, body[, headers]) */
+    add("parse_url",        B_STR1, ty_mixed,  false, false);
+    add("http_build_query", B_STR1, ty_string, false, false);
+
+    /* mysql client */
+    add("mysql_connect",   B_MISC, ty_mixed,  false, false);  /* (host[, port[, user[, pass[, db]]]]) */
+    add("mysql_query",     B_MISC, ty_mixed,  false, false);  /* (conn, sql) -> rows|affected|false */
+    add("mysql_exec",      B_MISC, ty_mixed,  false, false);  /* (conn, sql) -> affected|false */
+    add("mysql_insert_id", B_MISC, ty_int,    false, false);
+    add("mysql_close",     B_MISC, ty_bool,   false, false);
+    add("mysql_escape",    B_STR1, ty_string, false, false);
     /* 1 arg, or 2 with PHP's $raw_output flag (real SHA-1/MD5 digests) */
     add("md5",           B_MISC,    ty_string, false, false);
     add("sha1",          B_MISC,    ty_string, false, false);
@@ -107,6 +140,22 @@ void builtins_init(void) {
     add("isset",         B_MISC,    ty_bool,   false, true);
     add("range",         B_RANGE,   ty_mixed,  false, false);
     add("compact",       B_MISC,    ty_mixed,  false, false);
+    add("array_column",  B_MISC,    ty_mixed,  false, false);
+    add("array_chunk",   B_MISC,    ty_mixed,  false, false);
+    add("array_pad",     B_MISC,    ty_mixed,  false, false);
+    add("array_replace", B_MISC,    ty_mixed,  false, false);
+    add("array_fill_keys", B_MISC,  ty_mixed,  false, false);
+    add("array_key_first", B_MISC,  ty_mixed,  false, false);
+    add("array_key_last",  B_MISC,  ty_mixed,  false, false);
+    add("usort",         B_MISC,    ty_bool,   false, false);
+    add("uasort",        B_MISC,    ty_bool,   false, false);
+    add("uksort",        B_MISC,    ty_bool,   false, false);
+    add("array_walk",    B_MISC,    ty_bool,   false, false);
+    add("array_walk_recursive", B_MISC, ty_bool, false, false);
+    add("substr_count",  B_STR2,    ty_int,    false, false);
+    add("str_shuffle",   B_STR1,    ty_string, false, false);
+    add("strip_tags",    B_MISC,    ty_string, false, false);
+    add("html_entity_decode", B_STR1, ty_string, false, false);
     add("array_map",     B_MISC,    ty_mixed,  false, true);
     add("array_filter",  B_MISC,    ty_mixed,  false, true);
     add("array_reduce",  B_MISC,    ty_mixed,  false, false);
@@ -191,22 +240,37 @@ void builtins_init(void) {
 
     /* io / process */
     add("readline",      B_STR1,    ty_string, false, false);
-    add("file_get_contents", B_STR1, ty_string, false, false);
-    add("file_put_contents", B_STR2, ty_int,    false, false);
+    add("file_get_contents", B_STR1, ty_mixed, false, false);   /* string|false, PHP-style */
+    add("file_put_contents", B_MISC, ty_mixed, false, false);   /* int bytes|false, PHP-style */
 /* filesystem helpers */
     add("file_exists",   B_STR1,    ty_bool,   false, false);
     add("is_dir",        B_STR1,    ty_bool,   false, false);
     add("filesize",      B_STR1,    ty_int,    false, false);
-    add("mkdir",         B_STR1,    ty_bool,   false, false);
+    add("mkdir",         B_MISC,    ty_bool,   false, false);   /* (path[, recursive[, mode]]) */
     add("rmdir",         B_STR1,    ty_bool,   false, false);
     add("unlink",        B_STR1,    ty_bool,   false, false);
     add("rename",        B_STR2,    ty_bool,   false, false);
-    add("copy",          B_STR2,    ty_bool,   false, false);
-    add("fgets",         B_STR1,    ty_string, false, false);
+    add("copy",          B_STR2,    ty_mixed,  false, false);   /* bool|false */
+    add("fgets",         B_STR1,    ty_mixed,  false, false);   /* string|false at EOF, PHP-style */
     add("fwrite",        B_STR2,    ty_int,    false, false);
     add("fopen",         B_STR2,    ty_mixed,  false, false);
     add("fclose",        B_STR1,    ty_bool,   false, false);
     add("scandir",       B_STR1,    type_array_of(ty_string), false, false);
+    add("dirname",       B_STR1,    ty_string, false, false);
+    add("basename",      B_MISC,    ty_string, false, false);
+    add("pathinfo",      B_MISC,    ty_mixed,  false, false);
+    add("realpath",      B_STR1,    ty_mixed,  false, false);
+    add("is_file",       B_STR1,    ty_bool,   false, false);
+    add("is_readable",   B_STR1,    ty_bool,   false, false);
+    add("is_writable",   B_STR1,    ty_bool,   false, false);
+    add("touch",         B_STR1,    ty_bool,   false, false);
+    add("glob",          B_STR1,    type_array_of(ty_string), false, false);
+    add("sys_get_temp_dir", B_ZERO, ty_string, false, false);
+    add("checkdate",     B_MISC,    ty_bool,   false, false);
+    add("fread",         B_MISC,    ty_string, false, false);
+    add("feof",          B_MISC,    ty_bool,   false, false);
+    add("http_get",      B_STR1,    ty_mixed,  false, false);
+    add("http_request",  B_MISC,    ty_mixed,  false, false);
     /* sockets — the transport layer for library code (lib/websocket.hphp) */
     add("stream_socket_server", B_MISC, ty_mixed,  false, false);
     add("stream_socket_client", B_MISC, ty_mixed,  false, false);
@@ -239,7 +303,7 @@ void builtins_init(void) {
     add("gc_collect_cycles", B_MISC, ty_int,   false, false);
     add("sys_getloadavg", B_MISC,   ty_mixed,  false, false);
     add("php_logo_guid", B_MISC,    ty_string, false, false);
-    add("date",          B_STR1,    ty_string, false, false);
+    add("date",          B_MISC,    ty_string, false, false);   /* (fmt[, ts]) */
     add("time",          B_MISC,    ty_int,    false, false);
     add("usleep",        B_INT_INT, ty_void,   false, false);
     add("sleep",         B_INT_INT, ty_int,    false, false);
@@ -292,6 +356,33 @@ void builtins_init(void) {
     add("ui_pick_color",  B_MISC,    ty_mixed,   false, false);
     add("ui_clip_set",    B_STR1,    ty_int,     false, false);
     add("ui_clip_get",    B_ZERO,    ty_string,  false, false);
+
+    /* threading: workers, channels, mutexes, barriers, atomics */
+    add("thr_spawn",       B_MISC,  ty_mixed,  false, false);  /* (closure[, args]) -> tid|false */
+    add("thr_join",        B_MISC,  ty_mixed,  false, false);  /* (tid) -> bool */
+    add("thr_current",     B_ZERO,  ty_int,    false, false);
+    add("thr_id",          B_ZERO,  ty_int,    false, false);  /* OS-level id */
+    add("thr_sleep_ms",    B_INT_INT, ty_void, false, false);
+    add("thr_cpu_count",   B_ZERO,  ty_int,    false, false);
+    add("thr_parallel_map", B_MISC, ty_mixed,  false, false); /* (closure, items[, workers]) -> array */
+    add("chan_new",        B_INT_INT, ty_int,  false, false);  /* (capacity) -> id */
+    add("chan_send",       B_MISC,  ty_bool,   false, false);  /* (ch, value), throws when closed */
+    add("chan_recv",       B_MISC,  ty_mixed,  false, false);  /* (ch) -> value|false (closed+drained) */
+    add("chan_try_send",   B_MISC,  ty_bool,   false, false);
+    add("chan_try_recv",   B_MISC,  ty_mixed,  false, false);  /* value|false */
+    add("chan_close",      B_MISC,  ty_bool,   false, false);
+    add("mutex_new",       B_ZERO,  ty_int,    false, false);
+    add("mutex_lock",      B_MISC,  ty_bool,   false, false);
+    add("mutex_trylock",   B_MISC,  ty_bool,   false, false);
+    add("mutex_unlock",    B_MISC,  ty_bool,   false, false);
+    add("mutex_free",      B_MISC,  ty_bool,   false, false);
+    add("barrier_new",     B_INT_INT, ty_int,  false, false);
+    add("barrier_wait",    B_MISC,  ty_int,    false, false);  /* -> arrival index */
+    add("atomic_new",      B_MISC,  ty_int,    false, false);  /* ([init]) -> id */
+    add("atomic_get",      B_MISC,  ty_int,    false, false);
+    add("atomic_set",      B_MISC,  ty_bool,   false, false);
+    add("atomic_add",      B_MISC,  ty_int,    false, false);  /* -> previous value */
+    add("atomic_cas",      B_MISC,  ty_bool,   false, false);
 
     /* unsafe: raw memory & ffi */
     add("malloc",        B_INT_INT, ty_mixed,  true,  false);

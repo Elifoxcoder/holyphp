@@ -249,8 +249,11 @@ typedef struct hp_try_frame {
     struct hp_try_frame *prev;
     bool caught;
 } hp_try_frame;
-extern hp_try_frame *hp_cur_try;
-extern hval hp_exception;
+/* thread-local interpreter state: worker threads (hphp_thr.c) get their own
+ * try-stack and exception slot, so throw/catch works inside workers */
+#define HP_THREAD_QUAL __thread
+extern HP_THREAD_QUAL hp_try_frame *hp_cur_try;
+extern HP_THREAD_QUAL hval hp_exception;
 void hp_try_push(hp_try_frame *f);
 void hp_try_pop(hp_try_frame *f);
 void hp_throw(hval v);
@@ -325,10 +328,46 @@ hval hpbi_split(hval sep, hval s);
 hval hpbi_implode(hval glue, hval arr);
 hval hpbi_join(hval glue, hval arr);
 hval hpbi_nl2br(hval s);
-hval hpbi_number_format(hval n, hval dec);
+hval hpbi_number_format(hval n, hval dec, hval dsep, hval tsep);
 hval hpbi_unset(harr *a, hval key);
 hval hpbi_json_encode(hval v);
+hval hpbi_json_encode2(hval v, hval flags);      /* flags & 1 = JSON_PRETTY_PRINT */
+
+/* ---- regex ---- */
+hval hpbi_preg_match(hval pat, hval subj);
+hval hpbi_preg_match_all(hval pat, hval subj);
+hval hpbi_preg_match3(hval pat, hval subj, hval *out);
+hval hpbi_preg_match_all3(hval pat, hval subj, hval *out);
+hval hpbi_preg_replace(hval pat, hval rep, hval subj);
+hval hpbi_preg_split(hval pat, hval subj);
+hval hpbi_preg_grep(hval pat, hval arr);
+
+/* ---- crypto ---- */
+hval hpbi_sha256(hval s);
+hval hpbi_hash_hmac(hval algo, hval data, hval key, hval raw_output);
+hval hpbi_password_hash(hval pw);
+hval hpbi_password_verify(hval pw, hval hash);
+hval hpbi_random_bytes(hval n);
+hval hpbi_hash_equals(hval known, hval user);
+
+/* ---- time ---- */
+hval hpbi_mktime(hval hour, hval min, hval sec, hval mon, hval day, hval year);
+hval hpbi_strtotime(hval s);
+
+/* ---- http extras ---- */
+hval hpbi_http_post(hval url, hval body, hval headers);
+hval hpbi_parse_url(hval url);
+hval hpbi_http_build_query(hval d);
+
+/* ---- mysql ---- */
+hval hpbi_mysql_connect(hval host, hval port, hval user, hval pass, hval db);
+hval hpbi_mysql_query(hval conn, hval sql);
+hval hpbi_mysql_exec(hval conn, hval sql);
+hval hpbi_mysql_insert_id(hval conn);
+hval hpbi_mysql_close(hval conn);
+hval hpbi_mysql_escape(hval s);
 hval hpbi_json_decode(hval s);
+hval hpbi_json_decode2(hval v, hval assoc);
 hval hpbi_md5(hval s, hval raw_output);   /* real MD5; raw=true -> 16 bytes */
 hval hpbi_sha1(hval s, hval raw_output);  /* real SHA-1; raw=true -> 20 bytes */
 
@@ -344,6 +383,34 @@ hval hpbi_stream_eof(hval s);
 hval hpbi_stream_peer(hval s);
 hval hpbi_stream_close(hval s);
 hval hpbi_crc32(hval s);
+
+/* threading (see hphp_thr.c) — ids are integers, closures run on real OS threads */
+hval hpbi_thr_spawn(hval clo, hval args);
+hval hpbi_thr_join(hval tid);
+hval hpbi_thr_current(void);
+hval hpbi_thr_id(void);
+hval hpbi_thr_sleep_ms(hval ms);
+hval hpbi_thr_cpu_count(void);
+hval hpbi_thr_parallel_map(hval clo, hval items, hval workers);
+hval hpbi_chan_new(hval cap);
+hval hpbi_chan_send(hval ch, hval v);       /* throws on closed channel */
+hval hpbi_chan_recv(hval ch);               /* value, or false when closed+drained */
+hval hpbi_chan_try_send(hval ch, hval v);   /* false instead of blocking */
+hval hpbi_chan_try_recv(hval ch);           /* value, or false when nothing ready */
+hval hpbi_chan_close(hval ch);
+hval hpbi_mutex_new(void);
+hval hpbi_mutex_lock(hval m);
+hval hpbi_mutex_trylock(hval m);
+hval hpbi_mutex_unlock(hval m);
+hval hpbi_mutex_free(hval m);
+hval hpbi_barrier_new(hval n);
+hval hpbi_barrier_wait(hval b);             /* arrival index; last thread gets n-1 */
+hval hpbi_atomic_new(hval init);
+hval hpbi_atomic_get(hval a);
+hval hpbi_atomic_set(hval a, hval v);
+hval hpbi_atomic_add(hval a, hval delta);   /* returns the previous value */
+hval hpbi_atomic_cas(hval a, hval expect, hval set);
+hval hpbi_unset_slot(harr **slot, hval key);   /* unset($obj->arr[$k]) */
 hval hpbi_base64_encode(hval s);
 hval hpbi_base64_decode(hval s);
 hval hpbi_urlencode(hval s);
@@ -363,7 +430,7 @@ hval hpbi_similar_text(hval a, hval b);
 hval hpbi_levenshtein(hval a, hval b);
 hval hpbi_array_keys(hval a);
 hval hpbi_array_values(hval a);
-hval hpbi_array_merge(hval a, hval b);
+hval hpbi_array_merge(hval a, hval b, hval c, hval d);
 hval hpbi_array_slice(hval a, hval off, hval len);
 hval hpbi_array_reverse(hval a);
 hval hpbi_array_sum(hval a);
@@ -373,6 +440,8 @@ hval hpbi_in_array(hval needle, hval hay);
 hval hpbi_array_search(hval needle, hval hay);
 hval hpbi_array_key_exists(hval k, hval a);
 hval hpbi_isset(hval v);
+hval hpbi_isset_raw(harr **slot, hval key);
+hval hpbi_isset_val(hval *slot, hval key);
 hval hpbi_range(hval lo, hval hi);
 hval hpbi_array_map(hval fn, hval a);
 hval hpbi_array_filter(hval a, hval fn);
@@ -380,8 +449,8 @@ hval hpbi_array_reduce(hval a, hval fn, hval init);
 hval hpbi_array_flip(hval a);
 hval hpbi_array_fill(hval start, hval n, hval v);
 hval hpbi_array_combine(hval keys, hval vals);
-hval hpbi_array_diff(hval a, hval b);
-hval hpbi_array_intersect(hval a, hval b);
+hval hpbi_array_diff(hval a, hval b, hval c, hval d);
+hval hpbi_array_intersect(hval a, hval b, hval c, hval d);
 hval hpbi_array_push(hval a, hval v);
 hval hpbi_array_pop(hval a);
 hval hpbi_end(hval a);
@@ -398,7 +467,7 @@ hval hpbi_asort(hval a);
 hval hpbi_max(hval a);
 hval hpbi_min(hval a);
 hval hpbi_abs(hval v);
-hval hpbi_round(hval v, hval prec);
+hval hpbi_round(hval v, hval prec, hval mode);
 hval hpbi_floor(hval v);
 hval hpbi_ceil(hval v);
 hval hpbi_sqrt(hval v);
@@ -455,7 +524,7 @@ hval hpbi_getcwd(void);
 hval hpbi_file_exists(hval path);
 hval hpbi_is_dir(hval path);
 hval hpbi_filesize(hval path);
-hval hpbi_mkdir(hval path);
+hval hpbi_mkdir(hval path, hval recursive, hval mode);
 hval hpbi_rmdir(hval path);
 hval hpbi_unlink(hval path);
 hval hpbi_rename(hval from, hval to);
@@ -474,7 +543,7 @@ hval hpbi_bindec(hval s);
 hval hpbi_octdec(hval s);
 hval hpbi_hexdec(hval s);
 hval hpbi_file_get_contents(hval path);
-hval hpbi_file_put_contents(hval path, hval data);
+hval hpbi_file_put_contents(hval path, hval data, hval flags);
 hval hpbi_getenv(hval name);
 hval hpbi_putenv(hval kv);
 hval hpbi_php_uname(void);
@@ -485,7 +554,7 @@ hval hpbi_hrtime(hval as_number);
 hval hpbi_memory_get_usage(void);
 hval hpbi_memory_get_peak_usage(void);
 hval hpbi_gc_collect_cycles(void);
-hval hpbi_date(hval fmt);
+hval hpbi_date2(hval fmt, hval ts);   /* ts = null -> now */
 hval hpbi_time(void);
 hval hpbi_usleep(hval us);
 hval hpbi_sleep(hval s);
@@ -627,6 +696,47 @@ hval hpbi_ui_clip_get(void);
 /* heap boxes for by-ref captures (use (&$x)) */
 hval *hp_box_new(void);
 void hp_box_free(hval *b);
+
+/* ---------- PHP 8 parity additions ---------- */
+/* closure-based sorting / walking */
+hval hpbi_usort(hval a, hval fn);
+hval hpbi_uasort(hval a, hval fn);
+hval hpbi_uksort(hval a, hval fn);
+hval hpbi_array_walk(hval a, hval fn, hval userdata);
+hval hpbi_array_walk_recursive(hval a, hval fn, hval userdata);
+/* arrays */
+hval hpbi_array_column(hval rows, hval col, hval index_key);
+hval hpbi_array_chunk(hval a, hval size, hval preserve);
+hval hpbi_array_pad(hval a, hval size, hval v);
+hval hpbi_array_replace(hval a, hval b, hval c, hval d);
+hval hpbi_array_fill_keys(hval keys, hval v);
+hval hpbi_array_key_first(hval a);
+hval hpbi_array_key_last(hval a);
+hval hpbi_compact(hval a, hval b, hval c, hval d);
+/* strings */
+hval hpbi_vsprintf(hval fmt, hval args);
+hval hpbi_substr_count(hval hay, hval needle);
+hval hpbi_str_shuffle(hval s);
+hval hpbi_strip_tags(hval s, hval allowed);
+hval hpbi_html_entity_decode(hval s);
+/* filesystem (paths) */
+hval hpbi_dirname(hval path);
+hval hpbi_basename(hval path, hval suffix);
+hval hpbi_pathinfo(hval path, hval flags);
+hval hpbi_realpath(hval path);
+hval hpbi_is_file(hval path);
+hval hpbi_is_readable(hval path);
+hval hpbi_is_writable(hval path);
+hval hpbi_touch(hval path);
+hval hpbi_glob(hval pattern);
+hval hpbi_sys_get_temp_dir(void);
+hval hpbi_checkdate(hval m, hval d, hval y);
+/* file handles */
+hval hpbi_fread(hval fh, hval n);
+hval hpbi_feof(hval fh);
+/* http client (http:// only) */
+hval hpbi_http_get(hval url);
+hval hpbi_http_request(hval url, hval method, hval body, hval headers);
 
 #ifdef __cplusplus
 }

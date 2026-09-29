@@ -1,8 +1,9 @@
 # HolyPHP — Windows installer (MSIX)
 
 Ships **the compiler only**: `hphp.exe` with runtime + stdlib embedded. No gcc,
-and no libraries — `ui` / `websocket` are installed through the package manager
-afterwards (`hphp install ui`, `hphp install websocket`).
+and the five standard libraries (`ui`, `websocket`, `async`, `thread`, `mathx`)
+are already embedded — extras come from the public registry:
+`hphp pkg install <name>`.
 
 ## Build
 

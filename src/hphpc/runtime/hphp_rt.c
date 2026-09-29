@@ -6,7 +6,17 @@
  *   - objects are owned via own<T>/Rc<T> smart pointers (refcounted)
  *   - raw pointers only exist inside unsafe blocks; runtime helpers used
  *     there map directly onto C (malloc/free/memcpy/memset)
+ *
+ * POSIX: _DEFAULT_SOURCE must be defined before any system include (glibc
+ * hides POSIX symbols under strict -std=c11 otherwise).
  */
+#if !defined(_WIN32)
+#define _DEFAULT_SOURCE 1
+#endif
+
+/* thread-local interpreter state (see hphp_thr.c): every worker thread
+ * runs its own try-stack, exception slot and closure environment
+ * (HP_THREAD_QUAL comes from hphp_rt.h) */
 #include "hphp_rt.h"
 #include <stdlib.h>
 #include <string.h>
@@ -611,9 +621,21 @@ void hp_arr_unshift(harr *a, hval v) {
     a->len++;
 }
 
+/* strict array-key comparison (PHP array keys): only int==int and
+ * str==str match. The loose hp_val_eq would accept 0 == "a" because the
+ * numeric conversion of "a" is 0 — that corrupted mixed-key maps. */
+static bool hp_key_eq(hval a, hval b) {
+    if (a.tag == HV_INT && b.tag == HV_INT) return a.u.i == b.u.i;
+    if (a.tag == HV_STR && b.tag == HV_STR) return hp_str_eq(a.u.s, b.u.s);
+    return false;
+}
+
 static int64_t hp_key_index(harr *a, hval key) {
     if (a->is_map) {
-        /* fast path: open-addressing index over int keys */
+        /* fast path: open-addressing hash index (int and string keys).
+         * String keys are the common PHP pattern ($m["name"] => x), so they
+         * get the same O(1) treatment as int keys via FNV-1a (hp_str_hash
+         * caches the digest in the string itself). */
         if (a->index && key.tag == HV_INT) {
             uint32_t mask = a->icap - 1;
             uint32_t h = ((uint64_t)key.u.i * 0x9E3779B97F4A7C15ULL) >> 32;
@@ -628,8 +650,23 @@ static int64_t hp_key_index(harr *a, hval key) {
                 slot = (slot + 1) & mask;
             }
         }
+        if (a->index && key.tag == HV_STR && key.u.s) {
+            uint32_t mask = a->icap - 1;
+            uint32_t h = hp_str_hash(key.u.s);
+            uint32_t slot = h & mask;
+            for (;;) {
+                uint32_t e = a->index[slot];
+                if (e == 0) return -1;
+                if (e != 0xFFFFFFFFu) {
+                    hval k = a->keys[e - 1];
+                    if (k.tag == HV_STR && k.u.s && hp_str_eq(k.u.s, key.u.s))
+                        return (int64_t)(e - 1);
+                }
+                slot = (slot + 1) & mask;
+            }
+        }
         for (size_t i = 0; i < a->len; i++)
-            if (hp_val_eq(a->keys[i], key)) return (int64_t)i;
+            if (hp_key_eq(a->keys[i], key)) return (int64_t)i;
         return -1;
     }
     if (key.tag == HV_STR) return -1; /* string index on list */
@@ -650,6 +687,13 @@ static uint32_t hp_hash_int(int64_t k) {
     return (uint32_t)(x >> 32);
 }
 
+/* string-key hash: FNV-1a (cached in the string), forced non-zero so 0 can
+ * stay the "empty slot" marker in the index table */
+static uint32_t hp_hash_str(hstr *s) {
+    uint32_t h = hp_str_hash(s);
+    return h ? h : 1;
+}
+
 static void hp_arr_index_rebuild(harr *a, uint32_t icap) {
     free(a->index);
     a->index = calloc(icap, sizeof(uint32_t));
@@ -657,8 +701,9 @@ static void hp_arr_index_rebuild(harr *a, uint32_t icap) {
     a->ibudget = icap / 2;   /* keep load <= 0.5 between rebuilds */
     for (size_t i = 0; i < a->len; i++) {
         hval k = a->keys[i];
-        if (k.tag != HV_INT) continue;
-        uint32_t slot = hp_hash_int(k.u.i) & (icap - 1);
+        if (k.tag != HV_INT && k.tag != HV_STR) continue;
+        uint32_t slot = (k.tag == HV_INT ? hp_hash_int(k.u.i)
+                                         : hp_hash_str(k.u.s)) & (icap - 1);
         while (a->index[slot] != 0 && a->index[slot] != 0xFFFFFFFFu)
             slot = (slot + 1) & (icap - 1);
         a->index[slot] = (uint32_t)i + 1;
@@ -666,7 +711,8 @@ static void hp_arr_index_rebuild(harr *a, uint32_t icap) {
 }
 
 static void hp_arr_index_add(harr *a, size_t valslot) {
-    if (a->keys[valslot].tag != HV_INT) return;
+    if (a->keys[valslot].tag != HV_INT && a->keys[valslot].tag != HV_STR)
+        return;
     if (!a->index) {
         if (a->len < 12) return;          /* too small to be worth it */
         hp_arr_index_rebuild(a, 32);
@@ -676,7 +722,9 @@ static void hp_arr_index_add(harr *a, size_t valslot) {
         uint32_t want = (a->len * 2 >= a->icap) ? a->icap * 2 : a->icap;
         hp_arr_index_rebuild(a, want);
     }
-    uint32_t slot = hp_hash_int(a->keys[valslot].u.i) & (a->icap - 1);
+    uint32_t slot = (a->keys[valslot].tag == HV_INT
+                         ? hp_hash_int(a->keys[valslot].u.i)
+                         : hp_hash_str(a->keys[valslot].u.s)) & (a->icap - 1);
     while (a->index[slot] != 0 && a->index[slot] != 0xFFFFFFFFu)
         slot = (slot + 1) & (a->icap - 1);
     a->index[slot] = (uint32_t)valslot + 1;
@@ -684,9 +732,13 @@ static void hp_arr_index_add(harr *a, size_t valslot) {
 }
 
 static void hp_arr_index_del(harr *a, size_t valslot) {
-    if (!a->index || a->keys[valslot].tag != HV_INT) return;
+    if (!a->index ||
+        (a->keys[valslot].tag != HV_INT && a->keys[valslot].tag != HV_STR))
+        return;
     uint32_t mask = a->icap - 1;
-    uint32_t slot = hp_hash_int(a->keys[valslot].u.i) & mask;
+    uint32_t slot = (a->keys[valslot].tag == HV_INT
+                         ? hp_hash_int(a->keys[valslot].u.i)
+                         : hp_hash_str(a->keys[valslot].u.s)) & mask;
     for (;;) {
         uint32_t e = a->index[slot];
         if (e == 0) return;
@@ -1112,8 +1164,11 @@ hval hp_match_no_default(void) {
  * zero-check for literal divisors and vectorize loops like hand-written C */
 
 /* ---------------- exceptions ---------------- */
-hp_try_frame *hp_cur_try = NULL;
-hval hp_exception = { HV_NULL, { 0 } };
+/* Thread-local: every spawned worker thread gets its own exception state
+ * and closure environment (see hphp_thr.c), so workers can throw/catch and
+ * use captured variables without racing the main thread. */
+HP_THREAD_QUAL hp_try_frame *hp_cur_try = NULL;
+HP_THREAD_QUAL hval hp_exception = { HV_NULL, { 0 } };
 
 void hp_throw(hval v) {
     if (!hp_cur_try) {
@@ -1175,7 +1230,7 @@ hval hp_try_run(hp_try_fn body_fn, hp_try_fn catch_fn, void *env) {
 }
 
 /* ---------------- closures ---------------- */
-static void *hp_cur_env = NULL;
+HP_THREAD_QUAL void *hp_cur_env = NULL;
 
 void *hp_closure_env(void) { return hp_cur_env; }
 

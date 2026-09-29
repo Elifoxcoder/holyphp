@@ -1,0 +1,63 @@
+// stdlib module tests: regex, crypto, time, json, url/http, mysql-escape
+// Each section ends with a checked marker line; wrong behavior changes output.
+
+/* ---------------- regex ---------------- */
+if (preg_match("/^h(l)lo$/", "hllo", $m) != 1) { exit(1); }
+if ($m[1] != "l") { exit(2); }
+if (preg_match("/(\d+)-(\d+)/", "ab 12-34 cd", $m) != 1) { exit(3); }
+if ($m[1] != "12" || $m[2] != "34") { exit(4); }
+if (preg_match("/zzz/", "abc") !== false) { exit(5); }
+if (preg_match_all("/a/", "banana") != 3) { exit(6); }
+if (preg_replace("/o/", "0", "foo boo") != "f00 b00") { exit(7); }
+$parts = preg_split("/[,\s]+/", "a, b,,c  d");
+if (count($parts) != 4 || $parts[3] != "d") { exit(8); }
+$g = preg_grep("/^a/", ["apple", "bee", "avocado"]);
+if (count($g) != 2) { exit(9); }
+if (preg_match("/(/", "x") !== false) { exit(10); }   // bad pattern -> false
+if (preg_match("/abc/i", "xABC") != 1) { exit(11); } // case-insensitive flag
+
+/* ---------------- crypto ---------------- */
+if (sha256("abc") != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") { exit(20); }
+if (sha1("abc") != "a9993e364706816aba3e25717850c26c9cd0d89d") { exit(21); }
+if (hash_hmac("sha256", "hi", "k") == "") { exit(22); }
+if (hash_equals("same", "same") !== true) { exit(23); }
+if (hash_equals("same", "other") !== false) { exit(24); }
+if (strlen(bin2hex(hex2bin("deadbeef"))) != 8) { exit(25); }
+if (base64_decode(base64_encode("holy php")) != "holy php") { exit(26); }
+$hash = password_hash("secret");
+if (password_verify("secret", $hash) !== true) { exit(27); }
+if (password_verify("wrong!!", $hash) !== false) { exit(28); }
+$rb = random_bytes(16);
+if (strlen($rb) != 16 || strlen(bin2hex($rb)) != 32) { exit(29); }
+
+/* ---------------- time ---------------- */
+$ts = mktime(12, 30, 0, 3, 15, 2024);
+if (date("Y-m-d H:i:s", $ts) != "2024-03-15 12:30:00") { exit(30); }
+if (date("Y-m-d H:i:s", strtotime("2024-03-15 12:30:00")) != "2024-03-15 12:30:00") { exit(31); }
+if (checkdate(2, 29, 2024) !== true) { exit(32); }   // leap year
+if (checkdate(2, 29, 2023) !== false) { exit(33); }  // not a leap year
+
+/* ---------------- json ---------------- */
+$enc = json_encode(["k" => 1, "s" => "a\"b", "f" => 1.5, "n" => null, "t" => true]);
+$dec = json_decode($enc);
+if ($dec["k"] != 1 || $dec["s"] != "a\"b" || $dec["f"] != 1.5) { exit(40); }
+if ($dec["n"] != null || $dec["t"] != true) { exit(41); }
+if (json_encode([1, [2, 3]], JSON_PRETTY_PRINT) == "") { exit(42); }
+if (json_encode(["a/b"], JSON_UNESCAPED_SLASHES) != "[\"a/b\"]") { exit(43); }
+if (json_decode("{\"n\":\"42\"}", true) == null) { exit(44); } // just must not fail
+
+/* ---------------- url / http helpers ---------------- */
+if (urlencode("a b&c") != "a+b%26c") { exit(50); }
+if (urldecode("a+b%26c") != "a b&c") { exit(51); }
+if (http_build_query(["a" => "1", "b" => "x y"]) != "a=1&b=x+y") { exit(52); }
+$u = parse_url("http://user@host:8080/path?query#frag");
+if ($u["host"] != "host" || $u["port"] != 8080) { exit(53); }
+if ($u["path"] != "/path" || $u["query"] != "query" || $u["fragment"] != "frag") { exit(54); }
+// offline-safe HTTP checks: failure must be false, not a crash
+if (http_get("http://localhost:1/") !== false) { exit(55); }
+if (http_post("http://localhost:1/x", "a=1") !== false) { exit(56); }
+
+/* ---------------- mysql escape ---------------- */
+if (mysql_escape("it's a \"quote\"") != "it\\'s a \\\"quote\\\"") { exit(60); }
+
+echo "modules: ALL OK", PHP_EOL;

@@ -5,6 +5,7 @@
  *   name \0 size(ascii) \n payload...
  * followed by "HPHX1\n" terminator. Good enough, tiny, and portable.
  */
+#define _DEFAULT_SOURCE 1   /* S_IFDIR/S_IFREG, dirent on glibc */
 #include "pkgcore.h"
 #include "util.h"
 
@@ -12,6 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dirent.h>       /* opendir/readdir for pkg list/cache dirs */
+#include <unistd.h>       /* rmdir */
 #include <ctype.h>
 
 #ifdef _WIN32

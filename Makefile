@@ -20,6 +20,13 @@ test: $(BIN)
 	./$(BIN) run examples/hello.hphp
 	./$(BIN) run examples/demo.hphp
 
+# 1BRC benchmark test (needs the official 1brc repo in Downloads;
+# override with BRC_ROWS=<n>, 0 = the real 1e9-row file):
+#   make test-1brc BRC_ROWS=1000000
+BRC_ROWS ?= 1000000
+test-1brc: $(BIN)
+	bash benchmarks/1brc_test.sh $(BRC_ROWS)
+
 check: $(BIN)
 	./$(BIN) check examples/hello.hphp
 	./$(BIN) check examples/demo.hphp
@@ -27,4 +34,4 @@ check: $(BIN)
 clean:
 	rm -rf build/obj $(BIN) hphp_out.* hp_demo* *.gen.c
 
-.PHONY: all test check clean
+.PHONY: all test test-1brc check clean

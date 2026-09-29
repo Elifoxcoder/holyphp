@@ -111,6 +111,12 @@ static const char *var_name(void *sym) {
     return fmt("v%u", ((VarSym *)sym)->uid);
 }
 
+/* C type of a pointer-to-parameter: used for by-ref parameters, where the
+ * callee receives &slot of the parameter's declared type. */
+static const char *ctype_ref_of(const Type *t) {
+    return fmt("%s *", ctype_of(t));
+}
+
 
 
 static const char *s_this;
@@ -119,10 +125,12 @@ static const char *s_argv;
 /* interned PHP_* constant names (set once in codegen_init alongside s_this) */
 static const char *s_php_int_max, *s_php_int_min, *s_php_int_size, *s_php_int_digits;
 static const char *s_php_float_epsilon, *s_php_euler, *s_php_pi;
+static const char *s_m_pi, *s_m_e;
 static const char *s_php_round_half_up, *s_php_round_half_down, *s_php_round_half_even, *s_php_round_half_odd;
 static const char *s_php_os, *s_php_eol, *s_php_version, *s_php_sapi, *s_php_uname;
 static const char *s_php_bool_true, *s_php_bool_false, *s_php_null;
 static const char *s_php_file_append, *s_php_file_ignore_new_lines, *s_php_file_skip_empty_lines, *s_php_file_use_include_path;
+static const char *s_json_pretty_print, *s_json_unescaped_slashes, *s_json_numeric_check, *s_json_force_object;
 
 /* Convert any typed value into an hval for runtime calls. */
 static void to_hval(Codegen *g, Expr *e, Buf *dst) {
@@ -153,7 +161,10 @@ static void to_hval(Codegen *g, Expr *e, Buf *dst) {
         /* user objects/values box as an owned pointer payload */
         buf_printf(dst, "hp_of_ptr(%s)", buf_take(&b)); break;
     default:
-        buf_write(dst, b.data ? b.data : "", b.len);
+        /* dynamic/unknown: hv() is _Generic - identity for hval values and
+         * the right boxing constructor for anything else (struct ptrs, ints,
+         * bools, ...). Never leaks a raw non-hval into an hval slot. */
+        buf_printf(dst, "hv(%s)", buf_take(&b));
         break;
     }
     free(b.data);
@@ -185,6 +196,14 @@ static int builtin_min_args(const char *name) {
     if (strcmp(name, "implode") == 0) return 1;
     if (strcmp(name, "number_format") == 0) return 1;
     if (strcmp(name, "file_put_contents") == 0) return 2;
+    if (strcmp(name, "array_merge") == 0 || strcmp(name, "array_replace") == 0 ||
+        strcmp(name, "array_diff") == 0 || strcmp(name, "array_intersect") == 0 ||
+        strcmp(name, "compact") == 0) return 1;
+    if (strcmp(name, "array_map") == 0) return 2;
+    if (strcmp(name, "http_post") == 0) return 2;
+    if (strcmp(name, "mysql_connect") == 0) return 1;
+    if (strcmp(name, "hash_hmac") == 0) return 3;
+    if (strcmp(name, "mktime") == 0) return 6;
     return 0; /* 0 = no optional-arg protocol known */
 }
 
@@ -196,12 +215,38 @@ static int builtin_max_args(const char *name) {
     if (strcmp(name, "str_replace") == 0) return 3;
     if (strcmp(name, "md5") == 0 || strcmp(name, "sha1") == 0) return 2;
     if (strcmp(name, "implode") == 0) return 2;
+    if (strcmp(name, "array_slice") == 0) return 3;
+    if (strcmp(name, "str_split") == 0) return 2;
     if (strcmp(name, "number_format") == 0) return 4;
     if (strcmp(name, "file_put_contents") == 0) return 3;
     if (strcmp(name, "fopen") == 0) return 2;
     if (strcmp(name, "fread") == 0) return 2;
+    if (strcmp(name, "array_merge") == 0 || strcmp(name, "array_replace") == 0 ||
+        strcmp(name, "array_diff") == 0 || strcmp(name, "array_intersect") == 0 ||
+        strcmp(name, "compact") == 0) return 4;
+    if (strcmp(name, "mkdir") == 0) return 3;
+    if (strcmp(name, "array_column") == 0) return 3;
+    if (strcmp(name, "array_chunk") == 0) return 3;
+    if (strcmp(name, "array_pad") == 0) return 3;
+    if (strcmp(name, "array_walk") == 0 || strcmp(name, "array_walk_recursive") == 0) return 3;
+    if (strcmp(name, "basename") == 0 || strcmp(name, "pathinfo") == 0 ||
+        strcmp(name, "strip_tags") == 0) return 2;
+    if (strcmp(name, "http_request") == 0) return 4;
+    if (strcmp(name, "date") == 0) return 2;
+    if (strcmp(name, "json_encode") == 0 || strcmp(name, "json_encode_pretty") == 0) return 2;
+    if (strcmp(name, "json_decode") == 0) return 2;
+    if (strcmp(name, "http_post") == 0) return 3;
+    if (strcmp(name, "mysql_connect") == 0) return 5;
+    if (strcmp(name, "hash_hmac") == 0) return 4;
+    if (strcmp(name, "mktime") == 0) return 6;
+    if (strcmp(name, "preg_match") == 0 || strcmp(name, "preg_match_all") == 0 ||
+        strcmp(name, "preg_split") == 0 || strcmp(name, "preg_grep") == 0) return 2;
+    if (strcmp(name, "preg_replace") == 0) return 3;
+    if (strcmp(name, "mysql_query") == 0 || strcmp(name, "mysql_exec") == 0) return 2;
     return -1;
 }
+
+/* min args for the new optional-arg builtins */
 
 /* ---------------- string literals ---------------- */
 static void emit_c_string(const char *s, size_t n, Buf *dst) {
@@ -338,6 +383,35 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
             return;
         }
     }
+    /* float comparisons take two doubles: a mixed operand arrives as an
+     * hval and must be unboxed first (hp_lt_f(double, double) etc.) */
+    if (lf || rf) {
+        if (lt && lt->kind == TY_MIXED) {
+            char *w = fmt("hp_val_to_float(hv(%s))", ls);
+            free((void *)ls);
+            ls = w;
+        }
+        if (rt && rt->kind == TY_MIXED) {
+            char *w = fmt("hp_val_to_float(hv(%s))", rs);
+            free((void *)rs);
+            rs = w;
+        }
+    }
+    /* && and || need scalar bools: mixed operands (e.g. an hval callback
+     * param like $eof) are PHP-truthiness-converted first, exactly like
+     * mixed operands of the float comparisons above */
+    if (op == T_ANDAND || op == T_OROR) {
+        if (lt && lt->kind == TY_MIXED) {
+            char *w = fmt("hp_val_to_bool(hv(%s))", ls);
+            free((void *)ls);
+            ls = w;
+        }
+        if (rt && rt->kind == TY_MIXED) {
+            char *w = fmt("hp_val_to_bool(hv(%s))", rs);
+            free((void *)rs);
+            rs = w;
+        }
+    }
     switch (op) {
     case T_PLUS:
         if (numeric) buf_printf(dst, "((%s) + (%s))", ls, rs);
@@ -377,13 +451,15 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
                 buf_printf(dst, "hp_div((%s), (%s))", ls, rs);
         }
         else
-            buf_printf(dst, "hp_divv(hv(%s), hv(%s))", ls, rs);
+            /* hp_divv yields hval, but PHP division always produces a float
+             * (sema types this node float) — unbox so the emitted C matches */
+            buf_printf(dst, "hp_val_to_float(hp_divv(hv(%s), hv(%s)))", ls, rs);
         break;
     case T_PERCENT:
         /* inline-native modulo keeps hot loops free of out-of-line calls;
          * hp_mod_i still throws PHP's "Modulo by zero" */
         if (numeric) buf_printf(dst, "hp_mod_i(%s, %s)", ls, rs);
-        else buf_printf(dst, "hp_mod((%s), (%s))", ls, rs);
+        else buf_printf(dst, "hp_mod(hp_val_to_int(hv(%s)), hp_val_to_int(hv(%s)))", ls, rs);
         break;
     case T_POW:
         if (numeric) buf_printf(dst, "hp_pow_i((int64_t)(%s), (int64_t)(%s))", ls, rs);
@@ -467,6 +543,17 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
 static void emit_builtin_call(Codegen *g, const char *name, PtrVec args,
                               const Type *ret, Buf *dst) {
     if (strcmp(name, "max") == 0 || strcmp(name, "min") == 0) {
+        /* single array argument: pass it as-is (PHP max([1,2,3]));
+         * otherwise pack the variadic args into a runtime array */
+        if (args.len == 1) {
+            buf_puts(dst, "hpbi_");
+            buf_puts(dst, name);
+            buf_puts(dst, "(");
+            to_hval(g, args.items[0], dst);
+            buf_puts(dst, ")");
+            project_hval(dst, ret);
+            return;
+        }
         /* variadic: pack args into a runtime array */
         buf_printf(dst, "hpbi_%s(hp_of_arr(hp_arr_of(%zu, (const hval[]){", name, args.len);
         for (size_t i = 0; i < args.len; i++) {
@@ -492,6 +579,22 @@ static void emit_builtin_call(Codegen *g, const char *name, PtrVec args,
                        buf_take(&k));
             project_hval(dst, ret);
             free(k.data);
+            return;
+        }
+        if (obj->kind == EX_FIELD && obj->u.field.obj && obj->u.field.sf) {
+            /* unset($this->arr[$k]) / unset($o->arr[$k]): the field is a
+             * typed struct member holding harr*; cow-write the delete */
+            StructField *usf = (StructField *)obj->u.field.sf;
+            Buf k, o;
+            buf_init(&k);
+            emit_expr(g, ix->u.index.idx, &k);
+            buf_init(&o);
+            emit_expr(g, obj->u.field.obj, &o);
+            buf_printf(dst, "hpbi_unset_slot(&(%s)->%s, hv(%s))",
+                       buf_take(&o), usf->name, buf_take(&k));
+            project_hval(dst, ret);
+            free(k.data);
+            free(o.data);
             return;
         }
     }
@@ -558,6 +661,32 @@ static void emit_builtin_call(Codegen *g, const char *name, PtrVec args,
         project_hval(dst, ret);
         return;
     }
+    /* threading primitives with optional trailing args */
+    if (strcmp(name, "thr_spawn") == 0) {
+        buf_puts(dst, "hpbi_thr_spawn(");
+        to_hval(g, args.items[0], dst);
+        if (args.len == 2) { buf_puts(dst, ", "); to_hval(g, args.items[1], dst); }
+        else buf_puts(dst, ", hp_null");
+        buf_puts(dst, ")");
+        project_hval(dst, ret);
+        return;
+    }
+    if (strcmp(name, "thr_parallel_map") == 0) {
+        buf_puts(dst, "hpbi_thr_parallel_map(");
+        to_hval(g, args.items[0], dst);
+        buf_puts(dst, ", ");
+        to_hval(g, args.items[1], dst);
+        if (args.len == 3) { buf_puts(dst, ", "); to_hval(g, args.items[2], dst); }
+        else buf_puts(dst, ", hp_of_int(0)");
+        buf_puts(dst, ")");
+        project_hval(dst, ret);
+        return;
+    }
+    if (strcmp(name, "atomic_new") == 0 && args.len == 0) {
+        buf_puts(dst, "hpbi_atomic_new(hp_of_int(0))");
+        project_hval(dst, ret);
+        return;
+    }
     /* strpos with optional offset: default 0 */
     if (strcmp(name, "strpos") == 0) {
         buf_puts(dst, "hpbi_strpos(");
@@ -601,13 +730,106 @@ static void emit_builtin_call(Codegen *g, const char *name, PtrVec args,
     if (strcmp(name, "round") == 0 && args.len == 1) {
         buf_printf(dst, "hpbi_round(");
         to_hval(g, args.items[0], dst);
-        buf_puts(dst, ", hp_null)");
+        buf_puts(dst, ", hp_null, hp_null)");
+        project_hval(dst, ret);
+        return;
+    }
+    /* isset(): emit the index expression RAW (as hval, without the
+     * compiler's type projection). Missing keys must reach the helper as
+     * hp_null, not as the projected 0/"". The raw emit of an array index
+     * yields a typed read (hp_arr_get + .u.i projection) which zeroes
+     * missing keys — so for `$var[...]` targets read the element hval
+     * directly through the runtime helper instead. */
+    if (strcmp(name, "isset") == 0 && args.len == 1) {
+        Expr *arg = (Expr *)args.items[0];            if (arg->kind == EX_INDEX && arg->u.index.obj->kind == EX_VAR &&
+                arg->u.index.obj->u.var.sym) {
+                Buf ix;
+                buf_init(&ix);
+                if (arg->u.index.idx) emit_expr(g, arg->u.index.idx, &ix);
+                else buf_puts(&ix, "(int64_t)0");
+                /* the variable's slot type decides how the array is reached:
+                 * a typed (harr*) variable holds the array directly, while a
+                 * mixed (hval) variable boxes it — reading it as harr** would
+                 * reinterpret a tagged value as a pointer (invalid C, and on
+                 * strict gcc an error) */
+                const Type *vt = ((VarSym *)arg->u.index.obj->u.var.sym)->type;
+                if (vt && vt->kind == TY_MIXED)
+                    buf_printf(dst, "hpbi_isset_val(&%s, hv(%s))",
+                               var_name(arg->u.index.obj->u.var.sym), buf_take(&ix));
+                else
+                    buf_printf(dst, "hpbi_isset_raw(&%s, hv(%s))",
+                               var_name(arg->u.index.obj->u.var.sym), buf_take(&ix));
+            } else {
+            Buf raw;
+            buf_init(&raw);
+            emit_expr(g, arg, &raw);
+            buf_printf(dst, "hpbi_isset(hv(%s))", buf_take(&raw));
+        }
         project_hval(dst, ret);
         return;
     }
     /* generic builtin: pad missing optional args with hp_null so the C
      * implementation's arity is always satisfied (PHP-style optionals) */
-    buf_printf(dst, "hpbi_%s(", name);
+    /* preg_match/_all with a $matches out-var: pass the hval slot by
+     * pointer (the implementations take hval*) — one-off, like is_array */
+    if ((strcmp(name, "preg_match") == 0 || strcmp(name, "preg_match_all") == 0) &&
+        args.len == 3 && ((Expr *)args.items[2])->kind == EX_VAR &&
+        ((Expr *)args.items[2])->u.var.sym) {
+        Buf mv, p0, p1;
+        buf_init(&mv);
+        buf_init(&p0);
+        buf_init(&p1);
+        emit_expr(g, (Expr *)args.items[2], &mv);
+        to_hval(g, (Expr *)args.items[0], &p0);
+        to_hval(g, (Expr *)args.items[1], &p1);
+        static int pm_n = 0;
+        int tn = ++pm_n;
+        /* the out-var may be typed as a real array (harr*) by sema — then it
+         * takes the raw pointer, not an hval wrapper */
+        const Type *pvt = ((Expr *)args.items[2])->type;
+        int raw_arr = pvt && (pvt->kind == TY_ARRAY || pvt->kind == TY_VEC ||
+                              pvt->kind == TY_MAP || pvt->kind == TY_SET);
+        char *mvn = buf_take(&mv);
+        Buf asg;
+        buf_init(&asg);
+        if (raw_arr)
+            buf_printf(&asg, "%s = _pm%d.u.a", mvn, tn);
+        else
+            buf_printf(&asg, "%s = hp_of_arr(_pm%d.u.a)", mvn, tn);
+        /* statement expression: fills $matches from the temp hval,
+         * yields the hval result (projected by the caller) */
+        buf_printf(dst,
+            "({ hval _pm%d = hp_null; hval _pr%d = hpbi_%s3(%s, %s, &_pm%d); "
+            "%s; _pr%d; })",
+            tn, tn, name, buf_take(&p0), buf_take(&p1), tn,
+            buf_take(&asg), tn);
+        project_hval(dst, ret);
+        return;
+    }
+    if (strcmp(name, "str_pad") == 0 && args.len == 2) {
+        /* PHP: pad string defaults to " " */
+        buf_puts(dst, "hpbi_str_pad(");
+        to_hval(g, args.items[0], dst);
+        buf_puts(dst, ", ");
+        to_hval(g, args.items[1], dst);
+        buf_puts(dst, ", hp_of_str(hp_str_lit(\" \")))");
+        project_hval(dst, ret);
+        return;
+    }
+    if (strcmp(name, "json_encode_pretty") == 0 && args.len >= 1) {
+        /* always pretty: json_encode2(v, flags=JSON_PRETTY_PRINT) */
+        buf_puts(dst, "hpbi_json_encode2(");
+        to_hval(g, args.items[0], dst);
+        buf_puts(dst, ", hp_of_int(1))");
+        project_hval(dst, ret);
+        return;
+    }
+    const char *cname = name;   /* emitted C name (aliases below) */
+    if (strcmp(name, "date") == 0) cname = "date2";
+    else if (strcmp(name, "json_encode") == 0) cname = "json_encode2";
+    else if (strcmp(name, "json_decode") == 0) cname = "json_decode2";
+    else if (strcmp(name, "json_encode_pretty") == 0) cname = "json_encode2";
+    buf_printf(dst, "hpbi_%s(", cname);
     for (size_t i = 0; i < args.len; i++) {
         if (i) buf_puts(dst, ", ");
         to_hval(g, args.items[i], dst);
@@ -686,6 +908,25 @@ static void emit_call(Codegen *g, Expr *e, Buf *dst) {
             if (i) buf_puts(dst, ", ");            Expr *arg = e->u.call.args.items[i];
             const Type *at = arg->type;
             Param *pm = (i < fn->params.len) ? fn->params.items[i] : NULL;
+            if (pm && pm->by_ref) {
+                /* PHP by-ref call: the argument must be a variable; pass
+                 * &slot (typed pointer) so callee writes reach the caller.
+                 * Closure params already arrive as pointers (byref slots or
+                 * boxed hval*) and are re-aliased directly. */
+                if (arg->kind == EX_VAR && arg->u.var.sym) {
+                    VarSym *asym = (VarSym *)arg->u.var.sym;
+                    const char *an = var_name(asym);
+                    if (asym->is_param_ref || asym->captured_byref ||
+                        asym->is_program_global)
+                        buf_printf(dst, "%s", an);   /* already hval* or int64_t* */
+                    else
+                        buf_printf(dst, "&%s", an);
+                } else {
+                    fatal("%s:%zu:%zu: by-ref argument must be a variable",
+                          e->tok.file ? e->tok.file : "?", e->tok.line, e->tok.col);
+                }
+                continue;
+            }
             if (pm && at && (at->kind == TY_ARRAY || at->kind == TY_VEC ||
                              at->kind == TY_MAP || at->kind == TY_SET) &&
                 pm->resolved && pm->resolved->kind != TY_MIXED) {
@@ -1119,6 +1360,11 @@ static void emit_closure(Codegen *g, AstFn *fn) {
         case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET:
             line(g, "harr* %s = _env->%s.u.a;", var_name(v), var_name(v));
             break;
+        case TY_FN:
+            /* closure-typed captures: stored boxed as hval, loaded as the
+             * raw hclosure* so first-class calls use it directly */
+            line(g, "hclosure* %s = (hclosure*)_env->%s.u.c;", var_name(v), var_name(v));
+            break;
         default:
             line(g, "hval %s = _env->%s;", var_name(v), var_name(v));
             break;
@@ -1154,6 +1400,12 @@ static void emit_closure(Codegen *g, AstFn *fn) {
             for (size_t j = 0; j < fn->captures.len; j++)
                 if (fn->captures.items[j] == v) { captured = true; break; }
             if (captured) continue;
+            if (v->captured_byref) {
+                /* local captured by-ref by an inner closure: heap box shared
+                 * with the inner env; all frame accesses go through (*v). */
+                line(g, "hval *%s = hp_box_new();", var_name(v));
+                continue;
+            }
             line(g, "%s %s = %s;", ctype_of(v->type),
                  var_name(v), zero_init_of(v->type));
         }
@@ -1200,7 +1452,7 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst);
  * becomes one assignment (array values are cloned: PHP value semantics). */
 static void emit_list_destructure(Codegen *g, Expr *e) {
     Expr *pat = e->u.assign.target;
-    bool keyed = pat->u.map.keys.len > 0;
+    bool keyed = pat->u.map.vals.len > 0;
     Buf src;
     buf_init(&src);
     emit_expr(g, e->u.assign.value, &src);
@@ -1210,9 +1462,10 @@ static void emit_list_destructure(Codegen *g, Expr *e) {
     line(g, "{");
     g->depth++;
     if (sarr) line(g, "hval _src = hp_of_arr(%s);", sv);
+    else if (st) line(g, "hval _src = hv(%s);", sv);
     else line(g, "hval _src = %s;", sv);
     free((void *)sv);
-    if (keyed) line(g, "hval _ks = hp_arr_keys(_src.u.a);");
+    (void)keyed;   /* slots below look keys up directly via hp_arr_get */
     size_t n = keyed ? pat->u.map.vals.len : pat->u.arr.elems.len;
     for (size_t i = 0; i < n; i++) {
         Expr *tgt = keyed ? (Expr *)pat->u.map.vals.items[i]
@@ -1261,34 +1514,43 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
     TokKind op = e->u.assign.op.kind;
     if (tgt->kind == EX_VAR) {
         const char *name = var_name(tgt->u.var.sym);
-        bool tgt_is_box = tgt->u.var.sym &&
-            (((VarSym *)tgt->u.var.sym)->captured_byref ||
-             ((VarSym *)tgt->u.var.sym)->is_program_global);
-        if (tgt->u.var.sym && ((VarSym *)tgt->u.var.sym)->captured_byref)
-            name = fmt("(*%s)", name);   /* write through the heap box */
+        VarSym *tvs = (VarSym *)tgt->u.var.sym;
+        bool is_refparam = tvs && tvs->is_param_ref;
+        /* boxed hval slots (closure use(&$x) captures, global aliases);
+         * by-ref params are typed pointers, not hval boxes */
+        bool tgt_is_box = tvs && !is_refparam &&
+            (tvs->captured_byref || tvs->is_program_global);
+        if (tvs && (tvs->captured_byref || is_refparam))
+            name = fmt("(*%s)", name);   /* write through the heap box / ref param */
+        if (op == T_QQASSIGN) {
+            /* PHP ??= : assign only when the target was null; the value
+             * expression is only evaluated in the null branch */
+            Buf v;
+            buf_init(&v);
+            emit_expr(g, e->u.assign.value, &v);
+            const char *vs = buf_take(&v);
+            const Type *vt2 = e->u.assign.value->type;
+            const Type *tt2 = tgt->u.var.sym ? ((VarSym *)tgt->u.var.sym)->type : NULL;
+            bool arrv = vt2 && (vt2->kind == TY_ARRAY || vt2->kind == TY_VEC);
+            bool strv = !arrv && tt2 && tt2->kind == TY_STRING &&
+                        (!vt2 || vt2->kind == TY_STRING || vt2->kind == TY_MIXED);
+            if (tgt_is_box)
+                buf_printf(dst, "((%s.tag == HV_NULL) ? (%s = hv(%s)) : (%s))", name, name, vs, name);
+            else if (strv)
+                /* hstr* slots use hp_null_str() as their null sentinel */
+                buf_printf(dst, "((%s == hp_null_str()) ? (%s = hp_val_to_str(hv(%s))) : (%s))", name, name, vs, name);
+            else if (arrv)
+                buf_printf(dst, "((%s == NULL) ? (%s = %s) : (%s))", name, name, vs, name);
+            else
+                buf_printf(dst, "((%s.tag == HV_NULL) ? (%s = hv(%s)) : (%s))", name, name, vs, name);
+            free((void *)vs);
+            return;
+        }
         if (op == T_ASSIGN) {
             if (!e->u.assign.value) {
                 /* typed declaration without initializer: "$x: int;" */
                 const Type *zt = tgt->u.var.sym ? ((VarSym *)tgt->u.var.sym)->type : NULL;
                 buf_printf(dst, "(%s = %s)", name, zero_init_of(zt));
-                return;
-            }
-            if (op == T_QQASSIGN) {
-                /* PHP ??= : assign only when the target was null; the value
-                 * expression is only evaluated in the null branch */
-                Buf v;
-                buf_init(&v);
-                emit_expr(g, e->u.assign.value, &v);
-                const char *vs = buf_take(&v);
-                const Type *vt2 = e->u.assign.value->type;
-                bool arrv = vt2 && (vt2->kind == TY_ARRAY || vt2->kind == TY_VEC);
-                if (tgt_is_box)
-                    buf_printf(dst, "((%s.tag == HV_NULL) ? (%s = hv(%s)) : (%s))", name, name, vs, name);
-                else if (arrv)
-                    buf_printf(dst, "((%s == NULL) ? (%s = %s) : (%s))", name, name, vs, name);
-                else
-                    buf_printf(dst, "((%s.tag == HV_NULL) ? (%s = hv(%s)) : (%s))", name, name, vs, name);
-                free((void *)vs);
                 return;
             }
             Buf v;
@@ -1316,7 +1578,9 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             Buf v;
             buf_init(&v);
             emit_expr(g, e->u.assign.value, &v);
-            bool dboxed = tgt_is_box;
+            const Type *dt = tgt->u.var.sym ? ((VarSym *)tgt->u.var.sym)->type : NULL;
+            bool dboxed = tgt_is_box || !tgt->u.var.sym || !dt ||
+                          dt->kind == TY_MIXED;
             if (dboxed) /* concat yields hstr*: box it for the hval slot */
                 buf_printf(dst, "((%s) = hp_of_str(hp_str_concat_v(hv(%s), hv(%s))))",
                            name, name, buf_take(&v));
@@ -1362,7 +1626,10 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             const Type *tt2 = tgt->u.var.sym ? ((VarSym *)tgt->u.var.sym)->type : NULL;
             bool cboxed = tgt->u.var.sym &&
                           ((VarSym *)tgt->u.var.sym)->captured_byref;
-            if (cboxed && (op == T_PLUSASSIGN || op == T_MINUSASSIGN ||
+            /* an untyped or mixed-typed local's C slot is an hval: run the
+             * op in value space, exactly like a captured box */
+            bool hvalslot = !tgt->u.var.sym || !tt2 || tt2->kind == TY_MIXED;
+            if ((cboxed || hvalslot) && (op == T_PLUSASSIGN || op == T_MINUSASSIGN ||
                            op == T_STARASSIGN || op == T_SLASHASSIGN)) {
                 /* hval box: apply the op in value space, store the hval back */
                 const char *rop = op == T_MINUSASSIGN ? "hpbi_scalar_sub" :
@@ -1502,7 +1769,10 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
     case EX_VAR:
         if (e->u.var.name == s_this)
             buf_puts(dst, "self");
-        else if (e->u.var.name && strncmp(e->u.var.name, "PHP_", 4) == 0) {
+        else if (e->u.var.name && (strncmp(e->u.var.name, "PHP_", 4) == 0 ||
+                                   strncmp(e->u.var.name, "JSON_", 5) == 0 ||
+                                   strcmp(e->u.var.name, "M_PI") == 0 ||
+                                   strcmp(e->u.var.name, "M_E") == 0)) {
             /* PHP_* predefined constants, resolved in sema */
             if (e->u.var.name == s_php_int_max) buf_puts(dst, "(int64_t)9223372036854775807LL");
             else if (e->u.var.name == s_php_int_min) buf_puts(dst, "(int64_t)(-9223372036854775807LL - 1)");
@@ -1511,18 +1781,24 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
             else if (e->u.var.name == s_php_float_epsilon) buf_puts(dst, "(double)2.220446049250313e-16");
             else if (e->u.var.name == s_php_euler) buf_puts(dst, "(double)2.718281828459045");
             else if (e->u.var.name == s_php_pi) buf_puts(dst, "(double)3.14159265358979323846");
+            else if (e->u.var.name == s_m_pi) buf_puts(dst, "(double)3.14159265358979323846");
+            else if (e->u.var.name == s_m_e) buf_puts(dst, "(double)2.718281828459045");
             else if (e->u.var.name == s_php_round_half_up) buf_puts(dst, "(int64_t)0");
             else if (e->u.var.name == s_php_round_half_down) buf_puts(dst, "(int64_t)1");
             else if (e->u.var.name == s_php_round_half_even) buf_puts(dst, "(int64_t)2");
             else if (e->u.var.name == s_php_round_half_odd) buf_puts(dst, "(int64_t)3");
-            else if (e->u.var.name == s_php_os) buf_puts(dst, "hp_of_str(hp_str_lit(\"Windows\"))");
-            else if (e->u.var.name == s_php_eol) buf_puts(dst, "hp_of_str(hp_str_lit(\"\\r\\n\"))");
+            else if (e->u.var.name == s_php_os) buf_puts(dst, "hp_str_lit(\"Windows\")");
+            else if (e->u.var.name == s_php_eol) buf_puts(dst, "hp_str_lit(\"\\r\\n\")");
             else if (e->u.var.name == s_php_version) buf_puts(dst, "hpbi_phpversion()");
             else if (e->u.var.name == s_php_sapi) buf_puts(dst, "hpbi_php_sapi_name()");
             else if (e->u.var.name == s_php_uname) buf_puts(dst, "hpbi_php_uname()");
             else if (e->u.var.name == s_php_bool_true) buf_puts(dst, "hp_of_bool(true)");
             else if (e->u.var.name == s_php_bool_false) buf_puts(dst, "hp_of_bool(false)");
             else if (e->u.var.name == s_php_null) buf_puts(dst, "hp_null");
+            else if (e->u.var.name == s_json_pretty_print) buf_puts(dst, "(int64_t)1");
+            else if (e->u.var.name == s_json_unescaped_slashes) buf_puts(dst, "(int64_t)2");
+            else if (e->u.var.name == s_json_numeric_check) buf_puts(dst, "(int64_t)4");
+            else if (e->u.var.name == s_json_force_object) buf_puts(dst, "(int64_t)8");
             else if (e->u.var.name == s_php_file_append) buf_puts(dst, "(int64_t)8");
             else if (e->u.var.name == s_php_file_ignore_new_lines) buf_puts(dst, "(int64_t)2");
             else if (e->u.var.name == s_php_file_skip_empty_lines) buf_puts(dst, "(int64_t)4");
@@ -1536,8 +1812,10 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
                 buf_puts(dst, "hp_argc");
             else
                 buf_puts(dst, "hp_argv");
-        } else if (e->u.var.sym && ((VarSym *)e->u.var.sym)->captured_byref)
+        }        else if (e->u.var.sym && ((VarSym *)e->u.var.sym)->captured_byref)
             buf_printf(dst, "(*%s)", var_name(e->u.var.sym));   /* heap box */
+        else if (e->u.var.sym && ((VarSym *)e->u.var.sym)->is_param_ref)
+            buf_printf(dst, "(*%s)", var_name(e->u.var.sym));   /* by-ref param */
         else
             buf_printf(dst, "%s", var_name(e->u.var.sym));
         break;
@@ -2488,7 +2766,12 @@ static void emit_fn(Codegen *g, AstFn *fn) {
     for (size_t i = 0; i < fn->params.len; i++) {
         Param *pm = fn->params.items[i];
         if (!first) buf_puts(&hdr, ", ");
-        buf_printf(&hdr, "%s %s", ctype_of(pm->resolved), var_name(pm->sym));
+        if (pm->by_ref) {
+            /* by-ref param: the caller passes &slot (typed pointer) */
+            buf_printf(&hdr, "%s *%s", ctype_of(pm->resolved), var_name(pm->sym));
+        } else {
+            buf_printf(&hdr, "%s %s", ctype_of(pm->resolved), var_name(pm->sym));
+        }
         first = false;
     }
     buf_puts(&hdr, ")");
@@ -2509,7 +2792,11 @@ static void emit_fn(Codegen *g, AstFn *fn) {
     for (size_t i = 0; i < fn->params.len; i++) {
         Param *pm = fn->params.items[i];
         if (!first) buf_puts(&hdr, ", ");
-        buf_printf(&hdr, "%s %s", ctype_of(pm->resolved), var_name(pm->sym));
+        if (pm->by_ref) {
+            buf_printf(&hdr, "%s *%s", ctype_of(pm->resolved), var_name(pm->sym));
+        } else {
+            buf_printf(&hdr, "%s %s", ctype_of(pm->resolved), var_name(pm->sym));
+        }
         first = false;
     }
     buf_puts(&hdr, ") {");
@@ -2551,6 +2838,7 @@ static void collect_syms_expr(PtrVec *syms, Expr *e) {
         collect_syms_expr(syms, e->u.assign.value);
         break;
     case EX_CALL:
+        collect_syms_expr(syms, e->u.call.fn);   /* callee may be a var: $f() */
         for (size_t i = 0; i < e->u.call.args.len; i++)
             collect_syms_expr(syms, e->u.call.args.items[i]);
         break;
@@ -3080,8 +3368,21 @@ static void cg_visit_stmt(PtrVec *out, Stmt *s);
 static void cg_visit_expr(PtrVec *out, Expr *e) {
     if (!e) return;
     if (e->kind == EX_CLOSURE) {
-        ptrvec_push(out, e->u.closure.fn);
-        return; /* nested closures are collected via their owner's body walk */
+        AstFn *dfn = e->u.closure.fn;
+        bool dknown = false;
+        for (size_t i = 0; i < out->len; i++)
+            if (out->items[i] == dfn) { dknown = true; break; }
+        if (!dknown) {
+            ptrvec_push(out, dfn);
+            /* NESTED closures: walk the body so closures defined inside
+             * this closure are discovered too (their prototypes must come
+             * before any body that instantiates them) */
+            if (dfn) {
+                for (size_t i = 0; i < dfn->body.len; i++)
+                    cg_visit_stmt(out, dfn->body.items[i]);
+            }
+        }
+        return;
     }
     switch (e->kind) {
     case EX_TPL:
@@ -3237,12 +3538,17 @@ void codegen_emit(Program *prog, Buf *out) {
     s_php_int_size = intern("PHP_INT_SIZE");        s_php_int_digits = intern("PHP_INT_DIGITS");
     s_php_float_epsilon = intern("PHP_FLOAT_EPSILON");
     s_php_euler = intern("PHP_EULER");              s_php_pi = intern("PHP_PI");
+    s_m_pi = intern("M_PI");                        s_m_e = intern("M_E");
     s_php_round_half_up = intern("PHP_ROUND_HALF_UP");     s_php_round_half_down = intern("PHP_ROUND_HALF_DOWN");
     s_php_round_half_even = intern("PHP_ROUND_HALF_EVEN"); s_php_round_half_odd = intern("PHP_ROUND_HALF_ODD");
     s_php_os = intern("PHP_OS");                    s_php_eol = intern("PHP_EOL");
     s_php_version = intern("PHP_VERSION");          s_php_sapi = intern("PHP_SAPI");
     s_php_uname = intern("PHP_UNAME");
     s_php_bool_true = intern("PHP_TRUE");           s_php_bool_false = intern("PHP_FALSE");
+    s_json_pretty_print = intern("JSON_PRETTY_PRINT");
+    s_json_unescaped_slashes = intern("JSON_UNESCAPED_SLASHES");
+    s_json_numeric_check = intern("JSON_NUMERIC_CHECK");
+    s_json_force_object = intern("JSON_FORCE_OBJECT");
     s_php_null = intern("PHP_NULL");
     s_php_file_append = intern("PHP_FILE_APPEND");
     s_php_file_ignore_new_lines = intern("PHP_FILE_IGNORE_NEW_LINES");

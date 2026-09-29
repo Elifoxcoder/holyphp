@@ -1,0 +1,274 @@
+/* thread.hphp - high-level threading for HolyPHP.
+ *
+ * Wraps the native thr_spawn/chan_/mutex_ primitives in a small class API:
+ *
+ *   import "thread";
+ *
+ *   // 1. Worker pool with a task channel
+ *   $pool = new Pool(4);
+ *   $out = $pool->map(function($x) { return $x * 2; }, [1, 2, 3, 4, 5]);
+ *
+ *   // 2. Raw threads
+ *   $t = new Thread(function() { echo "hi from another thread\n"; });
+ *   $t->start(); $t->join();
+ *
+ *   // 3. Channels (Go-style; safe across threads)
+ *   $ch = new Channel(0);            // 0 = rendezvous
+ *   $ch->send(42); $v = $ch->recv(); $ch->close();
+ *
+ *   // 4. Mutex
+ *   $mu = new Mutex(); $mu->lock(); ... $mu->unlock();
+ *
+ * THE ONE RULE: values passed between threads are COPIES (arrays are COW
+ * snapshots taken at capture time). Never write a captured array/object
+ * from two threads - send results back through a Channel instead.
+ */
+
+/* ------------------------------------------------------------------ */
+/* Channel - Go-style conduit between threads                          */
+/* ------------------------------------------------------------------ */
+
+class Channel {
+    pub int $id;
+
+    pub function __construct(int $capacity = 0) {
+        $this->id = chan_new($capacity);
+    }
+
+    /* blocks until a receiver takes the value (rendezvous) or there is
+     * buffer room; throws ChannelClosedError on a closed channel */
+    pub function send($v) {
+        chan_send($this->id, $v);
+    }
+
+    /* blocks until a value arrives; returns false once the channel is
+     * closed AND fully drained - the Go "range over channel" pattern */
+    pub function recv() {
+        return chan_recv($this->id);
+    }
+
+    /* non-blocking: returns false instead of waiting */
+    pub function trySend($v): bool {
+        return chan_try_send($this->id, $v);
+    }
+
+    /* non-blocking: value or false when nothing is ready */
+    pub function tryRecv() {
+        return chan_try_recv($this->id);
+    }
+
+    /* after close(), recv() drains the buffer then returns false;
+     * send() throws */
+    pub function close() {
+        chan_close($this->id);
+    }
+
+    /* consume every remaining value: while (($v = $ch->each()) !== false) */
+    pub function each() {
+        return chan_recv($this->id);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Mutex - mutual exclusion across threads                             */
+/* ------------------------------------------------------------------ */
+
+class Mutex {
+    pub int $id;
+    pub function __construct() { $this->id = mutex_new(); }
+    pub function lock(): bool { return mutex_lock($this->id); }
+    pub function tryLock(): bool { return mutex_trylock($this->id); }
+    pub function unlock(): bool { return mutex_unlock($this->id); }
+
+    /* run $fn while holding the lock */
+    pub function synchronized($fn) {
+        $this->lock();
+        try {
+            return $fn();
+        } finally {
+            $this->unlock();
+        }
+    }
+    pub function __destruct() { mutex_free($this->id); }
+}
+
+/* ------------------------------------------------------------------ */
+/* Atomic - shared 64-bit integer (lock-free feel, exact under races)  */
+/* ------------------------------------------------------------------ */
+
+class Atomic {
+    pub int $id;
+    pub function __construct(int $init = 0) { $this->id = atomic_new($init); }
+    pub function get(): int { return atomic_get($this->id); }
+    pub function set(int $v) { atomic_set($this->id, $v); }
+    pub function add(int $d): int { return atomic_add($this->id, $d); } /* returns OLD */
+    pub function inc(): int { return atomic_add($this->id, 1); }
+    pub function dec(): int { return atomic_add($this->id, -1); }
+    pub function cas(int $expect, int $set): bool { return atomic_cas($this->id, $expect, $set); }
+}
+
+/* ------------------------------------------------------------------ */
+/* Thread - one background worker                                      */
+/* ------------------------------------------------------------------ */
+
+class Thread {
+    pub $cb = null;                /* the closure to run */
+    pub int $tid = 0;
+    pub bool $started = false;
+
+    pub function __construct($fn) { $this->cb = $fn; }
+
+    pub function start(...$args): bool {
+        if ($this->started) { return false; }
+        $tid = thr_spawn($this->cb, $args);
+        if ($tid === false) { return false; }
+        $this->tid = $tid;
+        $this->started = true;
+        return true;
+    }
+
+    /* wait for completion (results must travel via Channel) */
+    pub function join(): bool {
+        if (!$this->started) { return false; }
+        $ok = thr_join($this->tid);
+        $this->started = false;
+        return $ok;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Pool - N persistent workers consuming a shared task channel         */
+/* ------------------------------------------------------------------ */
+
+/* Task message: [0] => job index, [1] => callable id, [2] => argument.
+ * Because closures can't be sent over channels (they live in one thread's
+ * code), Pool sends each task to the SAME closure every worker runs. */
+class Pool {
+    pub int $workers;
+    pub int $taskCh;
+    pub int $resultCh;
+    pub $cb = null;                /* the single worker callback (closure) */
+    pub bool $running = false;
+    pub int $jobseq = 0;
+
+    pub function __construct(int $workers = 4) {
+        $this->workers = $workers < 1 ? 1 : $workers;
+        $this->taskCh = chan_new(0);       /* rendezvous: real backpressure */
+        $this->resultCh = chan_new(0);
+    }
+
+    /* map(): run $fn over every item using $workers threads, return results
+     * in input order. $fn receives (item, index). */
+    pub function map($fn, array $items): array {
+        $n = count($items);
+        if ($n == 0) { return []; }
+        $res = chan_new($n);               /* buffered: no send blocking */
+        $nw = $this->workers;
+        for ($w = 0; $w < $nw; $w++) {
+            thr_spawn(function() use ($fn, $items, $w, $nw, $res) {
+                /* strided ownership: worker $w handles indexes w, w+N, ... */
+                $n = count($items);
+                for ($i = $w; $i < $n; $i += $nw) {
+                    $r = $fn($items[$i], $i);
+                    chan_send($res, [$i, $r]);
+                }
+            });
+        }
+        $out = [];
+        for ($k = 0; $k < $n; $k++) {
+            $msg = chan_recv($res);
+            $out[$msg[0]] = $msg[1];
+        }
+        chan_close($res);
+        ksort($out);
+        $vals = [];
+        foreach ($out as $v) { $vals[] = $v; }
+        return $vals;
+    }
+
+    /* stream(): start a long-lived pipeline. Submit with submit(), collect
+     * with collect(). Workers loop until shutdown(). */
+    pub function start($fn) {
+        if ($this->running) { return; }
+        $this->cb = $fn;
+        $this->running = true;
+        $tch = $this->taskCh;
+        $rch = $this->resultCh;
+        $cb = $fn;
+        $nw = $this->workers;
+        for ($w = 0; $w < $nw; $w++) {
+            thr_spawn(function() use ($w, $tch, $rch, $cb) {
+                while (true) {
+                    $task = chan_recv($tch);
+                    if ($task === false) { break; }        // shutdown()
+                    $r = $cb($task[1], $task[0]);
+                    chan_send($rch, [$task[0], $r]);
+                }
+            });
+        }
+    }
+
+    /* submit one item; returns a monotonically increasing job id */
+    pub function submit($item): int {
+        $id = $this->jobseq;
+        $this->jobseq = $id + 1;
+        chan_send($this->taskCh, [$id, $item]);
+        return $id;
+    }
+
+    /* non-blocking collect of one finished job: [id, result] or false */
+    pub function collect() {
+        return chan_try_recv($this->resultCh);
+    }
+
+    /* blocking collect of one finished job */
+    pub function waitOne() {
+        return chan_recv($this->resultCh);
+    }
+
+    pub function shutdown() {
+        if (!$this->running) { return; }
+        chan_close($this->taskCh);         /* workers drain and exit */
+        $this->running = false;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* barriers / convenience                                              */
+/* ------------------------------------------------------------------ */
+
+class Barrier {
+    pub int $id;
+    pub function __construct(int $parties) { $this->id = barrier_new($parties); }
+    /* returns the arrival index; the LAST arriving thread gets parties-1 */
+    pub function wait(): int { return barrier_wait($this->id); }
+}
+
+function thr_cpu_count(): int {
+    return thr_cpu_count();
+}
+
+/* Run $fn on every item of a nested array tree in parallel (flatten map). */
+function thr_parallel_each(array $items, $fn, int $workers = 0) {
+    return thr_parallel_map($fn, $items, $workers);
+}
+
+/* chunked parallel map: big lists spawn fewer, bigger jobs (less channel
+ * traffic); $fn receives a chunk (array) and returns an array of results */
+function thr_map_chunked(array $items, $fn, int $workers = 0): array {
+    $n = count($items);
+    if ($n == 0) { return []; }
+    if ($workers < 1) { $nw = thr_cpu_count(); } else { $nw = $workers; }
+    if ($nw > $n) { $nw = $n; }
+    $chunk = intdiv($n + $nw - 1, $nw);
+    $chunks = [];
+    for ($i = 0; $i < $n; $i += $chunk) {
+        $chunks[] = array_slice($items, $i, $chunk);
+    }
+    $parts = thr_parallel_map($fn, $chunks, $nw);
+    $out = [];
+    foreach ($parts as $p) {
+        foreach ($p as $v) { $out[] = $v; }
+    }
+    return $out;
+}

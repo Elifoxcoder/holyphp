@@ -16,6 +16,11 @@
  * Set HPHP_VERBOSE=1 to see backend commands, HPHP_KEEP_BIN=1 to keep
  * executables produced by `run`.
  */
+/* feature-test macros first: on glibc, POSIX symbols (usleep, popen,
+ * S_IFDIR, dirent) are hidden under strict -std=c11 */
+#if !defined(_WIN32)
+#define _DEFAULT_SOURCE 1
+#endif
 #include "parser.h"
 #include "sema.h"
 #include "codegen.h"
@@ -24,6 +29,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #define HPHP_VERSION "0.2.0"
 
@@ -226,11 +233,13 @@ static int file_looks_like_exe(const char *path) {
     unsigned char sig[2] = {0, 0};
     size_t got = fread(sig, 1, 2, f);
     fclose(f);
-    if (got != 2 || sig[0] != 0x4D || sig[1] != 0x5A) return 0;
+    if (got != 2) return 0;
 #ifdef _WIN32
-    /* On Windows, files opened by a scanner can briefly fail to open again;
-     * require the size to be stable across a short interval. */
-    fseek(f, 0, SEEK_END);
+    /* PE image (MZ) */
+    if (sig[0] != 0x4D || sig[1] != 0x5A) return 0;
+#else
+    /* ELF image on the POSIX target */
+    if (sig[0] != 0x7F || sig[1] != 'E') return 0;
 #endif
     return 1;
 }
@@ -249,6 +258,12 @@ static int move_file(const char *src, const char *dst) {
     while ((n = fread(buf, 1, sizeof buf, a)) > 0) fwrite(buf, 1, n, b);
     fclose(a);
     if (fclose(b) != 0) return -1;
+#ifndef _WIN32
+    /* a fresh copy is not executable; restore the mode the linker gave src */
+    struct stat st;
+    if (stat(src, &st) == 0)
+        chmod(dst, st.st_mode | S_IXUSR | S_IXGRP | S_IXOTH);
+#endif
     remove_quiet(src);
     return 0;
 }
@@ -326,6 +341,7 @@ static char *embed_read(const char *self, const char *file) {
     if (p) return read_file_or_die(p);
     if (strcmp(file, "hphp_rt.c") == 0) return xstrdup(hp_embed_rt_c);
     if (strcmp(file, "hphp_std.c") == 0) return xstrdup(hp_embed_std_c);
+    if (strcmp(file, "hphp_thr.c") == 0) return xstrdup(hp_embed_thr_c);
     if (strcmp(file, "hphp_ui.c") == 0) return xstrdup(hp_embed_ui_c);
     if (strcmp(file, "hphp_rt.h") == 0) return xstrdup(hp_embed_rt_h);
     fatal("hphp: unknown runtime file '%s'", file);
@@ -343,7 +359,7 @@ static void mkdir_p(const char *dir) { system_sh(fmt("mkdir -p \"%s\"", dir)); }
 /* Write the three runtime files into <wd>/rt. Overwrite unconditionally so
  * the runtime always matches the compiler version. */
 static void extract_runtime(const char *wd, const char *self) {
-    static const char *files[] = {"hphp_rt.c", "hphp_std.c", "hphp_ui.c", "hphp_rt.h"};
+    static const char *files[] = {"hphp_rt.c", "hphp_std.c", "hphp_thr.c", "hphp_ui.c", "hphp_rt.h"};
     mkdir_p(wd);
     char *rtdir = path_join(wd, "rt");
     mkdir_p(rtdir);
@@ -352,7 +368,7 @@ static void extract_runtime(const char *wd, const char *self) {
 #else
     system_sh(fmt("mkdir -p \"%s\"", rtdir));
 #endif
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
         char *data = embed_read(self, files[i]);
         char *dest = fmt("%s/%s", rtdir, files[i]);
         FILE *f = fopen(dest, "wb");
@@ -375,7 +391,7 @@ static void extract_runtime(const char *wd, const char *self) {
 static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
                            const char *exepath) {
     /* all paths below are relative to wd */
-    const char *po = "prog.o", *ro = "hp_rt.o", *so = "hp_std.o", *uo = "hp_ui.o";
+    const char *po = "prog.o", *ro = "hp_rt.o", *so = "hp_std.o", *to = "hp_thr.o", *uo = "hp_ui.o";
     const char *out = "prog.out";
     char *out_abs = path_join(wd, out);
     int verbose = getenv("HPHP_VERBOSE") != NULL;
@@ -400,9 +416,10 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
     for (int attempt = 1; attempt <= 3; attempt++) {
         /* --- compile the three objects (gcc -c is rock solid) --- */
         bool compiled = true;
-        const char *ccs[4] = {"prog.c:prog.o", "rt/hphp_rt.c:hp_rt.o",
-                              "rt/hphp_std.c:hp_std.o", "rt/hphp_ui.c:hp_ui.o"};
-        for (int i = 0; i < 4; i++) {
+        const char *ccs[5] = {"prog.c:prog.o", "rt/hphp_rt.c:hp_rt.o",
+                              "rt/hphp_std.c:hp_std.o", "rt/hphp_thr.c:hp_thr.o",
+                              "rt/hphp_ui.c:hp_ui.o"};
+        for (int i = 0; i < 5; i++) {
             char src[128], obj[64];
             const char *colon = strchr(ccs[i], ':');
             snprintf(src, sizeof src, "%.*s", (int)(colon - ccs[i]), ccs[i]);
@@ -435,19 +452,25 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
             const char *crtdir = path_dir_of(crt2);
             char *link = fmt(
                 "\"%s\" -m i386pep -Bdynamic -o %s %s %s "
-                "-L\"%s\" -L\"%s\" %s %s %s %s "
+                "-L\"%s\" -L\"%s\" %s %s %s %s %s "
                 "-lmingw32 -lgcc -lgcc_eh -lmingwex -lmsvcrt -lkernel32 "
                 "-lws2_32 -lpthread -ladvapi32 -lshell32 -luser32 "
                 "-lgdi32 -lcomctl32 -lcomdlg32 -lole32 \"%s\" \"%s\"",
                 ld, out, crt2, crtbegin, gccdir, crtdir,
-                po, ro, so, uo, manifest, crtend);
+                po, ro, so, to, uo, manifest, crtend);
             rc = system_sh(link);
             free(link);
         }
         if (rc != 0 || !file_nonempty(out_abs)) {
-            char *link = fmt("gcc -O2 %s %s %s %s -o %s -lm -lws2_32 "
+#ifdef _WIN32
+            char *link = fmt("gcc -O2 %s %s %s %s %s -o %s -lm -lws2_32 "
                              "-lgdi32 -lcomctl32 -lcomdlg32 -lole32",
-                             po, ro, so, uo, out);
+                             po, ro, so, to, uo, out);
+#else
+            /* POSIX: sockets live in libc, the UI layer is inert stubs */
+            char *link = fmt("gcc -O2 %s %s %s %s %s -o %s -lm -lpthread",
+                             po, ro, so, to, uo, out);
+#endif
             rc = system_sh(link);
         }
         if (rc == 0 && file_looks_like_exe(out_abs)) {
@@ -532,6 +555,21 @@ static bool lib_name_matches(const char *spec, const char *name) {
 }
 
 static Program *load_import(LoadCtx *ctx, const char *importer, const char *spec) {
+    /* convention: an import spec without an extension names a library or
+     * package ("websocket"), not a source file — resolve it to "<spec>.hphp"
+     * everywhere (lib/, std/, installed packages, importer's directory, and
+     * $HPHP_PATH). Explicit "websocket.hphp" keeps meaning "this exact file". */
+    char *norm = NULL;
+    {
+        size_t sl = strlen(spec);
+        const char *dot = strrchr(spec, '.');
+        const char *sep = strrchr(spec, '/');
+        bool has_ext = dot && (!sep || dot > sep);
+        if (!has_ext) {
+            norm = fmt("%s.hphp", spec);
+            spec = norm;
+        }
+    }
     bool relative = spec[0] == '.' || spec[0] == '/' || spec[0] == '\\';
     if (relative) {
         char *cand = fmt("%s/%s", path_dir_of(importer), spec);
@@ -582,10 +620,9 @@ static Program *load_source_recursive(LoadCtx *ctx, const char *path, const char
 
     /* imports first (depth-first, deps before user code) */
     for (size_t i = 0; i < prog->imports.len; i++) {
-        Import *im = prog->imports.items[i];
-        if (!load_import(ctx, path, im->path))
+        Import *im = prog->imports.items[i];            if (!load_import(ctx, path, im->path))
             fatal("%s: cannot import \"%s\"\n"
-                  "  searched: lib/, src/hphpc/std/, %s/, $HPHP_PATH, built-in libraries",
+                  "  searched: lib/, src/hphpc/std/, %s/, installed packages, $HPHP_PATH, built-in libraries",
                   path, im->path, path_dir_of(path));
     }
     ptrvec_push(&ctx->programs, prog);
@@ -633,6 +670,7 @@ static int pkg_cmd_pack(int argc, char **argv) {
     PkgManifest m;
     pkg_read_manifest_of(dir, &m);
     char *cache = pkg_home_file("cache");
+    mkdir_p(cache);
     char *out = fmt("%s/%s-%s.hpx", cache, m.name, m.version);
     pkg_pack_dir(dir, out);
     printf("packed %s (%s %s) -> %s\n", dir, m.name, m.version, out);
@@ -658,7 +696,7 @@ static int pkg_install_file(const char *hpx_path) {
               m.name, m.entry);
     pkg_registry_add(m.name, m.version);
     printf("installed %s %s -> %s\n", m.name, m.version, destdir);
-    printf("import it with:  import \"%s.hphp\";\n", m.name);
+    printf("import it with:  import \"%s\";\n", m.name);
     return 0;
 }
 
@@ -690,6 +728,7 @@ static int pkg_install_registry(const char *name) {
     }
     /* save to cache, then install from the file */
     char *cache = pkg_home_file("cache");
+    mkdir_p(cache);
     char *out = fmt("%s/%s.hpx", cache, name);
     FILE *f = fopen(out, "wb");
     if (!f) fatal("cannot write %s", out);
@@ -865,6 +904,7 @@ static int pkg_cmd_publish(int argc, char **argv) {
     PkgManifest m;
     pkg_read_manifest_of(dir, &m);
     char *cache = pkg_home_file("cache");
+    mkdir_p(cache);
     char *hpx = fmt("%s/%s-%s.hpx", cache, m.name, m.version);
     pkg_pack_dir(dir, hpx);
     char *base = pkg_registry_url_or_default();

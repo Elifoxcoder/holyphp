@@ -6,7 +6,7 @@
 // file/folder/color dialogs and the clipboard.
 //
 // Quick start:
-//   import "ui.hphp";
+//   import "ui";
 //   $app = new App("Hello");
 //   $btn = $app->button("Click me", 20, 20, 120, 30);
 //   $btn->onClick = function() use ($app) { $app->msg("Hi!", "You clicked."); };

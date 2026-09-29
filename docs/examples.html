@@ -31,7 +31,7 @@ $total = 0;
 foreach ($nums as $x) { $total += $x; }
 echo "sum = {$total}, count = " . count($nums) . "\n";
 
-$user = ["name" =&gt; "Elias", "lang" =&gt; "HolyPHP"];
+$user = ["name" =&gt; "Ada", "lang" =&gt; "HolyPHP"];
 foreach ($user as $k =&gt; $v) {
     echo "  {$k} =&gt; {$v}\n";
 }
@@ -101,7 +101,7 @@ $found = [];
   <h2>ui_demo.hphp — desktop GUI tour</h2>
   <p>Every widget in one window: button with a click counter (by-ref closure capture!),
   gated input, checkbox, list box, combo, progress + slider, groups, menus, timers:</p>
-<pre><code class="hphp">import "ui.hphp";
+<pre><code class="hphp">import "ui";
 
 $app = new App("HolyPHP UI Demo", 640, 440);
 $counterLbl = $app-&gt;label("Clicked 0 times", 16, 12);
@@ -127,7 +127,7 @@ $app-&gt;run();</code></pre>
   <h2>ws_chat.hphp — browser chat server</h2>
   <p>The library showcase: a chat server that any browser joins — no page reloads, no
   polling, pure WebSockets:</p>
-<pre><code class="hphp">import "websocket.hphp";
+<pre><code class="hphp">import "websocket";
 
 $server = new WebSocketServer("tcp://127.0.0.1:9500");
 $server-&gt;onOpen = function(int $client) use ($server): void {
@@ -146,6 +146,36 @@ while ($server-&gt;tick()) { usleep(10000); }</code></pre>
   <p>Creates a window, binds controls, exercises text get/set and the event pump, then
   closes — CI-friendly (no human input needed):</p>
 <pre><code class="hphp">hphp run examples/ui_selftest.hphp   # exits 0 when everything worked</code></pre>
+
+  <h2>async_demo.hphp — event loop, HTTP, threads</h2>
+  <p>The whole async library in one runnable file: timers with cancellation, a
+  line-oriented TCP server with ACK replies, an in-loop HTTP GET that keeps the
+  loop live, a blocking fetch with the server running on a thread, and raw
+  watchers that see data-then-EOF:</p>
+<pre><code class="hphp">import "async";
+import "thread";
+
+$loop = async_line_server("tcp://127.0.0.1:8931", function($c, $line) {
+    return "ACK:" . strtoupper($line);        // reply line
+});
+
+$loop->httpGet("http://127.0.0.1:8932/hello",
+    function($resp) use ($loop) { echo "got " . strlen($resp) . " bytes\n"; $loop->stop(); },
+    function($err)  use ($loop) { echo "failed: $err\n"; $loop->stop(); });
+
+$loop->run();</code></pre>
+<pre><code class="hphp">hphp run examples/async_demo.hphp   # prints: ASYNC DEMO: all 5/5 checks passed</code></pre>
+
+  <h2>thr_demo.hphp — six-thread concurrency tour</h2>
+  <p>Channel rendezvous, an 8-thread atomic counter to exactly 40000, per-thread
+  aggregation, barrier arrival order, order-preserving <code>parallel_map</code>,
+  and close-drain semantics:</p>
+<pre><code class="hphp">import "thread";
+
+$n = thr_parallel_map(function($x) { return $x * $x; },
+                      [1,2,3,4,5,6,7,8,9,10]);
+echo implode(" ", $n), "\n";         // 1 4 9 16 25 36 49 64 81 100</code></pre>
+<pre><code class="hphp">hphp run examples/thr_demo.hphp     # prints: ALL THREAD TESTS PASSED</code></pre>
 
   <div class="note"><b>Tip:</b> every example compiles to a standalone binary:
   <code>hphp build examples/word_guess.hphp -o guess.exe</code> — no PHP, no runtime,

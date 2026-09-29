@@ -1,0 +1,139 @@
+import "async";
+import "thread";
+
+/* async_demo.hphp - end-to-end verification of the async library.
+ *
+ * 1. timers: after + every + cancelTimer
+ * 2. line-oriented TCP server with ACK replies (async_line_server)
+ * 3. in-loop HTTP GET (Loop::httpGet) - loop stays live during the fetch
+ * 4. blocking HTTP GET (async_get) with the server running on a thread
+ * 5. raw watchers: send-then-close server delivers data, then EOF
+ */
+
+$pass = 0;
+
+/* ---------- 1. timers ---------- */
+$ticks = 0;
+$lp1 = new Loop();
+$id = $lp1->every(40, function() use (&$ticks) { $ticks++; });
+$lp1->after(150, function() use ($lp1, $id) { $lp1->cancelTimer($id); });
+$lp1->after(300, function() use ($lp1) { $lp1->stop(); });
+$lp1->run();
+if ($ticks >= 2 && $ticks <= 5) {
+    $pass++;
+    echo "1. timers: $ticks ticks (cancelled in time) OK\n";
+} else {
+    echo "1. timers FAIL ($ticks ticks)\n";
+    exit(1);
+}
+
+/* ---------- 2. line server ---------- */
+$lp2 = async_line_server("tcp://127.0.0.1:8931", function($c, $line) {
+    return "ACK:" . strtoupper($line);
+});
+$cli = stream_socket_client("tcp://127.0.0.1:8931");
+stream_set_blocking($cli, false);
+$ack = "";
+$lp2->after(30, function() use ($cli) { stream_send($cli, "ping\n"); });
+$lp2->watch($cli, function($s, $chunk, $eof) use (&$ack, $lp2) {
+    if ($chunk !== "" && $chunk !== false) { $ack = $ack . $chunk; }
+    if (strpos($ack, "\n") !== false) { $lp2->stop(); }
+});
+$lp2->after(5000, function() use ($lp2) { echo "   timeout\n"; $lp2->stop(); });
+$lp2->run();
+$ack = trim($ack);
+stream_close($cli);
+if ($ack === "ACK:PING") {
+    $pass++;
+    echo "2. line server: ack='$ack' OK\n";
+} else {
+    echo "2. line server FAIL (ack='$ack')\n";
+    exit(1);
+}
+
+/* ---------- 3. in-loop httpGet (loop stays live) ---------- */
+$lp3 = new Loop();
+$lp3->listen("tcp://127.0.0.1:8932", function($c, $peer) use ($lp3) {
+    /* reply after 120ms via the loop itself: the fetch must span ticks */
+    $lp3->after(120, function() use ($c) {
+        $body = '{"status":"ok","lang":"hphp"}';
+        stream_send($c,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" .
+            "Content-Length: " . strlen($body) . "\r\nConnection: close\r\n\r\n" . $body);
+        stream_close($c);
+    });
+});
+$resp = "";
+$ticks3 = 0;
+$lp3->every(50, function() use (&$ticks3) { $ticks3++; });
+$lp3->httpGet("http://127.0.0.1:8932/hello",
+    function($r) use (&$resp, $lp3) { $resp = $r; $lp3->stop(); },
+    function($e) use (&$resp, $lp3) { $resp = "ERR:$e"; $lp3->stop(); });
+$lp3->after(8000, function() use ($lp3) { echo "   timeout\n"; $lp3->stop(); });
+$lp3->run();
+if (strpos($resp, "200 OK") !== false && strpos($resp, "hphp") !== false && $ticks3 >= 1) {
+    $pass++;
+    echo "3. in-loop httpGet: 200 + body, loop stayed live ($ticks3 ticks) OK\n";
+} else {
+    echo "3. httpGet FAIL (ticks=$ticks3): '" . substr($resp, 0, 40) . "'\n";
+    exit(1);
+}
+
+/* ---------- 4. async_get with the server on a thread ---------- */
+$ch = chan_new(2);
+thr_spawn(function() use ($ch) {
+    $lp = new Loop();
+    try {
+        $lp->listen("tcp://127.0.0.1:8934", function($c, $peer) {
+            stream_send($c, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nHELLO");
+            stream_close($c);
+        });
+    } catch (Exception $e) {
+        chan_send($ch, "listen-failed");
+        return;
+    }
+    chan_send($ch, "listening");
+    $lp->run();
+});
+$resp4 = "";
+if (chan_recv($ch) === "listening") {
+    async_get("http://127.0.0.1:8934/x",
+        function($r) use (&$resp4) { $resp4 = $r; },
+        function($e) use (&$resp4) { $resp4 = "ERR:$e"; });
+}
+if (strpos($resp4, "200 OK") !== false && strpos($resp4, "HELLO") !== false) {
+    $pass++;
+    echo "4. async_get (server on a thread): 200 + HELLO OK\n";
+} else {
+    echo "4. async_get FAIL: '" . substr($resp4, 0, 40) . "'\n";
+    exit(1);
+}
+
+/* ---------- 5. raw watcher: data then EOF from a send-then-close server ---------- */
+$lp5 = new Loop();
+$lp5->listen("tcp://127.0.0.1:8939", function($c, $peer) {
+    stream_send($c, "HELLO-FROM-SERVER");
+    stream_close($c);
+});
+$got = "";
+$fires = 0;
+$lp5->after(150, function() use ($lp5, &$got, &$fires) {
+    $cli = stream_socket_client("tcp://127.0.0.1:8939");
+    stream_set_blocking($cli, false);
+    $lp5->watch($cli, function($s, $chunk, $eof) use ($lp5, &$got, &$fires) {
+        $fires++;
+        if ($chunk !== "" && $chunk !== false) { $got = $got . $chunk; }
+        if ($eof || $fires >= 3) { $lp5->stop(); }
+    });
+});
+$lp5->after(5000, function() use ($lp5) { echo "   timeout\n"; $lp5->stop(); });
+$lp5->run();
+if ($got === "HELLO-FROM-SERVER") {
+    $pass++;
+    echo "5. watcher send-then-close: '$got' OK\n";
+} else {
+    echo "5. watcher FAIL: '$got'\n";
+    exit(1);
+}
+
+echo "ASYNC DEMO: all $pass/5 checks passed\n";

@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>   /* va_list — not transitively included on glibc */
 
 void *xmalloc(size_t n);
 void *xrealloc(void *p, size_t n);

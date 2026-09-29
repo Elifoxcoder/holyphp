@@ -3,6 +3,9 @@
  * Enough for a package registry: GET / POST with small request bodies and
  * binary-safe response reading (Content-Length or connection-close).
  */
+#if !defined(_WIN32)
+#define _DEFAULT_SOURCE 1    /* getaddrinfo, struct addrinfo on glibc */
+#endif
 #include "pkgnet.h"
 #include "util.h"
 

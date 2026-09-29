@@ -1,4 +1,4 @@
-import "ui.hphp";
+import "ui";
 
 // headless smoke test: create the app window, a few controls, tick the
 // pump twice, then close. Verifies handles, calls, and dispatch.

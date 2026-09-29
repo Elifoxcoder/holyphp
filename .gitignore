@@ -1,0 +1,19 @@
+# build artifacts
+build/
+hphp.exe
+*.o
+*.exe
+*.a
+*.s
+
+# scratch output from emit/run without -o
+hphp_out.*
+hp_demo*
+*.gen.c
+build_log.txt
+
+# bench-vs-rust rust target
+bench-vs-rust/target/
+
+# editor / OS
+.freebuff/

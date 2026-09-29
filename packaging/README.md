@@ -1,13 +1,14 @@
 # HolyPHP installers
 
 Self-contained install wizards for the **compiler only**. Every package carries
-the same thing: the single `hphp` binary with the runtime and standard library
-embedded. **No libraries ship in the installers** — `ui`, `websocket`, and
-anything else is distributed through the built-in package manager:
+the same thing: the single `hphp` binary with the runtime and five standard
+libraries (`ui`, `websocket`, `async`, `thread`, `mathx`) already embedded —
+`import "async";` works offline, no package manager needed. Additional
+libraries come from the public registry (the compiled-in default):
 
 ```bash
-hphp install ui
-hphp install websocket
+hphp pkg search
+hphp pkg install <name>
 ```
 
 | Target | Builder | Result | PATH strategy |

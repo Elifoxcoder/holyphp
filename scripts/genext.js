@@ -12,6 +12,10 @@ const path = require("path");
 const root = path.join(__dirname, "..");
 const builtinsC = fs.readFileSync(path.join(root, "src/hphpc/builtins.c"), "utf8");
 
+/* hand-written docs for every builtin (see scripts/builtin-docs.js) */
+const DOCS = require(path.join(__dirname, "builtin-docs.js"));
+let docsMissing = [];
+
 /* arg counts per BuiltinShape, mirroring builtins.h semantics */
 const SHAPES = {
   B_STR1:    { n: 1, params: "string $s",                 desc: "string → string" },
@@ -37,22 +41,32 @@ const SHAPES = {
   B_MISC:    { n: -2, params: "...$args",                 desc: "flexible signature" },
 };
 
-/* pull the `add("name", SHAPE, ty_x, unsafe, variadic);` lines */
-const re = /add\(\s*"([^"]+)"\s*,\s*(B_[A-Z0-9]+)\s*,\s*(ty_[a-z0-9]+)\s*,\s*(true|false)\s*,\s*(true|false)\s*\)/g;
+/* pull the `add("name", SHAPE, ty_x, unsafe, variadic);` lines.
+ * NOTE: shape names contain underscores (B_INT_INT, B_STR_INT, …) —
+ * the character class must include "_". */
+const re = /add\(\s*"([^"]+)"\s*,\s*(B_[A-Z0-9_]+)\s*,\s*(ty_[a-z0-9_]+|type_[a-z_()]+)\s*,\s*(true|false)\s*,\s*(true|false)\s*\)/g;
 const types = { ty_int: "int", ty_string: "string", ty_bool: "bool", ty_float: "float", ty_mixed: "mixed", ty_void: "void" };
 
 let m, count = 0, entries = [];
 while ((m = re.exec(builtinsC)) !== null) {
   const [, name, shape, ret, unsafe, variadic] = m;
   const sh = SHAPES[shape] || SHAPES.B_MISC;
+  const doc = DOCS[name];
+  if (!doc) docsMissing.push(name);
   entries.push({
     name,
     sig: `${name}(${sh.params}): ${types[ret] || "mixed"}`,
     args: variadic === "true" ? -1 : sh.n,
-    desc: sh.desc,
+    desc: doc || sh.desc,
     unsafe: unsafe === "true",
   });
   count++;
+}
+
+if (docsMissing.length) {
+  console.error(`genext: ${docsMissing.length} builtins without a description in scripts/builtin-docs.js:`);
+  console.error("  " + docsMissing.join(", "));
+  process.exit(1);
 }
 
 const outDir = path.join(root, "extension", "hphp", "data");

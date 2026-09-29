@@ -20,7 +20,7 @@
 <pre><code class="hphp">$count = 5;                  // inferred int
 $pi = 3.14159;               // float
 $ok = true;                  // bool
-$who = "Elias";              // string
+$who = "Ada";              // string
 
 $count: int = 5;             // pinned types
 $rate: float = 0.19;
@@ -28,7 +28,7 @@ $name: string = "Ann";
 $flag: bool = false;
 
 $items = [1, 2, 3];          // list array
-$user = ["name" =&gt; "Elias",  // map array (string keys)
+$user = ["name" =&gt; "Ada",  // map array (string keys)
          "lang" =&gt; "HolyPHP"];</code></pre>
   <table>
     <tr><th>Type</th><th>Literals</th><th>Notes</th></tr>
@@ -194,13 +194,17 @@ echo laenge($w);        // owner keeps $w
 
   <h2 id="imports">Imports &amp; the stdlib</h2>
   <p>Libraries ship inside the compiler binary — <code>import</code> finds them with no files
-  on disk.</p>
-<pre><code class="hphp">import "ui.hphp";        // desktop GUI toolkit
-import "websocket.hphp"; // RFC 6455 server</code></pre>
+  on disk. A spec without an extension names a library or package; with <code>.hphp</code>
+  it means a file next to the importing source.</p>
+<pre><code class="hphp">import "ui";        // desktop GUI toolkit (embedded)
+import "websocket"; // RFC 6455 server (embedded)
+import "async";     // event loop + HTTP (embedded)
+import "thread";    // OS threads + channels (embedded)
+import "helpers";     // helpers.hphp next to this file</code></pre>
 
   <h2 id="strings">Strings</h2>
   <p>Immutable and refcounted; interpolation is compile-time parsed into concat calls.</p>
-<pre><code class="hphp">$name = "Elias";
+<pre><code class="hphp">$name = "Ada";
 echo "Hi {$name}, you have " . (3 + 4) . " new messages\n";
 
 $s = "Hello";
@@ -216,9 +220,9 @@ echo $nums[0];               // 1
 
 $m = [];
 $m[1] = "a";                 // key 1 is remembered
-$m["name"] = "Elias";        // becomes a keyed map
+$m["name"] = "Ada";        // becomes a keyed map
 foreach ($m as $k =&gt; $v) {
-    echo "{$k} =&gt; {$v}\n";   // 1 =&gt; a, then name =&gt; Elias
+    echo "{$k} =&gt; {$v}\n";   // 1 =&gt; a, then name =&gt; Ada
 }
 
 $a = [1, 2, 3];

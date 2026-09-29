@@ -1,0 +1,7 @@
+{
+  "name": "thread",
+  "version": "1.0.0",
+  "entry": "thread.hphp",
+  "description": "Threads for HolyPHP: Pool, Mutex, Channel classes and parallel helpers over the native thr_*/chan_* primitives",
+  "author": "HolyPHP"
+}

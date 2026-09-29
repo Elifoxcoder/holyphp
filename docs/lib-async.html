@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>async — HolyPHP standard library</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="layout">
+<script src="assets/nav.html.js"></script>
+<main>
+  <h1>async</h1>
+  <p class="lead">A cooperative event loop for HolyPHP: timers, socket watchers,
+  line-oriented TCP servers, and HTTP — all in one loop, no threads needed.
+  Pure HolyPHP on top of the runtime's non-blocking socket primitives.</p>
+
+  <div>
+    <span class="pill e">stdlib — embedded</span>
+    <span class="pill">timers</span>
+    <span class="pill">socket watchers</span>
+    <span class="pill">HTTP client + server</span>
+    <span class="pill p">single event loop</span>
+  </div>
+
+  <h2>Timers</h2>
+<pre><code class="hphp">import "async";
+
+$loop = new Loop();
+$loop->after(1000, function() { echo "one second passed\n"; });
+$loop->every(250, function() { echo "tick\n"; });
+$loop->run();          // blocks until stop() or nothing left to wait on</code></pre>
+  <table>
+    <tr><th>Method</th><th>Returns</th><th>What it does</th></tr>
+    <tr><td><code>after(int $ms, $fn)</code></td><td>int</td><td>one-shot timer; returns an id for <code>cancelTimer</code></td></tr>
+    <tr><td><code>every(int $ms, $fn)</code></td><td>int</td><td>repeating timer (self-reschedules)</td></tr>
+    <tr><td><code>cancelTimer(int $id)</code></td><td>void</td><td>cancel a pending timer</td></tr>
+    <tr><td><code>stop()</code></td><td>void</td><td>leave <code>run()</code> from inside a callback</td></tr>
+    <tr><td><code>tick(int $maxWaitMs = 25)</code></td><td>bool</td><td>run one poll iteration yourself</td></tr>
+    <tr><td><code>run()</code></td><td>void</td><td>loop until <code>stop()</code> or idle</td></tr>
+  </table>
+
+  <h2>TCP: servers, watchers, lines</h2>
+<pre><code class="hphp">import "async";
+
+// one-shot TCP server: accept callback per connection
+$loop = new Loop();
+$loop->listen("tcp://127.0.0.1:8080", function($client, $peer) {
+    stream_send($client, "hello $peer\n");
+    stream_close($client);
+});
+
+// raw readable-socket watcher
+$loop->watch($sock, function($sock, $chunk, $eof) {
+    if ($eof) { return; }
+    echo "got: $chunk\n";
+});
+
+// line-oriented server with automatic ACK replies
+$lp = async_line_server("tcp://0.0.0.0:9000", function($client, $line) {
+    return "ACK:" . strtoupper($line);   // non-null return = reply line
+});
+$lp->run();</code></pre>
+  <div class="api-sig"><span class="ret">Loop</span> async_line_server(<span class="t">string</span> $addr, $onLine, $onConnect = <span class="t">null</span>)</div>
+  <p><code>LineReader</code> assembles stream chunks into complete <code>\n</code>
+  lines — handy for simple TCP protocols (works with raw threads too).</p>
+
+  <h2>HTTP</h2>
+<pre><code class="hphp">import "async";
+
+$loop = new Loop();
+
+// in-loop GET: the loop stays live (timers + other sockets keep firing)
+$loop->httpGet("http://service.local/api", function($resp) {
+    echo "status: " . substr($resp, 0, 15) . "\n";
+}, function($err) {
+    echo "failed: $err\n";
+});
+
+// blocking shape: runs a private loop, returns when done
+async_get("http://example.invalid/", function($resp) {
+    file_put_contents("out.html", $resp);
+});
+
+$loop->run();</code></pre>
+  <div class="api-sig"><span class="ret">bool</span> Loop::httpGet(<span class="t">string</span> $url, $onDone, $onError = <span class="t">null</span>)   <span class="tok-com">// composable primitive, 10 s timeout</span>
+<span class="ret">bool</span> async_get(<span class="t">string</span> $url, $onDone, $onError = <span class="t">null</span>)        <span class="tok-com">// blocking convenience wrapper</span></div>
+  <p class="small muted">Responses arrive as the full HTTP payload (status line +
+  headers + body). For parallel fetches call <code>async_get</code> from several
+  <a href="lib-thread.html">thread</a> workers.</p>
+
+  <h2>Sockets + threads</h2>
+  <p>Sockets are process-global, so one thread's loop serves connections while the
+  main thread blocks in <code>async_get</code> — the two libraries compose:</p>
+<pre><code class="hphp">import "async";
+import "thread";
+
+$ready = chan_new(1);
+thr_spawn(function() use ($ready) {
+    $lp = new Loop();
+    $lp->listen("tcp://127.0.0.1:8934", function($c, $peer) {
+        stream_send($c, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nHELLO");
+        stream_close($c);
+    });
+    chan_send($ready, "listening");
+    $lp->run();
+});
+
+chan_recv($ready);
+async_get("http://127.0.0.1:8934/x", function($resp) {
+    echo $resp;                       // HTTP/1.1 200 OK ...
+});</code></pre>
+
+  <h2>Try it</h2>
+<pre><code class="bash">hphp pkg install async
+hphp run examples/async_demo.hphp</code></pre>
+  <p class="small muted">Ships embedded in the compiler — <code>import "async"</code>
+  works offline, no install needed. Source: <code>lib/async/async.hphp</code>.</p>
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

@@ -329,7 +329,7 @@ static AstFn *parse_fn_after_name(Parser *p, const Token *name, bool is_method, 
             if (at_ident(p, "mut")) { ts_advance(p->ts); pm->is_mut = true; }
         }
         if (ts_match(p->ts, T_ELLIPSIS)) pm->variadic = true;
-        /* accepted forms:  $name: Type   |   Type $name   (PHP & Rust-ish) */
+        /* accepted forms:  $name: Type   |   Type $name   |   Type &$name */
         if (ts_check(p->ts, T_VAR)) {
             const Token *vn = ts_expect(p->ts, T_VAR, "parameter name");
             pm->name = dup_text(vn);
@@ -337,6 +337,11 @@ static AstFn *parse_fn_after_name(Parser *p, const Token *name, bool is_method, 
             if (ts_match(p->ts, T_COLON)) pm->type = parse_type(p);
         } else {
             pm->type = parse_type(p);
+            if (ts_check(p->ts, T_AMP)) {   /* PHP "array &$x" by-ref form */
+                ts_advance(p->ts);
+                pm->by_ref = true;
+                pm->is_mut = true;
+            }
             const Token *vn = ts_expect(p->ts, T_VAR, "parameter name");
             pm->name = dup_text(vn);
             pm->name_tok = *vn;
@@ -403,10 +408,11 @@ static void parse_class_body(Parser *p, AstClass *c) {
         else if (ts_check(p->ts, T_KW_PROTECTED)) { vis = VIS_PROTECTED; ts_advance(p->ts); }
         else if (ts_check(p->ts, T_KW_PUBLIC) || at_ident(p, "pub")) ts_advance(p->ts);
         bool is_const = ts_match(p->ts, T_KW_CONST);
+        bool lead_static = ts_match(p->ts, T_KW_STATIC);   /* `static fn f()` / `static $x` */
         if (ts_check(p->ts, T_KW_FN) || ts_check(p->ts, T_KW_FUNCTION)) {
             ts_advance(p->ts);
-            bool is_static = at_ident(p, "static");
-            if (is_static) ts_advance(p->ts);
+            bool is_static = lead_static || at_ident(p, "static");
+            if (is_static && !lead_static) ts_advance(p->ts);
     /* method name */
     const Token *nm = ts_peek(p->ts);
     if (nm->kind == T_IDENT && nm->len == 11 && memcmp(nm->text, "__construct", 11) == 0) {
@@ -425,9 +431,9 @@ static void parse_class_body(Parser *p, AstClass *c) {
                    ts_check(p->ts, T_INT) || ts_check(p->ts, T_IDENT)) {
             StructField *f = parse_field(p, vis, is_const);
             ptrvec_push(&c->fields, f);
-        } else if (ts_check(p->ts, T_KW_STATIC) || is_const) {
+        } else if (lead_static || ts_check(p->ts, T_KW_STATIC) || is_const) {
             /* class constant / static field: `static $x = 1` or `const X = 1` */
-            StructField *f = parse_field(p, vis, is_const || ts_check(p->ts, T_KW_STATIC));
+            StructField *f = parse_field(p, vis, is_const || lead_static || ts_check(p->ts, T_KW_STATIC));
             ptrvec_push(&c->fields, f);
         } else {
             const Token *t = ts_peek(p->ts);
@@ -974,7 +980,8 @@ static Expr *parse_assign(Parser *p) {
         /* PHP destructuring: "[$a, $b] = expr;", "[$a,, $c] = expr;",
          * "[$k => $v] = expr;" and nested lists. Parsed as an assignment
          * whose target is an array literal; codegen expands it. */
-        if (lhs->kind == EX_ARRAY_LIT) {
+        if (lhs->kind == EX_ARRAY_LIT && ts_check(p->ts, T_ASSIGN)) {
+            ts_advance(p->ts);
             Expr *rhs = parse_assign(p);
             Expr *e = expr_new(EX_ASSIGN, *t);
             e->u.assign.op.kind = T_ASSIGN;
@@ -1025,7 +1032,7 @@ static struct Level {
     {1, {T_PIPE}},                                    /* |  */
     {1, {T_CARET}},                                   /* ^  */
     {1, {T_AMP}},                                     /* &  */
-    {4, {T_EQ, T_NEQ, T_NEQ2, T_EQ2, T_SPACESHIP}},   /* equality */
+    {5, {T_EQ, T_NEQ, T_NEQ2, T_EQ2, T_SPACESHIP}},   /* equality */
     {4, {T_LT, T_GT, T_LE, T_GE}},                    /* relational */
     {1, {T_DOT}},                                     /* concat */
     {2, {T_SHL, T_SHR}},                              /* shift */
@@ -1189,8 +1196,12 @@ static Expr *parse_postfix(Parser *p) {
             }
             continue;
         }
-        /* call on any postfix expression: ($obj->prop)(), $fns[0]() */
-        if (t->kind == T_LPAREN && e->kind != EX_VAR) {
+        /* call on any postfix expression: ($cb)(), ($obj->prop)(), $fns[0]()
+         * EX_VAR is allowed when it is a real $variable (came out of a
+         * paren group); bare_name vars are function names and were already
+         * consumed as calls in parse_primary. */
+        if (t->kind == T_LPAREN &&
+            (e->kind != EX_VAR || !e->u.var.bare_name)) {
             Expr *c = expr_new(EX_CALL, *t);
             c->u.call.fn = e;
             parse_call_args(p, &c->u.call.args);
@@ -1234,7 +1245,7 @@ static Expr *parse_closure_after_fn(Parser *p) {
         if (ts_check(p->ts, T_AMP)) {
             ts_advance(p->ts);
             pm->by_ref = true;
-            eat_ident(p, "mut");
+            pm->is_mut = true;   /* by-ref params are writeable */
         }
         if (ts_check(p->ts, T_VAR)) {
             const Token *vn = ts_expect(p->ts, T_VAR, "parameter name");
@@ -1243,6 +1254,11 @@ static Expr *parse_closure_after_fn(Parser *p) {
             if (ts_match(p->ts, T_COLON)) pm->type = parse_type(p);
         } else {
             pm->type = parse_type(p);
+            if (ts_check(p->ts, T_AMP)) {   /* PHP "array &$x" by-ref form */
+                ts_advance(p->ts);
+                pm->by_ref = true;
+                pm->is_mut = true;
+            }
             const Token *vn = ts_expect(p->ts, T_VAR, "parameter name");
             pm->name = dup_text(vn);
             pm->name_tok = *vn;
@@ -1471,13 +1487,7 @@ static Expr *parse_primary(Parser *p) {
             return e;
         }
         Expr *e = expr_new(EX_VAR, *nm);
-        e->u.var.name = name;
-        return e;
-    }
-    case T_LBRACKET: {
-        /* array literal, or destructuring when later followed by '='
-         * (checked in parse_assign's default branch) */
-        Expr *e = parse_primary_lbracket(p);
+        e->u.var.name = intern(name);
         return e;
     }
     default:

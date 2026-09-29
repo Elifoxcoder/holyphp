@@ -24,7 +24,7 @@
   </div>
 
   <h2>Minimal server</h2>
-<pre><code class="hphp">import "websocket.hphp";
+<pre><code class="hphp">import "websocket";
 
 $server = new WebSocketServer("tcp://0.0.0.0:9001");
 
@@ -70,7 +70,7 @@ ws.send("hello");</code></pre>
 <span class="ret">array</span> clients()                                 <span class="tok-com">// ids of open clients</span></div>
 
   <h2>Event-driven chat server (full example)</h2>
-<pre><code class="hphp">import "websocket.hphp";
+<pre><code class="hphp">import "websocket";
 
 $server = new WebSocketServer("tcp://127.0.0.1:9500");
 $server-&gt;verbose = true;

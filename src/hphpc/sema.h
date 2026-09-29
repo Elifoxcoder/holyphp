@@ -21,10 +21,12 @@ typedef struct VarSym {
     Token tok;
     bool is_mut;
     bool is_param;
+    bool is_param_ref;         /* declared `&$x` — aliases the caller's slot */
     bool captured;
     bool moved_from;
     bool is_auto;              /* declared by assignment (PHP-style) */
     bool is_undeclared_write;
+    bool is_preg_out;          /* $matches out-param of preg_match(_all) */
     bool captured_byref;       /* captured by a closure via use(&$x) */
     bool is_global_alias;      /* bound by `global $x;` — storage lives at top level */
     bool is_program_global;    /* the shared file-scope VarSym behind `global $x;` */

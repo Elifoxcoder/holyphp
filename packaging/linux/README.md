@@ -1,12 +1,12 @@
 # HolyPHP — Linux installers (.deb + AppImage)
 
 Both packages ship **the compiler only**: the `hphp` ELF binary with the
-runtime and standard library embedded. No libraries — `ui` / `websocket` are
-installed through the package manager afterwards:
+runtime and the five standard libraries (`ui`, `websocket`, `async`, `thread`,
+`mathx`) embedded — imports work offline. Extra libraries come from the
+public registry through the package manager:
 
 ```bash
-hphp install ui
-hphp install websocket
+hphp pkg install <name>
 ```
 
 ## Build (on Linux or WSL)

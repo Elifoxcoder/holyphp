@@ -8,7 +8,7 @@
 //   const ws = new WebSocket("ws://127.0.0.1:9500/");
 //   ws.onmessage = (e) => console.log(e.data);
 //   ws.send("hello");
-import "websocket.hphp";
+import "websocket";
 
 $server = new WebSocketServer("tcp://127.0.0.1:9500");
 $server->verbose = true;

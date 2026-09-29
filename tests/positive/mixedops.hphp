@@ -1,0 +1,110 @@
+// mixedops.hphp — regression suite for mixed (hval) expressions and
+// string-keyed maps, added after the 1BRC benchmark exposed four bugs.
+// Run: hphp run tests/positive/mixedops.hphp   (exit 0 = all good)
+//
+// Guards these formerly-broken behaviours:
+//   * fgets() at EOF returned a corrupted value (typed string, segfault on
+//     use) because builtins that can return false were projected as string
+//   * compound assignment (+=) on a mixed-typed variable emitted invalid C
+//     (hval += int64), and "/=" between mixed values lost its unboxing
+//   * "/" between two mixed values emitted hp_divv (hval) where the node is
+//     typed float, so "assign result to a float var" produced invalid C
+//   * float comparisons (<, >, <=, >=) against a mixed operand passed an
+//     hval where hp_lt_f/hp_gt_f expect double
+//   * string-keyed maps did a linear scan per lookup (no hash index), which
+//     made $stats[$name] read-modify-write loops O(n) per row
+
+function check(bool $cond, string $what): void {
+    if ($cond) {
+        echo "OK   " . $what . "\n";
+    } else {
+        echo "FAIL " . $what . "\n";
+        exit(1);
+    }
+}
+
+// --- mixed-typed variable: compound assignment -------------------------
+// $v starts as an hval (array element fetch), so $v += 1 must go through
+// the value-space op, not a raw C compound assignment.
+$cnt = [];
+$cnt["k"] = 10;
+$v = $cnt["k"];
+$v += 1;
+$v += 2;
+check($v == 13, "mixed var: += chains");
+
+$w = $cnt["k"];
+$w -= 3;
+$w *= 2;
+$w /= 4;
+check($w == 3.5, "mixed var: -=, *=, /= chain");
+
+// --- mixed division into a typed float variable ------------------------
+$stats = [];
+$stats["Abha"] = [2, 5.0, 9.0, 14.0];
+$s = $stats["Abha"];
+$sum = $s[3];
+$c = $s[0];
+$mean = $sum / $c;
+check($mean == 7.0, "mixed division lands in float var");
+check(sprintf("%.1f", $mean + 0.0) == "7.0", "mixed division formats via sprintf");
+
+// --- float comparisons with a mixed operand ----------------------------
+$temp = 3.5;
+$mn = $s[1];   // 5.0 as hval
+$mx = $s[2];   // 9.0 as hval
+check($temp < $mn, "float < mixed");
+check($mx > $temp, "mixed > float");
+check($temp <= $mn, "float <= mixed");
+check($mx >= $temp, "mixed >= float");
+if ($temp < $mn) {
+    $mn = $temp;
+}
+check($mn == 3.5, "comparison result feeds min-tracking");
+
+// --- string-keyed map: read-modify-write correctness -------------------
+$seen = ["alpha" => 1];
+$seen["beta"] = 2;
+$seen["alpha"] = $seen["alpha"] + 5;
+check($seen["alpha"] == 6 && $seen["beta"] == 2, "string map RMW");
+check(count($seen) == 2, "string map count after update");
+check(isset($seen["beta"]), "isset on string map");
+check(!isset($seen["gamma"]), "isset misses absent key");
+
+// overwrite in place through the mixed path
+$seen["beta"] = 7;
+check($seen["beta"] == 7, "string map overwrite keeps one entry");
+
+// --- aggregation shape (the 1BRC pattern) -------------------------------
+$rows = [["Abha", 5.0], ["Accra", 27.0], ["Abha", 9.0], ["Accra", 23.0]];
+$agg = [];
+foreach ($rows as $r) {
+    $name = $r[0];
+    $t = $r[1];
+    if (isset($agg[$name])) {
+        $e = $agg[$name];
+        $n = $e[0] + 1;
+        $lo = $e[1];
+        $hi = $e[2];
+        $tot = $e[3];
+        if ($t < $lo) {
+            $lo = $t;
+        }
+        if ($t > $hi) {
+            $hi = $t;
+        }
+        $tot = $tot + $t;
+        $agg[$name] = [$n, $lo, $hi, $tot];
+    } else {
+        $agg[$name] = [1, $t, $t, $t];
+    }
+}
+check(count($agg) == 2, "1BRC aggregation: distinct stations");
+check($agg["Abha"][0] == 2 && $agg["Abha"][1] == 5.0 && $agg["Abha"][2] == 9.0, "1BRC aggregation: Abha stats");
+$st = $agg["Abha"];
+$stotal = $st[3];
+$sn = $st[0];
+$smean = $stotal / $sn;
+check($smean == 7.0, "1BRC aggregation: Abha mean");
+
+echo "ALL MIXED-OP CHECKS PASSED\n";

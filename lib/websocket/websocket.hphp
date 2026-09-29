@@ -1,6 +1,6 @@
 /* lib/websocket.hphp — a small RFC 6455 WebSocket server for HolyPHP.
  *
- *   import "websocket.hphp";
+ *   import "websocket";
  *
  *   $server = new WebSocketServer("tcp://0.0.0.0:9001");
  *   $server->onMessage = function(int $client, string $msg): void {

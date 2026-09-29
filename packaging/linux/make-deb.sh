@@ -35,6 +35,9 @@ cp hphp "$STAGE/usr/bin/hphp"
 cp packaging/linux/common-install-wizard.sh "$STAGE/usr/lib/holyphp/"
 cp README.md "$STAGE/usr/share/doc/holyphp/README"
 
+# maintainer scripts (control, postinst, prerm)
+cp packaging/linux/debian/DEBIAN/* "$STAGE/DEBIAN/"
+
 # maintainer scripts must be executable
 chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"
 chmod 755 "$STAGE/usr/bin/hphp" "$STAGE/usr/lib/holyphp/common-install-wizard.sh"

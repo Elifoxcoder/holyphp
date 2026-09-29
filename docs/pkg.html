@@ -45,11 +45,12 @@ hphp pkg home                     # print the package home directory</code></pre
   <code>$HPHP_HOME/packages/mathx/</code>. The compiler's <code>import</code>
   resolution then searches:</p>
   <ol>
-    <li>the importing file's directory (project-local files, e.g. <code>lib/ui.hphp</code>)</li>
+    <li>the importing file's directory (project-local files, e.g. <code>import "mymod"</code> &rarr; <code>mymod.hphp</code>)</li>
     <li><code>$HPHP_HOME/packages/&lt;name&gt;/</code> (installed packages)</li>
+    <li>libraries embedded in the compiler (works offline)</li>
   </ol>
 <pre><code class="hphp">// app.hphp — after: hphp pkg install mathx
-import "mathx.hphp";
+import "mathx";
 
 echo "clamped: " . clampi(42, 0, 10) . "\n";   // 10</code></pre>
 
@@ -63,6 +64,9 @@ echo "clamped: " . clampi(42, 0, 10) . "\n";   // 10</code></pre>
 ../hphp.exe run server.hphp          # listens on http://localhost:8930
 HPHP_HOME=../store ../hphp.exe run server.hphp --store /var/hphp-packages
 </code></pre>
+  <p>The public community registry runs at
+  <code>http://91.216.248.93:8930</code> and is the compiled-in default of the
+  released installers — <code>hphp pkg install thread</code> works out of the box.</p>
   <p>Packages live as <code>&lt;name&gt;.hpx</code> + <code>&lt;name&gt;.json</code> metadata
   in the store directory, so a registry can be backed up, synced, or moved to another
   machine by copying one folder. Point clients at it from any device:</p>
@@ -80,7 +84,7 @@ hphp pkg publish                      # -> uploaded to the registry
 # 3. consume (machine B, same registry)
 hphp pkg registry http://your-server:8930
 hphp pkg install mathx
-hphp run app.hphp                     # import "mathx.hphp" just works</code></pre>
+hphp run app.hphp                     # import "mathx" just works</code></pre>
 
   <h2>How it works under the hood</h2>
   <ul>

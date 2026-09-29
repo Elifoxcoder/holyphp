@@ -19,9 +19,13 @@ is no `__DIR__` in HolyPHP yet, so a different cwd would create/use another
 
 ```bash
 hphp pkg registry http://localhost:8930    # once, saved to the pkg home
-hphp install websocket                 # then install away
+hphp pkg install websocket                 # then install away
 hphp pkg search
 ```
+
+The public community registry runs at `http://91.216.248.93:8930` and is the
+compiled-in default of the released compilers — `hphp pkg install thread`
+works with no configuration at all.
 
 ## Publish a package
 
@@ -38,15 +42,20 @@ hphp pkg publish
 
 ## What ships pre-published
 
-The bundled `store/` comes with:
+The public registry currently serves:
 
 | package     | version | what it is                                             |
 |-------------|---------|--------------------------------------------------------|
+| `thread`    | 1.0.0   | OS threads, channels, Pool (`lib/thread/`)             |
+| `async`     | 1.0.0   | event loop + HTTP (`lib/async/`)                       |
 | `websocket` | 1.0.0   | RFC 6455 WebSocket server (`lib/websocket/`)           |
 | `ui`        | 1.0.0   | native Win32 UI toolkit (`lib/ui/`)                    |
 | `mathx`     | 1.0.0   | tiny math helpers                                      |
 
-After `hphp install websocket`, `import "websocket.hphp";` in any
+(`thread` and `async` also ship embedded in the compiler, so `import "thread";`
+works even offline — the registry copies are for staying current.)
+
+After `hphp pkg install websocket`, `import "websocket";` in any
 script resolves to the installed copy — see `examples/websocket_demo.hphp`.
 
 ## HTTP API

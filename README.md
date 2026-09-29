@@ -3,7 +3,7 @@
 **HolyPHP is a low-level, compiled programming language with the soul of PHP.**
 
 It looks and feels like PHP — `$variables`, `echo`, `foreach ($arr as $k => $v)`,
-`function f(int $n): int`, string interpolation `"Hi, {$name}!"`, and 150+ familiar
+`function f(int $n): int`, string interpolation `"Hi, {$name}!"`, and 235+ familiar
 standard functions (`strlen`, `array_map`, `json_encode`, …). Under the hood it is a
 completely from-scratch toolchain written in C11:
 
@@ -63,7 +63,7 @@ echo "Hello, {$name}!\n";
 
 // arrays and maps
 $nums = [5, 3, 8, 1, 9];
-$user = ["name" => "Elias", "lang" => "HolyPHP"];
+$user = ["name" => "Ada", "lang" => "HolyPHP"];
 foreach ($nums as $x) { ... }
 foreach ($user as $k => $v) { echo "{$k} => {$v}\n"; }
 
@@ -110,7 +110,32 @@ HolyPHP ships the PHP functions you know, implemented natively in the runtime
 arrays (`array_map`, `array_filter`, `array_reduce`, `in_array`, …), math (`abs`,
 `floor`, `sqrt`, `sin`, …), types (`is_int`, `intval`, `gettype`, …), I/O
 (`print_r`, `var_dump`, `readline`, `file_get_contents`, …), encodings
-(`json_encode`, `base64_encode`, `md5`, …), and more — 150+ functions.
+(`json_encode`, `base64_encode`, `md5`, …), and more — 235+ functions.
+
+On top of that, five libraries ship **embedded in the compiler binary** —
+`import` finds them offline, no package manager needed:
+
+| Library | Import | What you get |
+|---|---|---|
+| `ui` | `import "ui";` | native Win32 desktop GUI (windows, buttons, inputs, menus, timers) |
+| `websocket` | `import "websocket";` | RFC 6455 WebSocket server, browser-compatible |
+| `async` | `import "async";` | cooperative event loop: timers, socket watchers, TCP line servers, HTTP client |
+| `thread` | `import "thread";` | real OS threads: Go-style channels, mutexes, atomics, barriers, worker Pool |
+| `mathx` | `import "mathx";` | tiny math helpers |
+
+More libraries are on the public registry — `hphp pkg search` to browse.
+
+### Imports: extensionless by convention
+
+```hphp
+import "async";          // a library or installed package
+import "helpers";        // helpers.hphp next to the importing file
+import "lib/util.hphp";  // an exact path, extension included
+```
+
+A spec **without** an extension names a library/package and resolves to
+`<name>.hphp` everywhere (embedded, installed, or project-local). With an
+extension it means exactly that file.
 
 ## Installing / building
 
@@ -124,8 +149,8 @@ bash scripts/build.sh     # or: make
 ## Installers (MSIX / .deb / AppImage)
 
 Ready-made install wizards live in `packaging/` — they install the compiler
-only and put it on the PATH; the `ui` / `websocket` libraries are fetched with
-the package manager afterwards (`hphp install ui`).
+only and put it on the PATH; libraries are fetched with the package manager
+afterwards (`hphp pkg install ui`) or already embedded (see above).
 
 | Target | Install |
 |---|---|
@@ -166,6 +191,19 @@ hphp emit file.hphp         inspect the lowered internal representation
 - `build -o app` produces a standalone executable you can distribute.
 - `HPHP_VERBOSE=1` shows backend commands; `HPHP_KEEP_BIN=1` keeps `run`'s executable.
 
+## Packages & the public registry
+
+```bash
+hphp pkg install thread   # from the public registry (compiled-in default)
+hphp pkg publish          # share your own package
+hphp pkg search           # browse what's out there
+```
+
+The public community registry runs at `http://91.216.248.93:8930` (the
+compiled-in default of the released installers) and currently serves
+`thread`, `async`, `ui`, `websocket`, and `mathx`. You can run your own with
+the HolyPHP-written server in `registry/` — see `registry/README.md`.
+
 ## Project layout
 
 ```
@@ -177,9 +215,10 @@ src/hphpc/
   codegen.c      AST → C code generator
   main.c         driver (run / build / emit / check)
   runtime/       hphp_rt.c (value system) + hphp_std.c (PHP functions)
-examples/        hello.hphp, demo.hphp (feature tour), websocket_demo.hphp (chat)
-registry/        package registry server + pre-published packages
-                 (websocket, ui, mathx) — see registry/README.md
+examples/        hello.hphp, demo.hphp (feature tour), thr_demo.hphp (threads),
+                 async_demo.hphp (event loop + HTTP), websocket_demo.hphp (chat)
+registry/        package registry server — see registry/README.md
+lib/             the five embedded libraries (ui, websocket, async, thread, mathx)
 tests/           positive/ (must run) + negative/ (must be rejected)
 scripts/build.sh reliable build (gcc -c + direct ld)
 ```
@@ -194,10 +233,31 @@ Positive tests must compile **and** run to completion; negative tests must be
 **rejected** by the type/borrow checker (immutable-borrow violations, type
 mismatches, undefined names, raw-pointer use outside `unsafe`).
 
+There is also a **1BRC benchmark** (One Billion Row Challenge: min/mean/max per
+weather station over a huge `measurements.txt`), verified byte-for-byte against
+a Python oracle and raced against a PHP twin:
+
+```bash
+make test-1brc                    # 1M-row deterministic sample
+make test-1brc BRC_ROWS=0        # the real 1e9-row file, if you have it
+```
+
+It lives in `benchmarks/` (`1brc.hphp`, `1brc.php`, `1brc.py`, `1brc.c` as a
+hand-written C baseline, `1brc_ref.py` as the byte-exact oracle,
+`1brc_test.sh`) and also served as the discovery harness for the mixed-value
+codegen and string-key map fixes pinned by `tests/positive/mixedops.hphp`.
+All implementations follow the official 1BRC rounding rule (exact integer-
+tenths mean, half-up), so their outputs are byte-identical.
+
 ## Status & design notes
 
 - Values are a tagged-union `hval` (null/int/float/bool/string/array/object/
   closure); strings and arrays are refcounted, arrays copy-on-write like PHP.
+- Threads are real OS threads (`src/hphpc/runtime/hphp_thr.c`): rendezvous or
+  buffered Go-style channels, mutex-backed 64-bit atomics, barriers. Captured
+  arrays/objects are COW snapshots — cross-thread data flows through channels.
+- The async event loop is pure HolyPHP (`lib/async/`) over non-blocking socket
+  primitives; sockets drain gracefully on close so send-then-close servers work.
 - Objects are refcounted smart pointers (`own<T>`/`Rc<T>`); `free()` is not part
   of the language.
 - The borrow checker enforces aliasing XOR mutation on borrows at compile time.
@@ -225,7 +285,7 @@ mismatches, undefined names, raw-pointer use outside `unsafe`).
 ## VS Code Extension
 
 There is a dedicated editor extension for HolyPHP in `extension/hphp`
-(highlighting, completions for all 180+ builtins, hover signatures, and live
+(highlighting, completions for all 288 builtins, hover signatures, and live
 `hphp check` diagnostics). Install the packaged VSIX:
 
 ```bash

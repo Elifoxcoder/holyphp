@@ -1,0 +1,95 @@
+// 1brc.hphp — The One Billion Row Challenge, HolyPHP edition.
+//
+// Task: read "station;temperature" lines and print
+//   {Abha=5.0/18.0/23.9, Accra=12.1/26.0/34.2, ...}
+// (min/mean/max per station, one decimal, stations sorted by name).
+//
+// Semantics follow the official 1BRC rules: min/max are exact (all inputs
+// have exactly one decimal), and the mean is computed exactly in integer
+// tenths and rounded half-up — no float accumulation error, so results are
+// byte-identical across the C/PHP/Python/HolyPHP implementations.
+//
+// Usage:
+//   hphp run benchmarks/1brc.hphp [measurements.txt]
+//
+// Defaults to the official 1BRC repo checkout in Downloads. Timing is taken
+// around the read/aggregate loop only (hrtime, ns resolution), so hphp's
+// compile step is excluded. For a partial file it also projects the time
+// for the full 1e9 rows.
+
+$path = "C:/Users/elias/Downloads/1brc-main/1brc-main/measurements.txt";
+if ($argc > 1) {
+    $path = $argv[1];
+}
+
+$t0 = hrtime(true);
+
+$stats = [];
+$fh = fopen($path, "rb");
+if ($fh === false) {
+    echo "1brc: cannot open {$path}\n";
+    exit(1);
+}
+$rows = 0;
+while (true) {
+    $line = fgets($fh);
+    if ($line === false) {
+        break;
+    }
+    $rows = $rows + 1;
+    $sep = strpos($line, ";");
+    $name = substr($line, 0, $sep);
+    $temp = floatval(substr($line, $sep + 1));
+    // fixed point: work in integer tenths (input has exactly one decimal)
+    $t10 = intval(round($temp * 10.0));
+    if (isset($stats[$name])) {
+        $s = $stats[$name];
+        $c = $s[0] + 1;
+        $mn = $s[1];
+        $mx = $s[2];
+        $sum = $s[3];
+        if ($t10 < $mn) {
+            $mn = $t10;
+        }
+        if ($t10 > $mx) {
+            $mx = $t10;
+        }
+        $sum = $sum + $t10;
+        $stats[$name] = [$c, $mn, $mx, $sum];
+    } else {
+        $stats[$name] = [1, $t10, $t10, $t10];
+    }
+}
+fclose($fh);
+
+$t1 = hrtime(true);
+
+$names = array_keys($stats);
+sort($names);
+$out = "{";
+$first = true;
+foreach ($names as $nm) {
+    if (!$first) {
+        $out = $out . ", ";
+    }
+    $first = false;
+    $s = $stats[$nm];
+    $sum = $s[3];
+    $c = $s[0];
+    // mean in exact tenths, rounded half-up (away from zero)
+    // ("0 -" instead of unary minus: unary '-' on a mixed value is not
+    //  supported by codegen yet)
+    $m10 = $sum >= 0 ? intdiv($sum * 2 + $c, $c * 2)
+                     : 0 - intdiv((0 - $sum) * 2 + $c, $c * 2);
+    $out = $out . $nm . "=" . sprintf("%.1f", $s[1] / 10.0) . "/"
+         . sprintf("%.1f", $m10 / 10.0) . "/" . sprintf("%.1f", $s[2] / 10.0);
+}
+$out = $out . "}";
+echo $out . "\n";
+
+$ms = ($t1 - $t0) / 1e6;
+printf("1brc: %d rows in %.1f ms (%.0f rows/s)\n", $rows, $ms, $rows / ($ms / 1000.0));
+if ($rows < 1000000000) {
+    $proj = ($t1 - $t0) / 1e6 / $rows * 1000000000.0;
+    printf("1brc: projected for 1e9 rows: %.0f s (aggregate loop only)\n", $proj / 1000.0);
+}

@@ -1,0 +1,332 @@
+/* async.hphp - a cooperative event loop for HolyPHP.
+ *
+ * Pure HolyPHP on top of the runtime's non-blocking socket primitives
+ * (stream_ready poll, stream_socket_accept2, stream_recv/stream_send).
+ * No threads: one loop, many watchers, callbacks between polls.
+ *
+ *   import "async";
+ *
+ *   $loop = new Loop();
+ *
+ *   $loop->after(1000, function() { echo "one second passed\n"; });
+ *   $loop->every(250, function() { echo "tick\n"; });
+ *
+ *   $loop->listen("tcp://127.0.0.1:8080", function($client, $addr) {
+ *       stream_send($client, "hello\n");   // or write your own protocol
+ *       stream_close($client);
+ *   });
+ *
+ *   $loop->watch($sock, function($sock) { ... });  // readable socket
+ *
+ *   $loop->httpGet("http://host/path", function($resp) { ... });
+ *
+ *   $loop->run();     // blocks until no watchers remain (or stop())
+ *
+ * Handlers are plain closures. A handler that blocks blocks everyone -
+ * keep them short, or offload heavy work to the thread library and
+ * poll the result channel from a watcher.
+ */
+
+class Loop {
+    /* timers: arrays of [whenMs, intervalMs|0, callback, cancelled] */
+    pub array $timers = [];
+    pub int $timerSeq = 0;
+
+    /* socket watchers: handle => callback (readable-notification) */
+    pub array $watchers = [];
+
+    /* listening servers: handle => accept-callback */
+    pub array $servers = [];
+
+    /* per-connection buffers keyed by handle (stream_recv may deliver
+     * partial frames; watchers keep their leftovers here) */
+    pub array $bufs = [];
+
+    pub bool $running = false;
+    pub $onStop = null;
+
+    /* ---------------- timers ---------------- */
+
+    /* one-shot: fire once after $ms */
+    pub function after(int $ms, $fn): int {
+        $id = $this->timerSeq;
+        $this->timerSeq = $id + 1;
+        $this->timers[$id] = [now_ms() + $ms, 0, $fn, false];
+        return $id;
+    }
+
+    /* repeating: fire every $ms until cancel_timer($id) */
+    pub function every(int $ms, $fn): int {
+        $id = $this->timerSeq;
+        $this->timerSeq = $id + 1;
+        $this->timers[$id] = [now_ms() + $ms, $ms, $fn, false];
+        return $id;
+    }
+
+    pub function cancelTimer(int $id) {
+        if (array_key_exists($id, $this->timers)) {
+            $this->timers[$id][3] = true;
+        }
+    }
+
+    /* ---------------- sockets ---------------- */
+
+    /* call $fn($handle) whenever $sock has readable data */
+    pub function watch($sock, $fn) {
+        $this->watchers[intval($sock)] = [$sock, $fn];
+    }
+
+    pub function unwatch($sock) {
+        $k = intval($sock);
+        unset($this->watchers[$k]);
+        unset($this->bufs[$k]);
+    }
+
+    /* TCP server: accepts forever, $fn($client, $peerAddr) per connection */
+    pub function listen(string $addr, $fn) {
+        $srv = stream_socket_server($addr);
+        if ($srv === false) {
+            throw new Exception("listen failed: $addr");
+        }
+        stream_set_blocking($srv, false);
+        $this->servers[intval($srv)] = [$srv, $fn];
+    }
+
+    pub function unlisten(string $handle) {
+        $k = intval($handle);
+        unset($this->servers[$k]);
+        stream_close($handle);
+    }
+
+    /* open a non-blocking TCP connection and watch it; fires $onOpen(handle)
+     * from the next tick. Returns the handle (or false). */
+    pub function connect(string $host, int $port, $onOpen) {
+        $s = stream_socket_client("tcp://$host:$port");
+        if ($s === false) { return false; }
+        stream_set_blocking($s, false);
+        $this->after(0, function() use ($s, $onOpen) { ($onOpen)($s); });
+        return $s;
+    }
+
+    /* ---------------- in-loop HTTP ---------------- */
+
+    /* HTTP/1.1 GET that runs on THIS loop: the loop stays fully live while
+     * the response streams in (timers and other sockets keep firing), and
+     * completion is reported by callback. Call it from a timer/watcher
+     * callback, or any time before run(). This is the composable primitive;
+     * async_get() below is the convenience wrapper that runs a private
+     * loop and blocks. Fires $onDone(fullResponse) or $onError(reason). */
+    pub function httpGet(string $url, $onDone, $onError = null): bool {
+        $u = parse_url($url);
+        $host = array_key_exists("host", $u) ? $u["host"] : "127.0.0.1";
+        $port = array_key_exists("port", $u) ? $u["port"] : 80;
+        $path = (array_key_exists("path", $u) ? $u["path"] : "/")
+              . (array_key_exists("query", $u) ? "?" . $u["query"] : "");
+        $s = stream_socket_client("tcp://$host:$port");
+        if ($s === false) {
+            if ($onError) { $onError("connect failed: $host:$port"); }
+            return false;
+        }
+        stream_set_blocking($s, false);
+        stream_send($s,
+            "GET $path HTTP/1.1\r\n" .
+            "Host: $host\r\n" .
+            "User-Agent: hphp-async/1.0\r\n" .
+            "Accept: */*\r\n" .
+            "Connection: close\r\n" .
+            "\r\n");
+        $buf = "";
+        $done = false;
+        $timerId = -1;
+        $self = $this;
+        $this->watch($s, function($sock, $chunk, $eof) use ($self, $s, &$buf, &$done, &$timerId, $onDone) {
+            if ($done) { return; }
+            if ($chunk !== "" && $chunk !== false) { $buf = $buf . $chunk; }
+            if ($eof) {
+                $done = true;
+                if ($timerId >= 0) { $self->cancelTimer($timerId); }
+                $self->unwatch($s);
+                ($onDone)($buf);
+            }
+        });
+        $timerId = $this->after(10000, function() use ($self, $s, &$done, $onError) {
+            if ($done) { return; }
+            $done = true;
+            $self->unwatch($s);
+            stream_close($s);
+            if ($onError) { $onError("timeout after 10s"); }
+        });
+        return true;
+    }
+
+    /* ---------------- running ---------------- */
+
+    pub function stop() {
+        $this->running = false;
+    }
+
+    /* one poll iteration: timers due now, then sockets ready now.
+     * returns false when nothing is left to wait on. */
+    pub function tick(int $maxWaitMs = 25): bool {
+        /* -- timers -- */
+        $t = now_ms();
+        $due = [];
+        foreach ($this->timers as $id => $tm) {
+            if ($tm[3]) { continue; }
+            if ($tm[0] <= $t) { $due[] = $id; }
+        }
+        foreach ($due as $id) {
+            $tm = $this->timers[$id];
+            if ($tm[3]) { continue; }              /* cancelled meanwhile */
+            ($tm[2])();                            /* invoke */
+            if ($tm[1] > 0) {                      /* repeating: reschedule */
+                if (array_key_exists($id, $this->timers)) {
+                    $this->timers[$id][0] = now_ms() + $tm[1];
+                }
+            } else {
+                unset($this->timers[$id]);
+            }
+        }
+
+        /* -- sockets: servers accept, watchers read -- */
+        $poll = [];
+        foreach ($this->servers as $entry) { $poll[] = $entry[0]; }
+        foreach ($this->watchers as $entry) { $poll[] = $entry[0]; }
+
+        $work = false;
+        if (count($poll) > 0) {
+            $ready = stream_ready($poll, $maxWaitMs);
+            $readySet = [];
+            foreach ($ready as $s) { $readySet[intval($s)] = true; }
+
+            /* servers: accept every pending connection */
+            foreach ($this->servers as $entry) {
+                $srv = $entry[0];
+                $fn = $entry[1];
+                if (!array_key_exists(intval($srv), $readySet)) { continue; }
+                while (true) {
+                    $c = stream_socket_accept2($srv, 0);
+                    if ($c === false) { break; }
+                    stream_set_blocking($c, false);
+                    $work = true;
+                    $peer = stream_peer($c);
+                    $fn($c, $peer);
+                }
+            }
+
+            /* watchers: drain readable data into their callback */
+            foreach ($this->watchers as $entry) {
+                $s = $entry[0];
+                $fn = $entry[1];
+                if (!array_key_exists(intval($s), $readySet)) { continue; }
+                $work = true;
+                if (stream_eof($s)) {
+                    $fn($s, "", true);              /* EOF signal */
+                    $this->unwatch($s);
+                    stream_close($s);
+                    continue;
+                }
+                $chunk = stream_recv($s, 65536);
+                if ($chunk === "" && stream_eof($s)) {
+                    /* peer closed: recv() consumed the FIN, deliver EOF */
+                    $fn($s, "", true);
+                    $this->unwatch($s);
+                    stream_close($s);
+                    continue;
+                }
+                $fn($s, $chunk, false);
+            }
+        } else {
+            /* nothing to poll: sleep so a pure-timer loop doesn't spin */
+            if (count($this->timers) > 0) { usleep(1000); }
+            else { return false; }
+        }
+        return true;
+    }
+
+    pub function run() {
+        $this->running = true;
+        while ($this->running) {
+            $hasTimers = false;
+            foreach ($this->timers as $tm) {
+                if (!$tm[3]) { $hasTimers = true; break; }
+            }
+            $hasSockets = count($this->servers) > 0 || count($this->watchers) > 0;
+            if (!$hasTimers && !$hasSockets) { break; }
+            $this->tick(25);
+        }
+        $this->running = false;
+        if ($this->onStop) { ($this->onStop)(); }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+function now_ms(): int {
+    return intval(microtime() * 1000);
+}
+
+/* LineReader: assembles stream chunks into complete "\n" lines - the
+ * common case for simple TCP protocols (also useful with threads). */
+class LineReader {
+    pub string $buf = "";
+    pub $onLine = null;
+
+    pub function __construct($onLine) { $this->onLine = $onLine; }
+
+    /* feed raw bytes; fires onLine(line) for every complete line */
+    pub function feed(string $chunk) {
+        $this->buf = $this->buf . $chunk;
+        while (true) {
+            $p = strpos($this->buf, "\n");
+            if ($p === false) { break; }
+            $line = substr($this->buf, 0, $p);
+            $this->buf = substr($this->buf, $p + 1);
+            ($this->onLine)(rtrim($line, "\r"));
+        }
+    }
+}
+
+/* A ready-made echo/line TCP server on top of Loop - 5-line servers. */
+function async_line_server(string $addr, $onLine, $onConnect = null): Loop {
+    $loop = new Loop();
+    $loop->listen($addr, function($c, $peer) use ($loop, $onLine, $onConnect) {
+        if ($onConnect) { $onConnect($c, $peer); }
+        $lr = new LineReader(function($line) use ($c, $onLine, $loop) {
+            $want = $onLine($c, $line, $loop);
+            if ($want !== null && $want !== "") {
+                stream_send($c, $want . "\r\n");
+            }
+        });
+        $loop->watch($c, function($s, $chunk, $eof) use ($lr) {
+            if ($eof) { return; }
+            $lr->feed($chunk);
+        });
+    });
+    return $loop;
+}
+
+/* ------------------------------------------------------------------ */
+/* async HTTP                                                          */
+/* ------------------------------------------------------------------ */
+
+/* minimal async HTTP/1.1 GET: delivers status line + headers + body via
+ * callback. Runs its own loop and blocks until the response completes
+ * (async machinery, synchronous shape). For fetches that must not block
+ * the surrounding loop use Loop::httpGet instead; for parallel fetches
+ * call this from several threads of the thread library. */
+function async_get(string $url, $onDone, $onError = null): bool {
+    $lp = new Loop();
+    $ok = $lp->httpGet($url, $onDone, $onError);
+    if ($ok) { $lp->run(); }
+    return $ok;
+}
+
+/* blocking convenience on top of the async machinery */
+function async_get_sync(string $url): string {
+    $out = "";
+    async_get($url, function($resp) use (&$out) { $out = $resp; });
+    return $out;
+}

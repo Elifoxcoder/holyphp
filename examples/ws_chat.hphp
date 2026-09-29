@@ -4,7 +4,7 @@
 //   2. ./wschat.exe
 //   3. open examples/ws_chat.html in Chrome (double-click is enough)
 //   4. type a message — it is broadcast to every connected browser
-import "websocket.hphp";
+import "websocket";
 
 $server = new WebSocketServer("tcp://127.0.0.1:9500");
 $server->verbose = true;

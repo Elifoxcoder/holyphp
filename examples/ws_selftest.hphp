@@ -6,7 +6,7 @@
 // A tick() accepts pending connections AND reads whatever is ready — but
 // a socket accepted during tick N is only read during tick N+1. So after
 // the browser sends, two ticks guarantee the server has consumed it.
-import "websocket.hphp";
+import "websocket";
 
 $server = new WebSocketServer("tcp://127.0.0.1:9201");
 $server->verbose = true;
