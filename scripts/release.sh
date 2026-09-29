@@ -56,6 +56,11 @@ grep -q "\"$VERSION\"" packaging/windows/holyphp.iss \
   || die "could not set AppVersion to $VERSION in packaging/windows/holyphp.iss"
 
 EXE="packaging/windows/out/HolyPHP-${VERSION}-x64-setup.exe"
+# Inno exposes the uninstall entry as {AppId}_is1; read it from the script so
+# the manifest can never drift from the installer it describes.
+INNO_APP_ID=$(grep '^AppId=' packaging/windows/holyphp.iss \
+  | sed 's/^AppId=//' | sed 's/^{//; s/}$//' | sed 's/^{//; s/}$//' | head -1)
+[[ -n "$INNO_APP_ID" ]] || die "could not read AppId from packaging/windows/holyphp.iss"
 MANIFEST_DIR="packaging/winget/manifests/h/HolyPHP/HolyPHP/${VERSION}"
 ASSET_NAME="HolyPHP-${VERSION}-x64-setup.exe"
 RELEASE_URL="https://github.com/${REPO_SLUG}/releases/download/v${VERSION}/${ASSET_NAME}"
@@ -125,18 +130,24 @@ echo "==> 6/7 generating the winget manifest in $MANIFEST_DIR"
 rm -rf "$MANIFEST_DIR"
 mkdir -p "$MANIFEST_DIR"
 
+# The winget-pkgs pipeline rejects anything older than the current schema --
+# a 1.9.0 manifest passed a local `winget validate` but failed CI. Keep this
+# in step with the newest ManifestVersion present in the upstream repo.
+MANIFEST_SCHEMA_VERSION="${HPHP_MANIFEST_SCHEMA_VERSION:-1.12.0}"
+SCHEMA="$MANIFEST_SCHEMA_VERSION"
+
 cat > "$MANIFEST_DIR/HolyPHP.yaml" <<EOF
-# yaml-language-server: \$schema=https://aka.ms/winget-manifest.version.1.9.0.schema.json
+# yaml-language-server: \$schema=https://aka.ms/winget-manifest.version.$SCHEMA.schema.json
 
 PackageIdentifier: HolyPHP.HolyPHP
 PackageVersion: $VERSION
 DefaultLocale: en-US
 ManifestType: version
-ManifestVersion: 1.9.0
+ManifestVersion: $SCHEMA
 EOF
 
 cat > "$MANIFEST_DIR/HolyPHP.locale.en-US.yaml" <<EOF
-# yaml-language-server: \$schema=https://aka.ms/winget-manifest.defaultLocale.1.9.0.schema.json
+# yaml-language-server: \$schema=https://aka.ms/winget-manifest.defaultLocale.$SCHEMA.schema.json
 
 PackageIdentifier: HolyPHP.HolyPHP
 PackageVersion: $VERSION
@@ -158,24 +169,34 @@ Tags:
 - shell
 - utilities
 ManifestType: defaultLocale
-ManifestVersion: 1.9.0
+ManifestVersion: $SCHEMA
 EOF
 
 cat > "$MANIFEST_DIR/HolyPHP.installer.yaml" <<EOF
-# yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.1.9.0.schema.json
+# yaml-language-server: \$schema=https://aka.ms/winget-manifest.installer.$SCHEMA.schema.json
 
 PackageIdentifier: HolyPHP.HolyPHP
 PackageVersion: $VERSION
+InstallerLocale: en-US
 Platform:
 - Windows.Desktop
 MinimumOSVersion: 10.0.17763.0
 InstallerType: inno
+Scope: user
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+UpgradeBehavior: install
+ReleaseDate: "$(date +%Y-%m-%d)"
+AppsAndFeaturesEntries:
+- ProductCode: "${INNO_APP_ID}_is1"
 Installers:
 - Architecture: x64
   InstallerUrl: $RELEASE_URL
   InstallerSha256: ${hash^^}
 ManifestType: installer
-ManifestVersion: 1.9.0
+ManifestVersion: $SCHEMA
 EOF
 
 echo "==> 7/7 validating the manifest"
