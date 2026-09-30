@@ -1,0 +1,87 @@
+// codegen_regress.hphp — regressions found while building lib/ui 2.0.
+//
+// Each block below used to compile cleanly and then misbehave or fail to
+// build; they are the smallest programs that reproduce the bug.
+
+// 1. A pointer-typed property may default to null.
+class Slot {
+    pub int $n = 0;
+    pub function use_n(): int { return $this->n; }
+}
+class Holder {
+    pub Slot $slot = null;
+    pub int $total = 0;
+
+    pub function grow(int $d) { $this->total += $d; }
+
+    pub function install(int $v) {
+        $s = new Slot();
+        $s->n = $v;
+        $this->slot = $s;
+        return $this->slot->use_n();
+    }
+}
+
+// 2. `$obj->field += x` must read the current value, not discard it.
+//    (compound assignment on a property used to emit a plain assignment)
+class Acc {
+    pub int $v = 0;
+    pub int $x = 0;
+    pub int $y = 0;
+    pub int $k = 1;
+    pub int $t = 10;
+    pub string $s = "";
+
+    pub function bump(int $by) {
+        $this->v += $by;       // v = 1 + by
+        $this->k *= 2;         // k = 2
+        $this->t -= 4;         // t = 6
+        $this->x += $this->v;  // x = 1 + (1 + by)
+        $this->y = $this->v + $this->x;
+        $this->s .= "!";
+    }
+}
+
+// 3. A class may touch another class declared *later* in the file, and
+//    array-returning helpers can be assigned into untyped (hval) slots.
+class Later {
+    pub int $q = 0;
+    pub function hi(): int { return 42; }
+}
+function make_map(): Map<string, int> {
+    return ["a" => 1, "b" => 2];
+}
+function take_map($m) {
+    $copy = make_map();          // array value into an untyped slot
+    if ($copy == null) { return 0; }
+    return $copy["b"];
+}
+
+// ---- checks ------------------------------------------------------------
+$h = new Holder();
+if ($h->install(7) != 7) { echo "FAIL typed-null field\n"; exit(1); }
+$h->grow(5);
+$h->grow(3);
+if ($h->total != 8) { echo "FAIL holder total {$h->total}\n"; exit(1); }
+
+$a = new Acc();
+$a->bump(10);
+if ($a->v != 10)  { echo "FAIL acc v={$a->v}\n"; exit(1); }
+if ($a->k != 2)   { echo "FAIL acc k={$a->k}\n"; exit(1); }
+if ($a->t != 6)   { echo "FAIL acc t={$a->t}\n"; exit(1); }
+if ($a->x != 10)  { echo "FAIL acc x={$a->x}\n"; exit(1); }
+if ($a->y != 20)  { echo "FAIL acc y={$a->y}\n"; exit(1); }
+if ($a->s != "!") { echo "FAIL acc s={$a->s}\n"; exit(1); }
+
+if (take_map(["x" => 9]) != 2) { echo "FAIL late class / map copy\n"; exit(1); }
+
+// 4. The ternary `?:` form must survive parsing (`$c ? $x : $y`).
+$c = true;
+$x = 3;
+$pick = $c ? $x : 7;
+if ($pick != 3) { echo "FAIL ternary = {$pick}\n"; exit(1); }
+$c = false;
+$pick = $c ? $x : 7;
+if ($pick != 7) { echo "FAIL ternary = {$pick}\n"; exit(1); }
+
+echo "codegen_regress ok\n";

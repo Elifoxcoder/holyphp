@@ -52,6 +52,7 @@ if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == *NT* || -n "${OS:-}" && "${OS:
     -L"$GCCDIR" -L"$CRTDIR" \
     "${objs[@]}" \
     -lmingw32 -lgcc -lgcc_eh -lmingwex -lmsvcrt -lkernel32 -lpthread -ladvapi32 -lshell32 -luser32 -lws2_32 \
+    -lgdi32 -lcomctl32 -lcomdlg32 -lole32 -loleaut32 -luuid -lversion -lshlwapi -lwinmm \
     "$CRTDIR/default-manifest.o" "$GCCDIR/crtend.o" || { echo "link failed"; exit 1; }
 
   sig=$(head -c 2 "$OUT" 2>/dev/null | od -An -tx1 | tr -d ' \n')

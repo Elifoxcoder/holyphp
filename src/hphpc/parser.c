@@ -544,7 +544,8 @@ static Type *parse_type(Parser *p) {
         } else t->elem = type_new(TY_MIXED);
         return t;
     }
-    if (strcmp(n, "Map") == 0) {
+    if (strcmp(n, "Map") == 0 || strcmp(n, "map") == 0 ||
+        strcmp(n, "dict") == 0) {
         t = type_new(TY_MAP);
         if (ts_match(p->ts, T_LT)) {
             t->key = parse_type(p);
@@ -920,10 +921,20 @@ static Stmt *parse_stmt(Parser *p) {
 /* ---- Expressions ---- */
 static Expr *parse_expr(Parser *p) { return parse_assign(p); }
 
+/* Tokens that can begin a type annotation. This is what tells a typed
+ * declaration ("$x: int = 5") apart from a ternary branch
+ * ("$c ? $x : 0"): after a ':' inside an expression only a type may follow
+ * a variable, so anything else is ordinary expression syntax. */
+static bool tok_starts_type(TokKind k) {
+    return k == T_IDENT || k == T_AMP || k == T_STAR || k == T_LBRACKET ||
+           k == T_KW_FN || k == T_KW_OWN;
+}
+
 static Expr *parse_assign(Parser *p) {
     /* typed declaration FIRST: "$x: int = 5" or bare "$x: int;"
      * (colon comes before the '=' , like PHP 8 property types) */
-    if (ts_check(p->ts, T_VAR) && ts_peek2(p->ts)->kind == T_COLON) {
+    if (ts_check(p->ts, T_VAR) && ts_peek2(p->ts)->kind == T_COLON &&
+        tok_starts_type(ts_peek3(p->ts)->kind)) {
         const Token *vn = ts_advance(p->ts); /* $x */
         ts_advance(p->ts);                   /* : */
         Type *ann = parse_type(p);

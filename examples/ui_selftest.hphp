@@ -1,25 +1,154 @@
+// ui_selftest.hphp — headless smoke test for the HolyPHP UI 2.0 library.
+//
+//   hphp run examples/ui_selftest.hphp
+//
+// Creates a window, exercises every factory, both layout directions, the
+// theme system and the role system, ticks the event pump and closes. No
+// interaction required: it verifies handles, layout maths and dispatch.
 import "ui";
 
-// headless smoke test: create the app window, a few controls, tick the
-// pump twice, then close. Verifies handles, calls, and dispatch.
-$app = new App("smoke", 320, 200);
-echo "window handle: " . $app->h . "\n";
-$btn = $app->button("press", 10, 10, 100, 28);
-$lbl = $app->label("hello", 10, 50);
-$in  = $app->input("type here", 10, 80);
-$cb  = $app->checkbox("check", 10, 115);
-echo "button: " . $btn->h . " label: " . $lbl->h . " input: " . $in->h . " cb: " . $cb->h . "\n";
+$fails = [];
+function ck(bool $ok, string $what) {
+    global $fails;
+    if (!$ok) { $fails[] = $what; echo "  FAIL {$what}\n"; }
+    else { echo "  ok   {$what}\n"; }
+}
 
+$app = new App("selftest", 520, 640);
+echo "window handle: {$app->h}\n";
+ck($app->h > 0, "window created");
+ck($app->alive(), "window alive");
+
+// ---- every widget type ------------------------------------------------
+$app->heading("Self test");
+$app->sub("layout, themes and roles");
+$lbl  = $app->label("plain label");
+$in   = $app->input("type here");
+$cb   = $app->checkbox("check me", true);
+$lst  = $app->list(["alpha", "beta", "gamma"]);
+$cmb  = $app->combo(["one", "two", "three"]);
+$bar  = $app->progress(0);
+$sld  = $app->slider(50);
+$div  = $app->divider();
+$btn  = $app->button("Press me", "primary");
+
+ck($lbl->h > 0 && $in->h > 0 && $cb->h > 0, "label/input/checkbox created");
+ck($lst->h > 0 && $cmb->h > 0, "list and combo created");
+ck($bar->h > 0 && $sld->h > 0 && $div->h > 0, "progress, slider, divider");
+ck($btn->h > 0, "button created");
+
+// ---- values -----------------------------------------------------------
 $in->setValue("changed");
-echo "input now: " . $in->value() . "\n";
-$lbl->text("updated");
-echo "label now: " . $lbl->getText() . "\n";
+ck($in->content() == "changed", "input round-trips a value");
+ck($lbl->text("updated")->content() == "updated", "label round-trips a value");
+ck($cb->checked(), "checkbox starts checked");
+$cb->setChecked(false);
+ck(!$cb->checked(), "checkbox unchecks");
+ck($lst->count() == 3, "list has 3 items");
+$lst->select(1);
+ck($lst->selected() == 1, "list selection");
+ck($lst->selectedText() == "beta", "list selected text");
+$cmb->select(2);
+ck($cmb->selectedText() == "three", "combo selected text");
+$bar->progress(42);
+ck($bar->percent() == 42, "progress round-trips");
+$sld->value(70);
+ck($sld->current() == 70, "slider round-trips");
+$sld->range(0, 10);
+ck($sld->current() <= 10, "slider range clamps");
 
-$clicked = 0;
-$btn->onClick = function() use (&$clicked) { $clicked = $clicked + 1; };
-$app->tick(50);
-$app->tick(50);
-echo "alive after ticks: " . ($app->alive() ? "yes" : "no") . "\n";
+// ---- enable / disable -------------------------------------------------
+$btn->disable();
+ck($btn->disabled(), "disable works");
+$btn->enable();
+ck($btn->enabled(), "enable works");
+$btn->hide();
+$btn->show();
+
+// ---- layout -----------------------------------------------------------
+// A vertical flow must consume height; a row must not run into the next
+// widget. Both are checked through the Flow class directly so the test
+// stays headless and deterministic.
+$f = new Flow("v", 0, 0, 200, 10);
+$a = $f->take(100, 30, false);
+$b = $f->take(100, 30, false);
+ck($a[0] == 0 && $a[1] == 0, "flow: first widget at origin");
+ck($b[1] == 40, "flow: vertical gap is 10");
+ck($f->measure() == 70, "flow: measured height");
+
+$r = new Flow("h", 0, 0, 120, 10);
+$r->take(100, 30, false);
+$r->take(100, 30, false);
+ck($r->measure() == 70, "flow: row wraps and stacks");
+
+$c = new Flow("v", 0, 0, 200, 10);
+$c->take(100, 30, false);
+$c->bump(40);
+ck($c->measure() == 80, "flow: bump moves the cursor");
+
+// ---- containers -------------------------------------------------------
+$col = $app->column(300);
+ck($col->label("in a column")->h > 0, "column places widgets");
+$row = $app->row(300);
+ck($row->button("L")->h > 0 && $row->button("R")->h > 0, "row places widgets");
+$card = $app->card(300);
+ck($card->sub("in a card")->h > 0, "card places widgets");
+$sec = $app->section("A section", 300);
+ck($sec->checkbox("in a section")->h > 0, "section places widgets");
+
+// ---- themes -----------------------------------------------------------
+$names = ui_theme_names();
+ck(count($names) == 7, "seven built-in themes");
+$app->theme("light");
+ck($app->_theme("dark") == 0, "light theme is not dark");
+$app->theme("midnight");
+ck($app->_theme("accent") == 0x7C5CFF, "midnight accent applied");
+$app->theme("dark", ["accent" => 0xFF5722]);
+ck($app->_theme("accent") == 0xFF5722, "theme override wins");
+$app->radius(16);
+ck($app->_theme("radius") == 16, "universal radius");
+$app->font(12);
+ck($app->fontPt == 12, "universal font size");
+$app->theme("ocean");
+
+// ---- roles ------------------------------------------------------------
+ck(ui_role_id("primary") == 1, "role: primary");
+ck(ui_role_id("subtle") == 2, "role: subtle");
+ck(ui_role_id("ghost") == 3, "role: ghost");
+ck(ui_role_id("danger") == 4, "role: danger");
+ck(ui_role_id("success") == 5, "role: success");
+ck(ui_role_id("link") == 6, "role: link");
+ck(ui_role_id("nonsense") == 0, "role: unknown falls back");
+
+// ---- colours ----------------------------------------------------------
+ck(ui_rgb(0x4C, 0x7D, 0xFF) == 0x4C7DFF, "ui_rgb packs channels");
+ck(ui_channel(0x4C7DFF, 0) == 0x4C, "ui_channel red");
+ck(ui_channel(0x4C7DFF, 1) == 0x7D, "ui_channel green");
+ck(ui_channel(0x4C7DFF, 2) == 0xFF, "ui_channel blue");
+ck(ui_textw("hello", 10) > 0, "ui_textw estimates a width");
+
+// ---- event pump -------------------------------------------------------
+$clicks = 0;
+$btn->onClick = function() use (&$clicks) { $clicks = $clicks + 1; };
+$app->tick(30);
+$app->tick(30);
+ck($app->alive(), "still alive after ticks");
+
+// ---- menus ------------------------------------------------------------
+$m = $app->menu("File");
+$it = $m->item("Quit", function() { });
+ck($it->h > 0, "menu item created");
+
+// ---- geometry ---------------------------------------------------------
+$abs = $app->button("abs", "ghost")->move(20, 20, 90, 0);
+ck($abs->h > 0, "absolute placement works");
 
 $app->close();
-echo "SMOKE OK\n";
+ck(!$app->alive(), "window closed");
+
+if (count($fails) == 0) {
+    echo "UI SELFTEST OK\n";
+} else {
+    echo "UI SELFTEST FAILED: " . implode(", ", $fails) . "\n";
+    exit(1);
+}

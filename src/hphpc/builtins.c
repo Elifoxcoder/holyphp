@@ -356,6 +356,15 @@ void builtins_init(void) {
     add("ui_pick_color",  B_MISC,    ty_mixed,   false, false);
     add("ui_clip_set",    B_STR1,    ty_int,     false, false);
     add("ui_clip_get",    B_ZERO,    ty_string,  false, false);
+    add("ui_theme",       B_MISC,    ty_int,     false, false);
+    add("ui_style",       B_MISC,    ty_int,     false, false);
+    add("ui_accent",      B_MISC,    ty_int,     false, false);
+    add("ui_radius",      B_MISC,    ty_int,     false, false);
+    add("ui_range",       B_MISC,    ty_int,     false, false);
+    add("ui_repaint",     B_MISC,    ty_int,     false, false);
+    add("ui_enabled",     B_MISC,    ty_bool,    false, false);
+    add("ui_count",        B_MISC,    ty_int,     false, false);
+    add("ui_progress_get", B_MISC,    ty_int,     false, false);
 
     /* threading: workers, channels, mutexes, barriers, atomics */
     add("thr_spawn",       B_MISC,  ty_mixed,  false, false);  /* (closure[, args]) -> tid|false */

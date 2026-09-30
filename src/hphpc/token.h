@@ -84,6 +84,7 @@ typedef struct {
 void ts_init(TokenStream *ts, PtrVec toks, const char *file);
 const Token *ts_peek(TokenStream *ts);
 const Token *ts_peek2(TokenStream *ts);
+const Token *ts_peek3(TokenStream *ts);
 const Token *ts_advance(TokenStream *ts);
 bool ts_check(TokenStream *ts, TokKind k);
 bool ts_match(TokenStream *ts, TokKind k);

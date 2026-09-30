@@ -1,0 +1,98 @@
+// ui_gallery.hphp — every built-in theme, every widget, one keystroke apart.
+//
+//   hphp run   examples/ui_gallery.hphp
+//   hphp build examples/ui_gallery.hphp -o ui_gallery.exe
+//
+// Press Left / Right to cycle through the themes. Nothing is rebuilt —
+// the whole window restyles from one call.
+
+import "ui";
+
+$app = new App("UI theme gallery", 900, 800);
+$app->pad(26)->gap(11);
+
+$names = ui_theme_names();
+$which = 0;
+$app->theme($names[0]);
+
+// ---- header ------------------------------------------------------------
+$title  = $app->heading("{$names[0]}");
+$blurb  = $app->sub("Arrow keys cycle the themes.");
+$app->divider();
+
+// ---- roles row ---------------------------------------------------------
+$roles = $app->row();
+$roles->button("Subtle");
+$roles->button("Primary", "primary");
+$roles->button("Ghost", "ghost");
+$roles->button("Danger", "danger");
+$roles->button("Success", "success");
+$roles->link("link");
+$app->divider();
+
+// ---- three columns of widgets -----------------------------------------
+$left = $app->column(270);
+$left->label("Text")->font(13, true);
+$left->heading("A heading");
+$left->sub("and a quiet subtitle");
+$left->label("a plain label");
+$left->input("editable text");
+$left->checkbox("a checkbox", true);
+$left->checkbox("an unchecked one");
+
+$mid = $app->section("Collections", 270);
+$mid->list(["alpha", "beta", "gamma", "delta"]);
+$mid->combo(["one", "two", "three"]);
+$mid->divider();
+$mid->label("A card inside a section");
+$inner = $mid->card(230);
+$inner->sub("nested containers inherit every metric from the parent");
+
+$right = $app->section("Meters", 270);
+$right->sub("progress");
+$right->progress(35);
+$right->progress(80);
+$right->sub("sliders");
+$right->slider(40);
+$right->slider(70);
+$card = $right->card(230);
+$card->label("Buttons")->font(13, true);
+$card->button("Primary", "primary");
+$card->button("Ghost", "ghost");
+
+// ---- navigation --------------------------------------------------------
+$hints = $app->row();
+$prev = $hints->button("← Previous", "ghost");
+$next = $hints->button("Next →", "ghost");
+
+$prev->onClick(function() use ($app, $names, &$which, $title, $blurb) {
+    $which = $which - 1;
+    if ($which < 0) { $which = count($names) - 1; }
+    $app->theme($names[$which]);
+    $title->text($names[$which]);
+});
+$next->onClick(function() use ($app, $names, &$which, $title) {
+    $which = $which + 1;
+    if ($which >= count($names)) { $which = 0; }
+    $app->theme($names[$which]);
+    $title->text($names[$which]);
+});
+
+// ---- keyboard ----------------------------------------------------------
+$app->onKey(function($key, $ch) use ($app, $names, &$which, $title) {
+    if ($ch == "q" || $ch == "Q") { $app->close(); return; }
+    if ($ch == "[" || $ch == "<") {
+        $which = $which - 1;
+    } else if ($ch == "]" || $ch == ">" || $ch == " ") {
+        $which = $which + 1;
+    } else {
+        return;
+    }
+    if ($which < 0) { $which = count($names) - 1; }
+    if ($which >= count($names)) { $which = 0; }
+    $app->theme($names[$which]);
+    $title->text($names[$which]);
+});
+
+$app->onClose(function() { });
+$app->run();

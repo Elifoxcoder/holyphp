@@ -10,109 +10,209 @@
 <div class="layout">
 <script src="assets/nav.html.js"></script>
 <main>
-  <h1>ui<span class="ph">.hphp</span></h1>
-  <p class="lead">Native desktop windows with buttons, inputs, lists, sliders, menus, timers
-  and dialogs — a friendly HolyPHP API over a hand-written Win32 layer in the runtime.
-  No external dependencies: <code>hphp build</code> links everything into one ~315 KB exe.</p>
+  <h1>ui<span class="ph">.hphp</span> <span class="pill">2.0</span></h1>
+  <p class="lead">A small, beautiful desktop toolkit. One theme restyles the whole
+  window, widgets place themselves in a column or a row, and everything is
+  owner-drawn so it looks the same on every machine. No dependencies:
+  <code>hphp build</code> links the whole Win32 layer into one exe.</p>
 
   <div>
     <span class="pill e">stdlib — embedded</span>
     <span class="pill">Win32 native</span>
-    <span class="pill">event-driven</span>
-    <span class="pill">chainable widgets</span>
+    <span class="pill">themed</span>
+    <span class="pill">auto-layout</span>
+    <span class="pill">chainable</span>
   </div>
 
   <h2>Hello GUI</h2>
 <pre><code class="hphp">import "ui";
 
-$app = new App("My App", 640, 420);
-$btn = $app-&gt;button("Click me", 16, 40);
-$name = $app-&gt;input("world", 16, 80);
+$app = new App("My App");
+$app->heading("Hello, world");
+$app->sub("This is HolyPHP UI 2.0.");
+$app->button("Click me", "primary", function() use ($app) {
+    $app->msg("It works.");
+});
+$app->run();</code></pre>
 
-$btn-&gt;onClick = function() use ($app, $name) {
-    $app-&gt;msg("Hello, " . $name-&gt;value() . "!");
-};
+  <p>No coordinates. The heading, the subtitle and the button stack themselves,
+  and every one of them follows the same theme.</p>
 
-$app-&gt;run();   // real desktop event loop</code></pre>
+  <h2>Themes</h2>
+  <p>A theme is a <em>universal style</em>: colours, corner radius, type size,
+  row height. Change it at any time — every widget follows immediately.</p>
+  <div class="api-sig"><span class="t">void</span> theme(<span class="t">string|map</span> $which, <span class="t">map</span> $over = null)</div>
+<pre><code class="hphp">$app-&gt;theme("dark");        // dark (default)
+$app-&gt;theme("light");
+$app-&gt;theme("midnight");
+$app-&gt;theme("ocean");
+$app-&gt;theme("forest");
+$app-&gt;theme("rose");
+$app-&gt;theme("mono");
 
-  <h2>App</h2>
-  <div class="api-sig"><span class="t">new</span> App(<span class="t">string</span> $title = <span class="tok-str">"HolyPHP App"</span>, <span class="t">int</span> $w = 800, <span class="t">int</span> $h = 600)</div>
+// override single keys, on top of a preset …
+$app-&gt;theme("dark", ["accent" =&gt; 0xFF5722]);
+
+// … or roll a whole theme from scratch
+$app-&gt;theme(["bg" =&gt; 0x101014, "surface" =&gt; 0x171A21,
+               "text" =&gt; 0xE8EAF0, "accent" =&gt; 0x7C5CFF,
+               "dark" =&gt; 1]);</code></pre>
+
+  <h3>Theme keys</h3>
   <table>
-    <tr><th>Method</th><th>Returns</th><th>Meaning</th></tr>
-    <tr><td><code>title($t)</code> / <code>size($w,$h)</code> / <code>pos($x,$y)</code></td><td>App</td><td>window geometry (chainable)</td></tr>
-    <tr><td><code>run()</code></td><td>void</td><td>blocking event loop</td></tr>
-    <tr><td><code>tick($ms = 15)</code></td><td>void</td><td>pump events once (own loop)</td></tr>
-    <tr><td><code>alive()</code></td><td>bool</td><td>window still open?</td></tr>
-    <tr><td><code>close()</code></td><td>void</td><td>close the window</td></tr>
-    <tr><td><code>every($ms, $fn)</code></td><td>void</td><td>timer — runs <code>$fn</code> periodically</td></tr>
-    <tr><td><code>onClose($fn)</code></td><td>void</td><td>runs when the window closes</td></tr>
+    <tr><th>Key</th><th>Meaning</th></tr>
+    <tr><td><code>bg</code> <code>surface</code> <code>elevated</code></td><td>window, card and raised backgrounds</td></tr>
+    <tr><td><code>text</code> <code>muted</code></td><td>body and secondary text</td></tr>
+    <tr><td><code>accent</code> <code>onAccent</code></td><td>primary colour and the text on top of it</td></tr>
+    <tr><td><code>border</code></td><td>outlines and dividers</td></tr>
+    <tr><td><code>radius</code></td><td>corner radius, pixels</td></tr>
+    <tr><td><code>font</code> <code>title</code></td><td>body and heading size, points</td></tr>
+    <tr><td><code>row</code></td><td>list and popup row height</td></tr>
+    <tr><td><code>dark</code></td><td>1 for dark themes (drives native chrome)</td></tr>
   </table>
 
-  <h3>Widgets — created through the App</h3>
+  <h3>Universal style shortcuts</h3>
+  <div class="api-sig"><span class="t">App</span> pad(<span class="t">int</span> $px)      <span class="tok-com">// window padding + widget padding</span>
+<span class="t">App</span> gap(<span class="t">int</span> $px)      <span class="tok-com">// space between widgets</span>
+<span class="t">App</span> radius(<span class="t">int</span> $px)   <span class="tok-com">// corner radius everywhere</span>
+<span class="t">App</span> font(<span class="t">int</span> $pt, <span class="t">bool</span> $bold = false)
+<span class="t">App</span> style(<span class="t">string</span> $role) <span class="tok-com">// default button role</span></div>
+<pre><code class="hphp">$app-&gt;theme("midnight")-&gt;pad(28)-&gt;gap(12)-&gt;radius(12)-&gt;font(11);</code></pre>
+
+  <h2>Roles</h2>
+  <p>Six ready-made button styles. Pass one to a factory, or make it the default
+  for everything that follows.</p>
+<pre><code class="hphp">$app-&gt;button("Save");                 // subtle (the default)
+$app-&gt;button("Save", "primary");       // filled with the accent colour
+$app-&gt;button("Delete", "danger");
+$app-&gt;button("Done", "success");
+$app-&gt;button("More", "ghost");         // no fill until hovered
+$app-&gt;link("Read the docs");           // a text link
+
+$app-&gt;style("primary");                 // every button from here on</code></pre>
+
+  <h2>Layout</h2>
+  <p>The window stacks its children top to bottom. To put things <em>side by
+  side</em>, put them inside a <code>row()</code> — a row lays its children out
+  across and wraps when it runs out of room. Every container grows to fit what
+  you put inside it.</p>
+<pre><code class="hphp">$cols = $app-&gt;row();
+$left  = $cols-&gt;column(400);
+$right = $cols-&gt;column(400);
+
+$form = $left-&gt;card(400);          // rounded surface
+$form-&gt;label("Email");
+$form-&gt;input("you@example.com");
+$form-&gt;checkbox("Remember me", true);
+$form-&gt;button("Sign in", "primary", $handler);
+
+$sec = $right-&gt;section("Preferences", 400);   // captioned outline
+$sec-&gt;slider(60);
+$sec-&gt;progress(35);</code></pre>
+
+  <table>
+    <tr><th>Container</th><th>What it is</th></tr>
+    <tr><td><code>column($w = 0)</code></td><td>vertical box</td></tr>
+    <tr><td><code>row($w = 0)</code></td><td>horizontal box, wraps</td></tr>
+    <tr><td><code>card($w = 0, $h = 0)</code></td><td>rounded surface, auto height</td></tr>
+    <tr><td><code>section($caption, $w = 0, $h = 0)</code></td><td>captioned outline</td></tr>
+    <tr><td><code>panel($x, $y, $w, $h)</code></td><td>free-form, absolute</td></tr>
+  </table>
+
+  <p>Absolute placement still works and never disturbs the flow:</p>
+<pre><code class="hphp">$app-&gt;button("Reset", "ghost")-&gt;move(20, 20, 90, 0);</code></pre>
+
+  <h2>Widgets</h2>
   <table>
     <tr><th>Factory</th><th>Widget</th><th>Extras</th></tr>
-    <tr><td><code>$app-&gt;button($text, $x, $y, $w = 120, $h = 30)</code></td><td>Button</td><td><code>$w-&gt;onClick</code></td></tr>
-    <tr><td><code>$app-&gt;label($text, $x, $y, ...)</code></td><td>Label</td><td>—</td></tr>
-    <tr><td><code>$app-&gt;input($text, $x, $y, ...)</code></td><td>Input</td><td><code>value()</code> / <code>setValue()</code> / <code>$w-&gt;onChange</code></td></tr>
-    <tr><td><code>$app-&gt;checkbox($text, $x, $y, ...)</code></td><td>Checkbox</td><td><code>checked()</code> / <code>setChecked()</code></td></tr>
-    <tr><td><code>$app-&gt;listBox($x, $y, $w, $h)</code></td><td>ListBox</td><td><code>add/clear/remove/selected/select/selectedText</code></td></tr>
-    <tr><td><code>$app-&gt;comboBox($x, $y, $w, $h)</code></td><td>ComboBox</td><td>same API as ListBox</td></tr>
-    <tr><td><code>$app-&gt;progress($x, $y, $w)</code></td><td>ProgressBar</td><td><code>set(pct)</code> / <code>get()</code></td></tr>
-    <tr><td><code>$app-&gt;slider($x, $y, $w)</code></td><td>Slider</td><td><code>set(pos)</code> / <code>get()</code> / <code>$w-&gt;onChange(int $v)</code></td></tr>
-    <tr><td><code>$app-&gt;group($text, $x, $y, $w, $h)</code></td><td>Group</td><td>framed container</td></tr>
-    <tr><td><code>$app-&gt;panel($x, $y, $w, $h)</code></td><td>Panel</td><td>flat container</td></tr>
+    <tr><td><code>heading($text)</code> / <code>sub($text)</code> / <code>label($text)</code></td><td>Label</td><td>—</td></tr>
+    <tr><td><code>button($text, $role, $onClick)</code></td><td>Button</td><td><code>onClick()</code></td></tr>
+    <tr><td><code>link($text, $onClick)</code></td><td>Link</td><td><code>onClick()</code></td></tr>
+    <tr><td><code>input($text = "")</code></td><td>Input</td><td><code>content()</code> / <code>setValue()</code> / <code>onChange()</code></td></tr>
+    <tr><td><code>checkbox($text, $on = false)</code></td><td>Checkbox</td><td><code>checked()</code> / <code>setChecked()</code> / <code>toggle()</code></td></tr>
+    <tr><td><code>list($items)</code> / <code>combo($items)</code></td><td>ListBox / ComboBox</td><td><code>add / addAll / items / count / clear / remove / selected / select / selectedText</code></td></tr>
+    <tr><td><code>progress($pct = 0)</code></td><td>ProgressBar</td><td><code>progress($pct)</code> / <code>percent()</code></td></tr>
+    <tr><td><code>slider($value = 0)</code></td><td>Slider</td><td><code>value($v)</code> / <code>current()</code> / <code>range($lo,$hi)</code> / <code>onChange($v)</code></td></tr>
+    <tr><td><code>divider()</code></td><td>Divider</td><td>—</td></tr>
   </table>
-  <p class="small muted">All widgets inherit from <code>UIObject</code>: chainable
-  <code>text()</code>, <code>getText()</code>, <code>show()</code>, <code>enable()</code>,
-  <code>move()</code>, <code>focus()</code>, <code>font($size, $bold)</code>, <code>bg($rgb)</code>.</p>
 
-  <h3>Slider events fire live</h3>
-<pre><code class="hphp">$slider = $app-&gt;slider(430, 70, 180);
-$sliderLbl = $app-&gt;label("slider: 50", 430, 104);
+  <h3>Every widget shares the same methods, and they chain</h3>
+  <div class="api-sig"><span class="t">UIObject</span> text(<span class="t">string</span> $t)     <span class="ret">string</span> content()
+<span class="t">UIObject</span> setValue(<span class="t">string</span> $v)
+<span class="t">UIObject</span> show() / hide()  <span class="ret">bool</span> enabled() / disable()
+<span class="t">UIObject</span> move(<span class="t">int</span> $x, <span class="t">int</span> $y, <span class="t">int</span> $w = 0, <span class="t">int</span> $h = 0)
+<span class="t">UIObject</span> size(<span class="t">int</span> $w, <span class="t">int</span> $h)  <span class="t">UIObject</span> focus()
+<span class="t">UIObject</span> font(<span class="t">int</span> $pt, <span class="t">bool</span> $bold = false)
+<span class="t">UIObject</span> color(<span class="t">int</span> $rgb) / bg(<span class="t">int</span> $rgb) / accent(<span class="t">int</span> $rgb)
+<span class="t">UIObject</span> radius(<span class="t">int</span> $px)  <span class="t">UIObject</span> style(<span class="t">string</span> $role)
+<span class="t">UIObject</span> onClick(<span class="t">fn</span>) / onChange(<span class="t">fn</span>) / onKey(<span class="t">fn</span>)</div>
+<pre><code class="hphp">$app-&gt;button("Danger", "danger")-&gt;radius(20)-&gt;accent(0xE040FB)-&gt;font(12, true);</code></pre>
 
-$slider-&gt;onChange = function(int $v) use ($sliderLbl) {
-    $sliderLbl-&gt;text("slider: " . $v);   // fires while dragging
-};</code></pre>
+  <h2>Window</h2>
+  <div class="api-sig"><span class="t">void</span>   title(<span class="t">string</span> $t) / size(<span class="t">int</span> $w, <span class="t">int</span> $h) / pos(<span class="t">int</span> $x, <span class="t">int</span> $y)
+<span class="ret">bool</span>   alive()
+<span class="t">void</span>   run() <span class="tok-com">// blocking event loop</span>
+<span class="t">void</span>   tick(<span class="t">int</span> $ms = 15) <span class="tok-com">// pump events once, keep your own loop</span>
+<span class="t">void</span>   close() / quit()
+<span class="t">void</span>   every(<span class="t">int</span> $ms, <span class="t">fn</span>)
+<span class="t">void</span>   onClose(<span class="t">fn</span>) <span class="tok-com">// return false to veto</span>
+<span class="t">void</span>   onKey(<span class="t">fn</span>)   <span class="tok-com">// fn(int $vk, int $char)</span></div>
+  <div class="note"><b>Tip:</b> <code>run()</code> blocks like a normal desktop app
+  (best with <code>hphp build</code>). <code>tick()</code> returns every ~15 ms so your
+  script keeps control and console output stays alive (best with <code>hphp run</code>).</div>
 
   <h2>Menus</h2>
-<pre><code class="hphp">$file = $app-&gt;menu("&amp;File");
-$file-&gt;item("&amp;Open\tCtrl+O", function() use ($app) {
-    $f = $app-&gt;openFile("Text|*.txt|All|*.*");
-    if ($f != "") { $app-&gt;msg("picked " . $f); }
+<pre><code class="hphp">$file = $app-&gt;menu("File");
+$file-&gt;item("Open", function() use ($app) {
+    $f = $app-&gt;openFile("Text|*.txt;HolyPHP|*.hphp");
+    if ($f != "") { $app-&gt;msg("Opened " . $f); }
 });
 $file-&gt;separator();
-$file-&gt;item("E&amp;xit", function() use ($app) { $app-&gt;close(); });</code></pre>
+$file-&gt;item("Quit", function() use ($app) { $app-&gt;close(); });</code></pre>
 
   <h2>Dialogs &amp; system</h2>
-  <div class="api-sig"><span class="ret">void</span> msg(<span class="t">string</span> $text, <span class="t">string</span> $title = <span class="tok-str">"HolyPHP"</span>)
-<span class="ret">void</span> warn(<span class="t">string</span> $text, <span class="t">string</span> $title)
-<span class="ret">void</span> error(<span class="t">string</span> $text, <span class="t">string</span> $title)
-<span class="ret">bool</span> question(<span class="t">string</span> $text, <span class="t">string</span> $title)
-<span class="ret">string</span> openFile(<span class="t">string</span> $patterns = <span class="tok-str">"All files|*.*"</span>)   <span class="tok-com">// "" = cancelled</span>
+  <div class="api-sig"><span class="t">void</span>   msg(<span class="t">string</span> $text, <span class="t">string</span> $title = <span class="tok-str">"HolyPHP"</span>)
+<span class="t">void</span>   warn(<span class="t">string</span> $text, <span class="t">string</span> $title = <span class="tok-str">"Warning"</span>)
+<span class="t">void</span>   error(<span class="t">string</span> $text, <span class="t">string</span> $title = <span class="tok-str">"Error"</span>)
+<span class="ret">bool</span>   ask(<span class="t">string</span> $text, <span class="t">string</span> $title = <span class="tok-str">"Question"</span>)
+<span class="ret">string</span> openFile(<span class="t">string</span> $patterns = <span class="tok-str">"All files|*.*"</span>)  <span class="tok-com">// "" = cancelled</span>
 <span class="ret">string</span> saveFile(<span class="t">string</span> $patterns)
-<span class="ret">string</span> pickFolder()
-<span class="ret">int</span>    pickColor(<span class="t">int</span> $initial = 0xffffff)   <span class="tok-com">// 0xRRGGBB, -1 = cancelled</span></div>
+<span class="ret">string</span> folder()
+<span class="ret">int</span>    color(<span class="t">int</span> $initial = 0x4C7DFF)    <span class="tok-com">// 0xRRGGBB, null = cancelled</span>
+<span class="t">void</span>   clip(<span class="t">string</span> $text)   <span class="ret">string</span> paste()</div>
 
-  <h2>Timers &amp; counters</h2>
-<pre><code class="hphp">$frame = 0;
-$app-&gt;every(100, function() use (&amp;$frame, $app) {   // by-ref capture!
-    $frame = $frame + 1;
-    if ($frame % 10 == 0) { $app-&gt;title("frames: " . $frame); }
+  <h2>Timers</h2>
+<pre><code class="hphp">$ticks = 0;
+$app-&gt;every(400, function() use (&amp;$ticks, $bar, $label) {
+    $ticks = $ticks + 1;              // by-ref capture
+    $pct = ($ticks * 5) % 100;
+    $bar-&gt;progress($pct);
+    $label-&gt;text("{$pct}% complete");   // repaints one widget
 });</code></pre>
 
+  <h2>Colours</h2>
+  <p>Colours are plain <code>0xRRGGBB</code> integers everywhere.</p>
+<pre><code class="hphp">$app-&gt;button("Paint", "", 20, 20)-&gt;bg(0x1E88E5)-&gt;color(0xFFFFFF);</code></pre>
+  <p>Two helpers build them: <code>ui_rgb($r, $g, $b)</code> packs channels and
+  <code>ui_channel($rgb, $i)</code> reads one back.</p>
+
   <h2>Full tour</h2>
-  <p><code>examples/ui_demo.hphp</code> exercises every feature — buttons, inputs, checkbox
-  gating, list box, combo, progress + slider, groups, menus, timers and dialogs:</p>
+  <p><code>examples/ui_demo.hphp</code> is a complete app — themed header, a role row,
+  two columns of forms and lists, meters, menus, dialogs and a live timer.
+  <code>examples/ui_gallery.hphp</code> shows every widget in every theme.</p>
 <pre><code class="hphp">hphp build examples/ui_demo.hphp -o ui_demo.exe
-./ui_demo.exe</code></pre>
+hphp run   examples/ui_gallery.hphp</code></pre>
 
   <h2>How it works</h2>
-  <p>The Win32 layer lives in the runtime (<code>hphp_ui.c</code>): a handle table, a window
-  proc that routes events to HolyPHP closures, and guarded callback invocation — an exception
-  inside a handler prints and keeps the app alive instead of unwinding through C. Callbacks run
-  on the GUI thread; long work belongs in a timer.</p>
-  <div class="note"><b>Tip:</b> <code>$w-&gt;onClick</code> / <code>$w-&gt;onChange</code> are plain
-  closure properties — assign any closure, capture anything with <code>use</code>.</div>
+  <p>The Win32 layer lives in the runtime (<code>hphp_ui.c</code>): a handle table, a
+  window proc that routes events to HolyPHP closures, and guarded callback invocation —
+  an exception inside a handler prints and keeps the app alive instead of unwinding
+  through C. Every control is owner-drawn from one paint routine, so the theme is the
+  single source of truth. Callbacks run on the GUI thread; long work belongs in a
+  timer.</p>
+  <div class="note"><b>Tip:</b> <code>onClick()</code> / <code>onChange()</code> take a
+  closure directly — <code>$btn-&gt;onClick(function() { ... })</code> — and capture
+  anything with <code>use</code>.</div>
 </main>
 </div>
 <script src="assets/site.js"></script>

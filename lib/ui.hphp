@@ -1,141 +1,517 @@
-// ui.hphp — HolyPHP native UI library.
+// =====================================================================
+//  HolyPHP UI 2.0 — a small, beautiful desktop toolkit for HolyPHP
+// =====================================================================
 //
-// Wraps the compiler's built-in UI layer (Win32) in a small, PHP-easy class
-// API. Windows, buttons, labels, inputs, checkboxes, lists, combos,
-// progress bars, sliders, groups, panels, menus, timers, message boxes,
-// file/folder/color dialogs and the clipboard.
+//  The whole library in one import:
 //
-// Quick start:
-//   import "ui";
-//   $app = new App("Hello");
-//   $btn = $app->button("Click me", 20, 20, 120, 30);
-//   $btn->onClick = function() use ($app) { $app->msg("Hi!", "You clicked."); };
-//   $app->run();
+//      import "ui";
 //
-// Two run modes:
-//   $app->run()      blocking desktop loop (best with `hphp build`)
-//   $app->run(fn)    script keeps control; fn is called every ~15 ms
-//                    (best with `hphp run`, keeps console I/O alive)
+//      $app = new App("Hello");
+//      $app->heading("Hello, world");
+//      $app->sub("This is HolyPHP UI 2.0.");
+//      $app->button("Click me", "primary", function() {
+//          $app->msg("It works.");
+//      });
+//      $app->run();
+//
+//  No pixel coordinates unless you ask for them: widgets stack themselves
+//  in a column or flow left to right in a row, and every one of them
+//  inherits a single theme — colours, corner radius, type size, all of it.
+//
+//  ---------------------------------------------------------------------
+//  1. THE WINDOW
+//  ---------------------------------------------------------------------
+//      new App($title, $width, $height)
+//      $app->run()                     start the event loop and block
+//      $app->tick()                    pump events ~15 ms (for `hphp run`)
+//      $app->close()  $app->quit()
+//      $app->title("New")  $app->size(800, 600)  $app->pos(40, 60)
+//
+//  ---------------------------------------------------------------------
+//  2. THEMES — one line restyles the whole app
+//  ---------------------------------------------------------------------
+//      $app->theme("dark");      // dark (default), light, midnight,
+//                                 // ocean, forest, rose, mono
+//      $app->theme("dark", ["accent" => 0xFF5722]);   // override one key
+//      $app->theme(["bg" => 0x101014, "accent" => 0x7C5CFF, "dark" => 1]);
+//
+//  Keys: bg, surface, elevated, text, muted, accent, onAccent, border,
+//        radius, font, title, row, dark.
+//
+//  A theme is a *universal style*. Every control follows it, and you can
+//  swap it at any time — later widgets pick it up immediately. Anything
+//  you set on a single widget always wins over the theme.
+//
+//      $app->radius(12);            // universal corner radius
+//      $app->font(11);              // universal body size, in points
+//      $app->pad(28);  $app->gap(14);    // universal layout rhythm
+//      $app->style("primary");      // universal button role (see below)
+//
+//  ---------------------------------------------------------------------
+//  3. ROLES — six ready-made button styles
+//  ---------------------------------------------------------------------
+//      $app->style("primary");      // every button from here on is accent
+//
+//      $app->button("Save");            // subtle  (the default)
+//      $app->button("Save", "primary"); // filled with the accent colour
+//      $app->button("Save", "ghost");   // no fill until you hover
+//      $app->button("Delete", "danger");
+//      $app->button("Done", "success");
+//      $app->link("Read the docs");     // a text link
+//
+//  Any widget takes a role, radius, colour and font too:
+//
+//      $btn->style("ghost")->radius(20)->accent(0xE040FB)->font(12, true);
+//
+//  ---------------------------------------------------------------------
+//  4. LAYOUT — coordinates are optional
+//  ---------------------------------------------------------------------
+//  Leave out x/y and widgets place themselves. Four containers exist:
+//
+//      $form = $app->column(420);   // vertical box, 420 px wide
+//      $form->label("Email");
+//      $form->input("you@example.com");
+//      $form->button("Sign in", "primary", function() { ... });
+//
+//      $bar = $app->row();          // flows left to right, wraps when full
+//      $bar->button("Yes")->button("No")->button("Cancel");
+//
+//      $card = $app->card(420);     // rounded surface, auto height
+//      $card->label("Inside a card");
+//
+//      $sec = $app->section("Details", 420);   // captioned outline
+//      $sec->checkbox("Show hidden files");
+//
+//  The window stacks its children top to bottom. To put things SIDE BY SIDE,
+//  put them inside a row() — a row lays its children out across and wraps:
+//
+//      $cols = $app->row();
+//      $left  = $cols->column(400);
+//      $right = $cols->column(400);
+//      $left->heading("Left");
+//      $right->heading("Right");
+//
+//  Containers nest freely, and each one grows to fit what you put in it:
+//
+//      $app->card(460)->row(420)->button("Yes")->button("No");
+//
+//  Absolute placement also works, and never disturbs the flow:
+//
+//      $app->button("Reset", "ghost")->move(20, 20, 90, 0);
+//      $app->label("top right", 480, 24);
+//
+//  ---------------------------------------------------------------------
+//  5. WIDGETS
+//  ---------------------------------------------------------------------
+//  Text
+//      $app->heading("Big title")      $app->sub("quiet subtitle")
+//      $app->label("plain text")       $app->divider()
+//  Buttons
+//      $app->button($text, $role = "", $onClick = null)
+//      $app->button("Save", "primary", function() { ... });
+//      $app->link($text, $onClick = null)
+//  Input
+//      $app->input("initial text")     $app->checkbox("Remember me", true)
+//  Collections
+//      $app->list(["a", "b", "c"])     $app->combo(["a", "b", "c"])
+//  Meters
+//      $app->progress(35)              $app->slider(50)
+//  Menus
+//      $m = $app->menu("File");
+//      $m->item("Open", function() { ... });
+//      $m->separator();
+//      $m->item("Quit", function() { ... });
+//
+//  Every widget shares the same methods, and all of them chain:
+//
+//      ->text($t)    set the text       ->content()  read it back
+//      ->setValue($t)  alias of text()
+//      ->show()      ->hide()
+//      ->enable()    ->disable()         ->enabled()   ->disabled()
+//      ->move($x, $y, $w, $h)            ->size($w, $h) ->focus()
+//      ->font($pt, $bold = false)        ->color($rgb) ->bg($rgb)
+//      ->accent($rgb) ->radius($px)      ->style($role)  ->repaint()
+//      ->onClick($fn) ->onChange($fn)    ->onKey($fn)
+//
+//  Widget-specific extras:
+//      input     ->setValue($v) ->content()
+//      checkbox  ->checked() ->setChecked($b) ->toggle()
+//      list      ->add($s) ->addAll([...]) ->items() ->count() ->clear()
+//                ->remove($i) ->selected() ->select($i) ->selectedText()
+//      combo     the same as list
+//      slider    ->value($v) ->current() ->range($lo, $hi)
+//      progress  ->progress($pct) ->percent()
+//
+//  ---------------------------------------------------------------------
+//  6. DIALOGS
+//  ---------------------------------------------------------------------
+//      $app->msg("Saved.");           $app->warn("Careful.");
+//      $app->error("That failed.");    $app->ask("Quit?");   // bool
+//      $app->openFile("Text|*.txt")    $app->saveFile("Text|*.txt")
+//      $app->folder()                  $app->color()      // 0xRRGGBB|null
+//      $app->clip("copied text")       $app->paste()
+//
+//  ---------------------------------------------------------------------
+//  7. TIMERS
+//  ---------------------------------------------------------------------
+//      $app->every(1000, function() use (&$n) { $n += 1; });
+//
+//  ---------------------------------------------------------------------
+//  8. COLOURS are plain 0xRRGGBB integers
+//  ---------------------------------------------------------------------
+//      $app->button("Paint", "", 20, 20)->bg(0x1E88E5)->color(0xFFFFFF);
+//
+//  Two run modes: $app->run() blocks like a normal desktop app (best with
+//  `hphp build`); $app->tick() returns every ~15 ms so your script keeps
+//  control and console output stays alive (best with `hphp run`).
+// =====================================================================
 
-class UIKind {
-    static $WINDOW   = 1;
-    static $BUTTON   = 2;
-    static $LABEL    = 3;
-    static $INPUT    = 4;
-    static $CHECKBOX = 5;
-    static $LIST     = 6;
-    static $COMBO    = 7;
-    static $PROGRESS = 8;
-    static $SLIDER   = 9;
-    static $GROUP    = 10;
-    static $PANEL    = 12;
-}
 
-// colors as 0xRRGGBB helpers
+// ---------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------
+
+/** Pack 0-255 channels into a 0xRRGGBB integer. */
 function ui_rgb(int $r, int $g, int $b): int {
     return ($r << 16) | ($g << 8) | $b;
 }
 
+/** Read one channel back out: ui_channel(0x4C7DFF, 1) is 0x7D. */
+function ui_channel(int $rgb, int $i): int {
+    if ($i == 0) { return ($rgb >> 16) & 255; }
+    if ($i == 1) { return ($rgb >> 8) & 255; }
+    return $rgb & 255;
+}
+
+/** Rough text width in pixels, used by the auto-layout to size widgets. */
+function ui_textw(string $s, int $pt): int {
+    if ($s == "") { return 0; }
+    return intval(strlen($s) * $pt * 0.62) + 4;
+}
+
+/** Read $k out of a theme map, falling back to $def. */
+function ui_pick($o, string $k, int $def): int {
+    if ($o != null && array_key_exists($k, $o)) { return $o[$k]; }
+    return $def;
+}
+
+/** Overlay the known theme keys of $over onto $base. */
+function ui_merge($base, $over) {
+    $out = $base;
+    $keys = ["bg", "surface", "elevated", "text", "muted", "accent", "onAccent",
+             "border", "radius", "font", "title", "row", "dark"];
+    foreach ($keys as $k) {
+        if (array_key_exists($k, $over)) { $out[$k] = $over[$k]; }
+    }
+    return $out;
+}
+
+/** Role name -> the number the native layer uses. */
+function ui_role_id(string $role): int {
+    return match ($role) {
+        "primary"            => 1,
+        "subtle", "secondary" => 2,
+        "ghost"              => 3,
+        "danger"             => 4,
+        "success"            => 5,
+        "link"               => 6,
+        _                    => 0,
+    };
+}
+
+// ---------------------------------------------------------------------
+// Built-in themes. Every one is a plain map, so you can copy a preset,
+// change a key or two, and hand the whole thing to $app->theme().
+// ---------------------------------------------------------------------
+
+function ui_theme_dark() {
+    return [
+        "bg" => 0x0F1115, "surface" => 0x171A21, "elevated" => 0x1E222B,
+        "text" => 0xE8EAF0, "muted" => 0x969FB0, "accent" => 0x4C7DFF,
+        "onAccent" => 0xFFFFFF, "border" => 0x2B313D,
+        "radius" => 8, "font" => 10, "title" => 17, "row" => 28, "dark" => 1,
+    ];
+}
+
+function ui_theme_light() {
+    return [
+        "bg" => 0xF5F6F8, "surface" => 0xFFFFFF, "elevated" => 0xFFFFFF,
+        "text" => 0x14161C, "muted" => 0x6B7280, "accent" => 0x2F6BFF,
+        "onAccent" => 0xFFFFFF, "border" => 0xDFE3E9,
+        "radius" => 8, "font" => 10, "title" => 17, "row" => 28, "dark" => 0,
+    ];
+}
+
+function ui_theme_midnight() {
+    return [
+        "bg" => 0x05070D, "surface" => 0x0C101C, "elevated" => 0x141A2B,
+        "text" => 0xDCE3F5, "muted" => 0x7B88A8, "accent" => 0x7C5CFF,
+        "onAccent" => 0xFFFFFF, "border" => 0x1E2740,
+        "radius" => 12, "font" => 10, "title" => 17, "row" => 30, "dark" => 1,
+    ];
+}
+
+function ui_theme_ocean() {
+    return [
+        "bg" => 0x07202A, "surface" => 0x0C2E3C, "elevated" => 0x123B4D,
+        "text" => 0xE4F4FA, "muted" => 0x84B4C4, "accent" => 0x22C3A6,
+        "onAccent" => 0x04231E, "border" => 0x17475C,
+        "radius" => 10, "font" => 10, "title" => 17, "row" => 28, "dark" => 1,
+    ];
+}
+
+function ui_theme_forest() {
+    return [
+        "bg" => 0x0D1510, "surface" => 0x141F18, "elevated" => 0x1C2A20,
+        "text" => 0xE7F2E9, "muted" => 0x8FA796, "accent" => 0x6FCF4F,
+        "onAccent" => 0x0A1A08, "border" => 0x24382A,
+        "radius" => 10, "font" => 10, "title" => 17, "row" => 28, "dark" => 1,
+    ];
+}
+
+function ui_theme_rose() {
+    return [
+        "bg" => 0x1A0F13, "surface" => 0x26171C, "elevated" => 0x332026,
+        "text" => 0xF8E9EC, "muted" => 0xC0919C, "accent" => 0xF2607A,
+        "onAccent" => 0x2B0A12, "border" => 0x41272F,
+        "radius" => 14, "font" => 10, "title" => 17, "row" => 28, "dark" => 1,
+    ];
+}
+
+function ui_theme_mono() {
+    return [
+        "bg" => 0x111111, "surface" => 0x1A1A1A, "elevated" => 0x242424,
+        "text" => 0xF2F2F2, "muted" => 0x9A9A9A, "accent" => 0xF2F2F2,
+        "onAccent" => 0x111111, "border" => 0x333333,
+        "radius" => 4, "font" => 10, "title" => 16, "row" => 26, "dark" => 1,
+    ];
+}
+
+/** The preset behind a theme name (unknown names fall back to dark). */
+function ui_theme_named(string $name) {
+    return match ($name) {
+        "light"    => ui_theme_light(),
+        "midnight" => ui_theme_midnight(),
+        "ocean"    => ui_theme_ocean(),
+        "forest"   => ui_theme_forest(),
+        "rose"     => ui_theme_rose(),
+        "mono"     => ui_theme_mono(),
+        _          => ui_theme_dark(),
+    };
+}
+
+/** Every preset name, handy for a theme picker. */
+function ui_theme_names() {
+    return ["dark", "light", "midnight", "ocean", "forest", "rose", "mono"];
+}
+
+// ---------------------------------------------------------------------
+// The layout engine. A Flow is a cursor that hands out rectangles; it
+// either stacks down ("v") or runs across ("h", wrapping when it runs out
+// of width). measure() reports how much vertical space it has eaten, which
+// is how a nested container tells its parent to move along.
+// ---------------------------------------------------------------------
+
+class Flow {
+    pub int $x0 = 0;          // left edge
+    pub int $x = 0;           // horizontal cursor (rows only)
+    pub int $y0 = 0;          // top edge
+    pub int $w = 100;         // available width
+    pub int $v = 0;           // vertical space consumed
+    pub int $gap = 8;         // space between widgets
+    public $lineH = 0;        // current line height (rows)
+    public $doneH = 0;        // height of finished lines (rows)
+    public $placed = false;
+    pub string $dir = "v";
+
+    pub function __construct(string $dir, int $x, int $y, int $w, int $gap) {
+        $this->dir = $dir;
+        $this->x0 = $x;
+        $this->x = $x;
+        $this->y0 = $y;
+        $this->w = $w;
+        $this->gap = $gap;
+    }
+
+    pub function ypos(): int {
+        return $this->y0 + $this->v;
+    }
+
+    /** Next rectangle [x, y, w, h]; the cursor is already advanced. */
+    pub function take(int $natW, int $hgt, bool $stretch): array {
+        if ($this->dir == "h") {
+            if ($this->placed && $natW > 0 && $this->lineH > 0 &&
+                ($this->x + $natW) > ($this->x0 + $this->w)) {
+                $this->doneH += $this->lineH + $this->gap;
+                $this->v = $this->doneH;
+                $this->x = $this->x0;
+                $this->lineH = 0;
+            }
+            $bw = $natW;
+            if ($bw <= 0) { $bw = $this->w; }
+            if ($bw > $this->w) { $bw = $this->w; }
+            $bx = $this->x;
+            $this->x += $bw + $this->gap;
+            if ($hgt > $this->lineH) { $this->lineH = $hgt; }
+            $this->placed = true;
+            /* everything on a line shares the line's TOP edge; a tall sibling
+             * must never push the ones after it down the row */
+            return [$bx, $this->y0 + $this->doneH, $bw, $hgt];
+        }
+        if ($this->placed) { $this->v += $this->gap; }
+        $bw = $natW;
+        if ($stretch || $bw <= 0) { $bw = $this->w; }
+        if ($bw > $this->w) { $bw = $this->w; }
+        /* capture the top edge before the cursor moves down */
+        $by = $this->ypos();
+        $this->v += $hgt;
+        $this->placed = true;
+        return [$this->x0, $by, $bw, $hgt];
+    }
+
+    /** Vertical space used so far. */
+    pub function measure(): int {
+        if ($this->dir == "h") { return $this->doneH + $this->lineH; }
+        return $this->v;
+    }
+
+    /** A nested container grew by $d pixels: move the cursor along. */
+    pub function bump(int $d) {
+        if ($d <= 0) { return; }
+        if ($this->dir == "h") {
+            /* the child sits on the line being built, so the LINE gets taller
+             * — zeroing it here would break wrapping for everything after */
+            $this->lineH += $d;
+            $this->v = $this->doneH + $this->lineH;
+            return;
+        }
+        if ($this->placed) { $this->v += $this->gap; }
+        $this->v += $d;
+        $this->placed = true;
+    }
+}
+
+// ---------------------------------------------------------------------
+// Widgets: thin, chainable wrappers around the native handles.
+// ---------------------------------------------------------------------
+
 class UIObject {
-    pub int $h;                    // native handle
-    pub $onClick = null;           // closures: function(...): void
+    pub int $h = 0;            // native handle
+    pub $onClick = null;
     pub $onChange = null;
-    pub $onClose = null;
+    pub $onKey = null;
 
     pub function __construct(int $handle) {
         $this->h = $handle;
     }
 
-    pub function text(string $t) {
-        ui_set($this->h, $t);
-        return $this;              // chainable
-    }
+    // ---- text / value ------------------------------------------------
+    pub function text(string $t): UIObject { ui_set($this->h, $t); return $this; }
+    pub function setValue(string $v): UIObject { return $this->text($v); }
+    /** Current text of a Label/Input/Button. */
+    pub function content(): string { return ui_get($this->h); }
 
-    pub function getText(): string {
-        return ui_get($this->h);
-    }
-
-    pub function show(bool $visible = true) {
+    // ---- state -------------------------------------------------------
+    pub function show(bool $visible = true): UIObject {
         ui_ctrl_show($this->h, $visible);
         return $this;
     }
-
-    pub function enable(bool $on = true) {
+    pub function hide(): UIObject { return $this->show(false); }
+    pub function enable(bool $on = true): UIObject {
         ui_enable($this->h, $on);
         return $this;
     }
+    pub function disable(): UIObject { return $this->enable(false); }
+    pub function enabled(): bool { return ui_enabled($this->h); }
+    pub function disabled(): bool { return !$this->enabled(); }
 
-    pub function move(int $x, int $y, int $w = -1, int $hgt = -1) {
-        if ($w == -1 || $hgt == -1) {
-            ui_move($this->h, $x, $y, 0, 0);
-        } else {
-            ui_move($this->h, $x, $y, $w, $hgt);
-        }
+    // ---- geometry ----------------------------------------------------
+    pub function move(int $x, int $y, int $w = 0, int $hgt = 0): UIObject {
+        ui_move($this->h, $x, $y, $w, $hgt);
+        return $this;
+    }
+    pub function size(int $w, int $hgt): UIObject {
+        return $this->move(0, 0, $w, $hgt);
+    }
+    pub function focus(): UIObject { ui_focus($this->h); return $this; }
+
+    // ---- style -------------------------------------------------------
+    pub function font(int $pt, bool $bold = false): UIObject {
+        ui_font($this->h, $pt, $bold);
+        return $this;
+    }
+    pub function color(int $rgb): UIObject { ui_fg($this->h, $rgb); return $this; }
+    pub function bg(int $rgb): UIObject { ui_bg($this->h, $rgb); return $this; }
+    pub function accent(int $rgb): UIObject {
+        ui_accent($this->h, $rgb);
+        return $this;
+    }
+    pub function radius(int $px): UIObject {
+        ui_radius($this->h, $px);
+        return $this;
+    }
+    pub function style(string $role): UIObject {
+        ui_style($this->h, ui_role_id($role));
+        return $this;
+    }
+    pub function repaint(): UIObject { ui_repaint($this->h); return $this; }
+
+    // ---- events ------------------------------------------------------
+    pub function onClick($handler): UIObject {
+        $this->onClick = $handler;
+        return $this;
+    }
+    pub function onChange($handler): UIObject {
+        $this->onChange = $handler;
+        return $this;
+    }
+    pub function onKey($handler): UIObject {
+        $this->onKey = $handler;
         return $this;
     }
 
-    pub function focus() {
-        ui_focus($this->h);
-        return $this;
-    }
-
-    pub function font(int $size, bool $bold = false) {
-        ui_font($this->h, $size, $bold);
-        return $this;
-    }
-
-    pub function bg(int $rgb) {
-        ui_bg($this->h, $rgb);
-        return $this;
-    }
-
-    // internal: fire a click handler
+    // ---- internal: called by the native event bridge ------------------
     pub function _clicked() {
         if ($this->onClick) { ($this->onClick)(); }
+    }
+    pub function _keyed($a, $b) {
+        if ($this->onKey) { ($this->onKey)($a, $b); }
     }
 }
 
 class Button extends UIObject {
 }
-
 class Label extends UIObject {
 }
-
 class Input extends UIObject {
-    pub function value(): string {
-        return $this->getText();
-    }
-    pub function setValue(string $v) {
-        $this->text($v);
-        return $this;
-    }
 }
-
 class Checkbox extends UIObject {
-    pub function checked(): bool {
-        return ui_check_get($this->h) == 1;
-    }
+    pub function checked(): bool { return ui_check_get($this->h) == 1; }
     pub function setChecked(bool $on) {
         ui_check_set($this->h, $on ? 1 : 0);
         return $this;
     }
-}
-
-class ListBox extends UIObject {
-    pub function add(string $item): int {
-        return ui_items($this->h, $item);   // returns item index
+    pub function toggle(): bool {
+        $now = !$this->checked();
+        $this->setChecked($now);
+        return $now;
     }
-    pub function clear() {
-        ui_clear($this->h);
+}
+class ListBox extends UIObject {
+    pub function add(string $item): int { return ui_items($this->h, $item); }
+    pub function addAll($items): ListBox {
+        if ($items != null) {
+            foreach ($items as $it) { $this->add($it); }
+        }
         return $this;
     }
+    pub function clear() { ui_clear($this->h); return $this; }
     pub function remove(int $index) {
         ui_remove($this->h, $index);
         return $this;
     }
-    pub function selected(): int {
-        return ui_selected($this->h);
-    }
+    pub function count(): int { return ui_count($this->h); }
+    pub function selected(): int { return ui_selected($this->h); }
     pub function select(int $index) {
         ui_select($this->h, $index);
         return $this;
@@ -145,19 +521,27 @@ class ListBox extends UIObject {
         if ($i < 0) { return ""; }
         return ui_item_text($this->h, $i);
     }
+    /** The whole list as a PHP array of strings. */
+    pub function items(): array {
+        $out = [];
+        $n = $this->count();
+        for ($i = 0; $i < $n; $i++) { $out[] = ui_item_text($this->h, $i); }
+        return $out;
+    }
 }
-
+// A combo box is a ListBox that opens a popup; it deliberately does not
+// inherit from ListBox so every method it exposes is visible on the type.
 class ComboBox extends UIObject {
-    pub function add(string $item): int {
-        return ui_items($this->h, $item);
-    }
-    pub function clear() {
-        ui_clear($this->h);
+    pub function add(string $text) { ui_items($this->h, $text); return $this; }
+    pub function addAll($items) {
+        if ($items == null) { return $this; }
+        $n = count($items);
+        for ($i = 0; $i < $n; $i++) { ui_items($this->h, $items[$i]); }
         return $this;
     }
-    pub function selected(): int {
-        return ui_selected($this->h);
-    }
+    pub function count(): int { return ui_count($this->h); }
+    pub function clear() { ui_clear($this->h); return $this; }
+    pub function selected(): int { return ui_selected($this->h); }
     pub function select(int $index) {
         ui_select($this->h, $index);
         return $this;
@@ -167,47 +551,404 @@ class ComboBox extends UIObject {
         if ($i < 0) { return ""; }
         return ui_item_text($this->h, $i);
     }
+    pub function items(): array {
+        $out = [];
+        $n = $this->count();
+        for ($i = 0; $i < $n; $i++) { $out[] = ui_item_text($this->h, $i); }
+        return $out;
+    }
 }
-
 class ProgressBar extends UIObject {
-    pub function set(int $pct) {
-        ui_progress($this->h, $pct);
-        return $this;
-    }
-    pub function get(): int {
-        return ui_slider_get($this->h);
-    }
+    /** progress() sets the fill percentage; percent() reads it back. */
+    pub function progress(int $pct) { ui_progress($this->h, $pct); return $this; }
+    pub function percent(): int { return ui_progress_get($this->h); }
 }
-
 class Slider extends UIObject {
-    pub function set(int $pos) {
-        ui_slider_set($this->h, $pos);
+    /** value() sets the position; current() reads it back. */
+    pub function value(int $v) { ui_slider_set($this->h, $v); return $this; }
+    pub function current(): int { return ui_slider_get($this->h); }
+    pub function range(int $lo, int $hi) {
+        ui_range($this->h, $lo, $hi);
         return $this;
     }
-    pub function get(): int {
-        return ui_slider_get($this->h);
-    }
 }
-
-class Group extends UIObject {
-}
-
 class Panel extends UIObject {
 }
+class Divider extends UIObject {
+}
+class Link extends UIObject {
+}
+
+// ---------------------------------------------------------------------
+// Widgets: the factory methods shared by App and every Layout.
+//   $this->h    window handle
+//   $this->flow layout cursor
+//   $this->app  owning App (null on the App itself)
+// `_placed()` is a no-op on the App; a nested Layout overrides it so it can
+// resize its own card and tell its parent how much taller it just got.
+// ---------------------------------------------------------------------
+
+class Widgets {
+    pub int $h = 0;
+    pub Flow $flow = null;
+    /** Flow a child Layout must grow when it resizes (null on the App). */
+    pub Flow $growInto = null;
+    pub int $fontPt = 10;
+    pub int $titlePt = 17;
+    pub int $padX = 16;
+    public $hButton = 34;
+    public $hInput = 34;
+    public $hCheck = 30;
+    public $hLabel = 24;
+    public $hRow = 28;
+    public $defRole = "subtle";
+    public $mutedColor = 0x969FB0;
+
+    pub function _init(int $win, Flow $flow) {
+        $this->h = $win;
+        $this->flow = $flow;
+    }
+
+    /** Build a child Layout that inherits this container's metrics. */
+    pub function _child(int $win, string $dir, int $x, int $y, int $w): Layout {
+        $lay = new Layout($win, $dir, $x, $y, $w);
+        $lay->fontPt = $this->fontPt;
+        $lay->titlePt = $this->titlePt;
+        $lay->padX = $this->padX;
+        $lay->hButton = $this->hButton;
+        $lay->hInput = $this->hInput;
+        $lay->hCheck = $this->hCheck;
+        $lay->hLabel = $this->hLabel;
+        $lay->hRow = $this->hRow;
+        $lay->defRole = $this->defRole;
+        $lay->mutedColor = $this->mutedColor;
+        $lay->growInto = $this->flow;
+        return $lay;
+    }
+
+    /** No-op on the App; nested layouts override it. */
+    pub function _placed() { }
+
+    // ---- text --------------------------------------------------------
+    pub function heading(string $text, int $x = -1, int $y = -1, int $w = 0): Label {
+        $nat = ui_textw($text, $this->titlePt) + 14;
+        $box = $this->flow->take($nat, 36, false);
+        $l = new Label(ui_add($this->h, 3, $text,
+                              $x >= 0 ? $x : $box[0],
+                              $y >= 0 ? $y : $box[1],
+                              $w > 0 ? $w : ($nat < 120 ? 120 : $nat), 36));
+        ui_font($l->h, $this->titlePt, true);
+        $this->_placed();
+        return $l;
+    }
+
+    pub function sub(string $text, int $x = -1, int $y = -1, int $w = 0): Label {
+        $nat = ui_textw($text, $this->fontPt) + 10;
+        $box = $this->flow->take($nat, 24, false);
+        $l = new Label(ui_add($this->h, 3, $text,
+                              $x >= 0 ? $x : $box[0],
+                              $y >= 0 ? $y : $box[1],
+                              $w > 0 ? $w : ($nat < 80 ? 80 : $nat), 24));
+        ui_fg($l->h, $this->mutedColor);
+        $this->_placed();
+        return $l;
+    }
+
+    pub function label(string $text, int $x = -1, int $y = -1, int $w = 0,
+                       int $hgt = 0): Label {
+        /* room for the text plus a little slack: ->font() may make it bolder
+         * and larger after the fact, and ellipsis would eat the last letters */
+        $nat = ui_textw($text, $this->fontPt) + 10;
+        $hh = $hgt > 0 ? $hgt : $this->hLabel;
+        $box = $this->flow->take($nat, $hh, false);
+        $l = new Label(ui_add($this->h, 3, $text,
+                              $x >= 0 ? $x : $box[0],
+                              $y >= 0 ? $y : $box[1],
+                              $w > 0 ? $w : ($nat < 40 ? 40 : $nat), $hh));
+        $this->_placed();
+        return $l;
+    }
+
+    pub function divider(int $x = -1, int $y = -1, int $w = 0): Divider {
+        $box = $this->flow->take(0, 13, true);
+        $d = new Divider(ui_add($this->h, 17, "",
+                                $x >= 0 ? $x : $box[0],
+                                $y >= 0 ? $y : $box[1],
+                                $w > 0 ? $w : $box[2], 13));
+        $this->_placed();
+        return $d;
+    }
+
+    // ---- buttons -----------------------------------------------------
+    /**
+     * button($text, $role = "", $onClick = null, $x = -1, $y = -1, $w = 0, $h = 0)
+     *
+     * The handler is the third argument, so the two forms people actually
+     * write both work: button("Go") and button("Go", function() { ... }).
+     * Pass a role to style it, or call ->style() afterwards.
+     */
+    pub function button(string $text, $role = "", $onClick = null,
+                        int $x = -1, int $y = -1, int $w = 0,
+                        int $hgt = 0): Button {
+        /* params are immutable, so normalise through locals */
+        $r = "";
+        $cb = $onClick;
+        if (is_string($role)) { $r = $role; } else { $cb = $role; }
+        $nat = ui_textw($text, $this->fontPt) + $this->padX * 2;
+        $hh = $hgt > 0 ? $hgt : $this->hButton;
+        $box = $this->flow->take($nat, $hh, false);
+        $b = new Button(ui_add($this->h, 2, $text,
+                               $x >= 0 ? $x : $box[0],
+                               $y >= 0 ? $y : $box[1],
+                               $w > 0 ? $w : $box[2], $hh));
+        ui_style($b->h, ui_role_id($r == "" ? $this->defRole : $r));
+        if ($cb != null) { $b->onClick = $cb; }
+        ui_on($b->h, 1, function() use ($b) { $b->_clicked(); });
+        $this->_placed();
+        return $b;
+    }
+
+    pub function link(string $text, $onClick = null, int $x = -1, int $y = -1,
+                      int $w = 0): Link {
+        $nat = ui_textw($text, $this->fontPt) + 10;
+        $box = $this->flow->take($nat, 26, false);
+        $l = new Link(ui_add($this->h, 2, $text,
+                             $x >= 0 ? $x : $box[0],
+                             $y >= 0 ? $y : $box[1],
+                             $w > 0 ? $w : ($nat < 24 ? 24 : $nat), 26));
+        ui_style($l->h, ui_role_id("link"));
+        if ($onClick != null) { $l->onClick = $onClick; }
+        ui_on($l->h, 1, function() use ($l) { $l->_clicked(); });
+        $this->_placed();
+        return $l;
+    }
+
+    // ---- input -------------------------------------------------------
+    pub function input(string $text = "", int $x = -1, int $y = -1, int $w = 0,
+                       int $hgt = 0): Input {
+        $hh = $hgt > 0 ? $hgt : $this->hInput;
+        $box = $this->flow->take(240, $hh, true);
+        $i = new Input(ui_add($this->h, 4, $text,
+                              $x >= 0 ? $x : $box[0],
+                              $y >= 0 ? $y : $box[1],
+                              $w > 0 ? $w : $box[2], $hh));
+        ui_on($i->h, 2, function() use ($i) {
+            if ($i->onChange) { ($i->onChange)($i->content()); }
+        });
+        $this->_placed();
+        return $i;
+    }
+
+    pub function checkbox(string $text, bool $on = false, int $x = -1, int $y = -1,
+                          int $w = 0): Checkbox {
+        $nat = ui_textw($text, $this->fontPt) + 52;
+        $box = $this->flow->take($nat, $this->hCheck, false);
+        $c = new Checkbox(ui_add($this->h, 5, $text,
+                                 $x >= 0 ? $x : $box[0],
+                                 $y >= 0 ? $y : $box[1],
+                                 $w > 0 ? $w : $nat, $this->hCheck));
+        if ($on) { $c->setChecked(true); }
+        ui_on($c->h, 2, function() use ($c) {
+            if ($c->onChange) { ($c->onChange)($c->checked()); }
+        });
+        $this->_placed();
+        return $c;
+    }
+
+    // ---- collections -------------------------------------------------
+    pub function list($items = null, int $x = -1, int $y = -1, int $w = 0,
+                      int $hgt = 0): ListBox {
+        $hh = $hgt > 0 ? $hgt : 150;
+        $box = $this->flow->take(260, $hh, true);
+        $l = new ListBox(ui_add($this->h, 6, "",
+                                $x >= 0 ? $x : $box[0],
+                                $y >= 0 ? $y : $box[1],
+                                $w > 0 ? $w : $box[2], $hh));
+        $l->addAll($items);
+        ui_on($l->h, 2, function() use ($l) {
+            if ($l->onChange) { ($l->onChange)($l->selected(), $l->selectedText()); }
+        });
+        $this->_placed();
+        return $l;
+    }
+
+    pub function combo($items = null, int $x = -1, int $y = -1, int $w = 0,
+                       int $hgt = 0): ComboBox {
+        $hh = $hgt > 0 ? $hgt : $this->hInput;
+        $box = $this->flow->take(240, $hh, true);
+        $c = new ComboBox(ui_add($this->h, 7, "",
+                                 $x >= 0 ? $x : $box[0],
+                                 $y >= 0 ? $y : $box[1],
+                                 $w > 0 ? $w : $box[2], $hh));
+        $c->addAll($items);
+        ui_on($c->h, 2, function() use ($c) {
+            if ($c->onChange) { ($c->onChange)($c->selected(), $c->selectedText()); }
+        });
+        $this->_placed();
+        return $c;
+    }
+
+    // ---- meters ------------------------------------------------------
+    pub function progress(int $pct = 0, int $x = -1, int $y = -1, int $w = 0,
+                          int $hgt = 0): ProgressBar {
+        $hh = $hgt > 0 ? $hgt : 10;
+        $box = $this->flow->take(260, $hh, true);
+        $p = new ProgressBar(ui_add($this->h, 8, "",
+                                    $x >= 0 ? $x : $box[0],
+                                    $y >= 0 ? $y : $box[1],
+                                    $w > 0 ? $w : $box[2], $hh));
+        if ($pct != 0) { $p->progress($pct); }
+        $this->_placed();
+        return $p;
+    }
+
+    pub function slider(int $value = 0, int $x = -1, int $y = -1, int $w = 0,
+                        int $hgt = 0): Slider {
+        $hh = $hgt > 0 ? $hgt : 30;
+        $box = $this->flow->take(260, $hh, true);
+        $s = new Slider(ui_add($this->h, 9, "",
+                               $x >= 0 ? $x : $box[0],
+                               $y >= 0 ? $y : $box[1],
+                               $w > 0 ? $w : $box[2], $hh));
+        ui_on($s->h, 2, function($id, int $v) use ($s) {
+            if ($s->onChange) { ($s->onChange)($v); }
+        });
+        if ($value != 0) { $s->value($value); }
+        $this->_placed();
+        return $s;
+    }
+
+    // ---- containers --------------------------------------------------
+    /**
+     * A vertical box $w px wide (0 = as wide as the parent allows).
+     * It reserves a single pixel now and grows the parent flow as widgets
+     * are added, so siblings never overlap it.
+     */
+    pub function column(int $w = 0): Layout {
+        $box = $this->flow->take($w > 0 ? $w : 240, 1, true);
+        return $this->_child($this->h, "v", $box[0], $box[1],
+                             $w > 0 ? $w : $box[2]);
+    }
+
+    /** A horizontal box $w px wide; widgets flow across and wrap. */
+    pub function row(int $w = 0): Layout {
+        $box = $this->flow->take($w > 0 ? $w : 240, 1, true);
+        return $this->_child($this->h, "h", $box[0], $box[1],
+                             $w > 0 ? $w : $box[2]);
+    }
+
+    /** A rounded surface that grows to fit whatever you put inside. */
+    pub function card(int $w = 0, int $hgt = 0): Layout {
+        $pad = 18;
+        $box = $this->flow->take($w > 0 ? $w : 320, 1, true);
+        $lay = $this->_child($this->h, "v", $box[0] + $pad, $box[1] + $pad,
+                             $box[2] - $pad * 2);
+        $lay->_frame(ui_add($this->h, 12, "", $box[0], $box[1], $box[2], 1),
+                     $box[0], $box[1], $box[2], $pad);
+        if ($hgt > 0) { $lay->fixHeight($hgt); }
+        return $lay;
+    }
+
+    /** A captioned outline, the modern take on a fieldset. */
+    pub function section(string $text, int $w = 0, int $hgt = 0): Layout {
+        $pad = 18;
+        $cap = 14;
+        $box = $this->flow->take($w > 0 ? $w : 320, 1, true);
+        $lay = $this->_child($this->h, "v", $box[0] + $pad,
+                             $box[1] + $pad + $cap, $box[2] - $pad * 2);
+        $lay->captionSpace = $cap;
+        $lay->_frame(ui_add($this->h, 10, $text, $box[0], $box[1], $box[2], 1),
+                     $box[0], $box[1], $box[2], $pad);
+        if ($hgt > 0) { $lay->fixHeight($hgt); }
+        return $lay;
+    }
+
+    /** A free-form panel at explicit coordinates (outside the flow). */
+    pub function panel(int $x, int $y, int $w, int $hgt): Panel {
+        return new Panel(ui_add($this->h, 12, "", $x, $y, $w, $hgt));
+    }
+}
+
+// ---------------------------------------------------------------------
+// Layout: a box inside a window. It has every Widgets factory method; the
+// only extra job is resizing its own card and telling the parent flow how
+// much taller it has become.
+// ---------------------------------------------------------------------
+
+class Layout extends Widgets {
+    public $frameHandle = 0;    // the card/section behind us, 0 if none
+    public $framePad = 18;
+    public $frameX = 0;
+    public $frameY = 0;
+    public $frameW = 0;
+    public $captionSpace = 0;
+    public $fixedH = 0;         // explicit height, 0 = auto
+    public $lastH = 0;
+
+    pub function __construct(int $win, string $dir, int $x, int $y, int $w) {
+        $this->_init($win, new Flow($dir, $x, $y, $w, 10));
+    }
+
+    /** Attach the panel drawn behind this layout. */
+    pub function _frame(int $handle, int $x, int $y, int $w, int $pad) {
+        $this->frameHandle = $handle;
+        $this->frameX = $x;
+        $this->frameY = $y;
+        $this->frameW = $w;
+        $this->framePad = $pad;
+    }
+
+    /** Pin the frame to an explicit height instead of auto-growing. */
+    pub function fixHeight(int $hgt) {
+        $this->fixedH = $hgt;
+        if ($this->frameHandle != 0) {
+            ui_move($this->frameHandle, $this->frameX, $this->frameY,
+                    $this->frameW, $hgt);
+        }
+        $this->_report($hgt);
+    }
+
+    /** Push a new height up to the parent flow. */
+    pub function _report(int $hgt) {
+        $d = $hgt - $this->lastH;
+        $this->lastH = $hgt;
+        if ($d > 0 && $this->growInto != null) { $this->growInto->bump($d); }
+    }
+
+    pub function _placed() {
+        $total = $this->flow->measure() + $this->captionSpace;
+        if ($this->fixedH > 0) { $total = $this->fixedH; }
+        elseif ($this->frameHandle != 0) {
+            $total = $total + $this->framePad * 2;
+            ui_move($this->frameHandle, $this->frameX, $this->frameY,
+                    $this->frameW, $total);
+        }
+        $this->_report($total);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Menus
+// ---------------------------------------------------------------------
 
 class Menu {
-    pub int $h;
-    pub App $app;
-    pub function __construct(int $handle, App $app) {
+    pub int $h = 0;
+    pub int $seq = 0;
+
+    pub function __construct(int $handle) {
         $this->h = $handle;
-        $this->app = $app;
     }
-    pub function item(string $label, $handler): MenuItem {
-        $id = ui_menu_next($this->app);
+
+    pub function item(string $label, $handler = null): MenuItem {
+        $this->seq = $this->seq + 1;
+        $id = 5000 + $this->seq;
         $h = ui_menu_item($this->h, $label, $id);
-        $this->app->_register_menu_item($h, $id, $handler);
+        ui_on($h, 1, function() use ($handler) {
+            if ($handler) { ($handler)(); }
+        });
         return new MenuItem($h, $id);
     }
+
     pub function separator(): Menu {
         ui_menu_sep($this->h);
         return $this;
@@ -215,107 +956,168 @@ class Menu {
 }
 
 class MenuItem {
-    pub int $h;
-    pub int $id;
+    pub int $h = 0;
+    pub int $id = 0;
     pub function __construct(int $handle, int $id) {
         $this->h = $handle;
         $this->id = $id;
     }
 }
 
-class App {
-    pub int $h;
-    pub $onIdle = null;
-    pub int $_menuSeq = 0;
-    private $menu_items = [];
+// ---------------------------------------------------------------------
+// App: the window
+// ---------------------------------------------------------------------
 
-    pub function __construct(string $title = "HolyPHP App",
-                             int $w = 640, int $hgt = 480,
-                             int $x = -32000, int $y = -32000) {
+class App extends Widgets {
+    pub int $winW = 720;
+    public $winPad = 24;
+    public $menuSeq = 0;
+    public $closing = null;
+    public $keyHandler = null;
+    public $cur = null;         // the live theme, so radius()/font() re-apply
+
+    pub function __construct(string $title = "HolyPHP", int $w = 720,
+                             int $hgt = 520, int $x = -32000, int $y = -32000) {
+        $this->winW = $w;
         $this->h = ui_window($title, $x, $y, $w, $hgt);
+        $this->_init($this->h, new Flow("v", $this->winPad, $this->winPad,
+                                        $w - 2 * $this->winPad, 10));
+        $this->theme("dark");
     }
 
-    // ---- window-level ----
-    pub function title(string $t) {
-        ui_title($this->h, $t);
-        return $this;
-    }
-    pub function size(int $w, int $hgt) {
+    // ---- window ------------------------------------------------------
+    pub function title(string $t): App { ui_title($this->h, $t); return $this; }
+    pub function size(int $w, int $hgt): App {
+        $this->winW = $w;
         ui_size($this->h, $w, $hgt);
         return $this;
     }
-    pub function pos(int $x, int $y) {
-        ui_pos($this->h, $x, $y);
+    pub function pos(int $x, int $y): App { ui_pos($this->h, $x, $y); return $this; }
+    pub function alive(): bool { return ui_alive($this->h) == 1; }
+    pub function close() { ui_close($this->h); }
+    pub function quit() { ui_quit(); }
+
+    /** Called before the window closes; return false to veto the close. */
+    pub function onClose($handler): App {
+        $this->closing = $handler;
+        $app = $this;
+        ui_on($this->h, 3, function() use ($app) {
+            $veto = false;
+            $f = $app->closing;
+            if ($f) { $veto = ($f)() == false; }
+            if (!$veto) { ui_close($app->h); }
+        });
         return $this;
     }
-    pub function alive(): bool {
-        return ui_alive($this->h) == 1;
+
+    /**
+     * Window-level shortcut handler: onKey(function($vk, $ch) { ... }).
+     * $ch is the typed character as an int (0 for non-printable keys such as
+     * the arrow keys, whose virtual-key code arrives in $vk).
+     */
+    pub function onKey($handler): App {
+        $app = $this;
+        ui_on($this->h, 4, function($vk, $ch) use ($app) {
+            $f = $app->keyHandler;
+            if ($f) { ($f)($vk, $ch); }
+        });
+        $this->keyHandler = $handler;
+        return $this;
     }
-    pub function close() {
-        ui_close($this->h);
+
+    // ---- universal styles --------------------------------------------
+    /**
+     * Restyle the entire app. Accepts a preset name, a map of overrides, or
+     * both:
+     *     theme("dark")
+     *     theme("light", ["accent" => 0xE040FB])
+     *     theme(["bg" => 0x101014, "accent" => 0x7C5CFF, "dark" => 1])
+     */
+    pub function theme($which, $over = null): App {
+        $base = ui_theme_dark();
+        if (is_string($which)) { $base = ui_theme_named($which); }
+        else if (is_array($which)) { $base = ui_merge($base, $which); }
+        if ($over != null) { $base = ui_merge($base, $over); }
+        $this->cur = $base;
+        $this->fontPt = ui_pick($base, "font", 10);
+        $this->titlePt = ui_pick($base, "title", 17);
+        $this->hRow = ui_pick($base, "row", 28);
+        $this->hLabel = $this->hRow - 4;
+        $this->mutedColor = ui_pick($base, "muted", 0x969FB0);
+        ui_theme($this->h,
+                 ui_pick($base, "bg", 0x0F1115),
+                 ui_pick($base, "surface", 0x171A21),
+                 ui_pick($base, "elevated", 0x1E222B),
+                 ui_pick($base, "text", 0xE8EAF0),
+                 ui_pick($base, "muted", 0x969FB0),
+                 ui_pick($base, "accent", 0x4C7DFF),
+                 ui_pick($base, "onAccent", 0xFFFFFF),
+                 ui_pick($base, "border", 0x2B313D),
+                 ui_pick($base, "radius", 8),
+                 $this->fontPt,
+                 $this->titlePt,
+                 $this->hRow,
+                 ui_pick($base, "dark", 1));
+        return $this;
     }
+
+    /** Universal corner radius, in pixels. */
+    pub function radius(int $px): App {
+        return $this->theme($this->cur, ["radius" => $px]);
+    }
+
+    /** Universal body type size, in points. */
+    pub function font(int $pt, bool $bold = false): App {
+        return $this->theme($this->cur, ["font" => $pt]);
+    }
+
+    /** Universal button role: "primary", "ghost", "danger", ... */
+    pub function style(string $role): App {
+        $this->defRole = $role;
+        return $this;
+    }
+
+    /**
+     * Window padding used by the auto-layout, and the extra breathing room
+     * every button gets inside itself. Call it before adding widgets.
+     */
+    pub function pad(int $px): App {
+        $this->winPad = $px;
+        $this->padX = $px > 8 ? intval($px / 2) : 10;
+        /* re-anchor the top-level flow so already-placed widgets move too */
+        $f = $this->flow;
+        $dx = $px - $f->x0;
+        $dy = $px - $f->y0;
+        $f->x0 = $px;
+        $f->y0 = $px;
+        $f->x += $dx;
+        $f->v += $dy;
+        $f->w = $this->winW - $px * 2;
+        return $this;
+    }
+
+    /** Space between auto-placed widgets. */
+    pub function gap(int $px): App {
+        $this->flow->gap = $px;
+        return $this;
+    }
+
+    /** One key of the live theme, for building custom widgets. */
+    pub function _theme(string $key): int {
+        return ui_pick($this->cur, $key, 0);
+    }
+
+    // ---- extras ------------------------------------------------------
     pub function menu(string $label): Menu {
-        $h = ui_menu($this->h, $label);
-        return new Menu($h, $this);
+        return new Menu(ui_menu($this->h, $label));
     }
+    pub function _nextMenuId(): int {
+        $this->menuSeq = $this->menuSeq + 1;
+        return 5000 + $this->menuSeq;
+    }
+    pub function every(int $ms, $handler) { ui_timer($ms, $handler); }
 
-    // ---- controls ----
-    pub function button(string $text, int $x, int $y, int $w = 120, int $hgt = 30): Button {
-        $b = new Button(ui_add($this->h, 2, $text, $x, $y, $w, $hgt));
-        ui_on($b->h, 1, function() use ($b) { $b->_clicked(); });
-        return $b;
-    }
-    pub function label(string $text, int $x, int $y, int $w = 160, int $hgt = 22): Label {
-        return new Label(ui_add($this->h, 3, $text, $x, $y, $w, $hgt));
-    }
-    pub function input(string $text, int $x, int $y, int $w = 180, int $hgt = 26): Input {
-        $i = new Input(ui_add($this->h, 4, $text, $x, $y, $w, $hgt));
-        ui_on($i->h, 2, function() use ($i) {
-            if ($i->onChange) { ($i->onChange)($i->value()); }
-        });
-        return $i;
-    }
-    pub function checkbox(string $text, int $x, int $y, int $w = 160, int $hgt = 24): Checkbox {
-        $c = new Checkbox(ui_add($this->h, 5, $text, $x, $y, $w, $hgt));
-        ui_on($c->h, 2, function() use ($c) {
-            if ($c->onChange) { ($c->onChange)($c->checked()); }
-        });
-        return $c;
-    }
-    pub function listBox(int $x, int $y, int $w = 200, int $hgt = 160): ListBox {
-        $l = new ListBox(ui_add($this->h, 6, "", $x, $y, $w, $hgt));
-        ui_on($l->h, 2, function() use ($l) {
-            if ($l->onChange) { ($l->onChange)($l->selected(), $l->selectedText()); }
-        });
-        return $l;
-    }
-    pub function comboBox(int $x, int $y, int $w = 200, int $hgt = 200): ComboBox {
-        $c = new ComboBox(ui_add($this->h, 7, "", $x, $y, $w, $hgt));
-        ui_on($c->h, 2, function() use ($c) {
-            if ($c->onChange) { ($c->onChange)($c->selected(), $c->selectedText()); }
-        });
-        return $c;
-    }
-    pub function progress(int $x, int $y, int $w = 200, int $hgt = 22): ProgressBar {
-        return new ProgressBar(ui_add($this->h, 8, "", $x, $y, $w, $hgt));
-    }
-    pub function slider(int $x, int $y, int $w = 200, int $hgt = 28): Slider {
-        $s = new Slider(ui_add($this->h, 9, "", $x, $y, $w, $hgt));
-        ui_on($s->h, 2, function($id, int $v) use ($s) {
-            /* the notification already carries the thumb position (arg 2);
-             * re-querying can lag during a live drag */
-            if ($s->onChange) { ($s->onChange)($v); }
-        });
-        return $s;
-    }
-    pub function group(string $text, int $x, int $y, int $w, int $hgt): Group {
-        return new Group(ui_add($this->h, 10, $text, $x, $y, $w, $hgt));
-    }
-    pub function panel(int $x, int $y, int $w, int $hgt): Panel {
-        return new Panel(ui_add($this->h, 12, "", $x, $y, $w, $hgt));
-    }
-
-    // ---- dialogs & misc ----
+    // ---- dialogs -----------------------------------------------------
     pub function msg(string $text, string $title = "HolyPHP") {
         ui_msg($this->h, $title, $text, 0);
     }
@@ -325,7 +1127,7 @@ class App {
     pub function error(string $text, string $title = "Error") {
         ui_msg($this->h, $title, $text, 2);
     }
-    pub function question(string $text, string $title = "Question"): bool {
+    pub function ask(string $text, string $title = "Question"): bool {
         return ui_msg($this->h, $title, $text, 3) == 1;
     }
     pub function openFile(string $patterns = "All files|*.*"): string {
@@ -336,43 +1138,19 @@ class App {
         $r = ui_save_file($this->h, $patterns);
         return $r === null ? "" : $r;
     }
-    pub function pickFolder(): string {
+    pub function folder(): string {
         $r = ui_pick_folder($this->h);
         return $r === null ? "" : $r;
     }
-    pub function pickColor(int $initial = 0xffffff) {
-        return ui_pick_color($this->h, $initial);   // null on cancel
+    pub function color(int $initial = 0x4C7DFF) {
+        return ui_pick_color($this->h, $initial);
     }
-    pub function every(int $ms, $handler) {
-        ui_timer($ms, $handler);
-    }
+    pub function clip(string $text) { ui_clip_set($text); }
+    pub function paste(): string { return ui_clip_get(); }
 
-    // ---- menu plumbing (called by Menu) ----
-    pub function _register_menu_item(int $h, int $id, $handler) {        ui_on($h, 1, function() use ($handler) { if ($handler) { ($handler)(); } });
-    }
-
-    // ---- run modes ----
-    pub function onClose($handler) {
-        ui_on($this->h, 3, function() use ($handler) {
-            $veto = false;
-            if ($handler) { $veto = ($handler)() == false; }
-            if (!$veto) { ui_close($this->h); }
-        });
-    }
-
-    // blocking desktop loop (use with `hphp build`)
-    pub function run() {
-        ui_run_main();
-    }
-
-    // cooperative loop for `hphp run`: calls $onIdle every tick
-    pub function tick(int $ms = 15) {
-        ui_dispatch($ms);
-    }
-}
-
-// menu command ids: each App owns a counter (no local statics in HolyPHP)
-function ui_menu_next(App $app): int {
-    $app->_menuSeq = $app->_menuSeq + 1;
-    return 5000 + $app->_menuSeq;
+    // ---- run ---------------------------------------------------------
+    /** Blocking desktop loop. Best with `hphp build`. */
+    pub function run() { ui_run_main(); }
+    /** Pump events for ~$ms so the script keeps control (`hphp run`). */
+    pub function tick(int $ms = 15) { ui_dispatch($ms); }
 }

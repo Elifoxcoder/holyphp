@@ -504,6 +504,9 @@ const Token *ts_peek(TokenStream *ts) {
 const Token *ts_peek2(TokenStream *ts) {
     return ts->toks.items[ts->idx + 1 < ts->toks.len ? ts->idx + 1 : ts->toks.len - 1];
 }
+const Token *ts_peek3(TokenStream *ts) {
+    return ts->toks.items[ts->idx + 2 < ts->toks.len ? ts->idx + 2 : ts->toks.len - 1];
+}
 const Token *ts_advance(TokenStream *ts) {
     const Token *t = ts_peek(ts);
     if (ts->idx < ts->toks.len - 1) ts->idx++;

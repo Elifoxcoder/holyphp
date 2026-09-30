@@ -589,6 +589,8 @@ double hp_mt_rand(void);
 #define HPUI_MENU 13
 #define HPUI_MENUITEM 14
 #define HPUI_PICTURE 15
+#define HPUI_TIMER 16
+#define HPUI_DIVIDER 17
 
 void hpui_init(void);
 int64_t hpui_dispatch(int ms);            /* pump events up to ms, 0 = block */
@@ -621,15 +623,23 @@ int64_t hpui_list_text(int64_t h, int64_t index, hstr **out);
 int64_t hpui_check_get(int64_t h, bool *out);
 int64_t hpui_check_set(int64_t h, bool on);
 int64_t hpui_progress_set(int64_t h, int64_t pct);
+int64_t hpui_progress_get(int64_t h);
 int64_t hpui_slider_get(int64_t h, int64_t *out);
 int64_t hpui_slider_set(int64_t h, int64_t pos);
 int64_t hpui_ctrl_checked(int64_t h);                    /* menu item check */
+int64_t hpui_ctrl_enabled(int64_t h);                   /* 1 = accepts input */
 int64_t hpui_menu_new(int64_t win, const char *label);
 int64_t hpui_menu_item(int64_t menu, const char *label, int64_t id);
 int64_t hpui_menu_sep(int64_t menu);
 int64_t hpui_ctrl_set_bg(int64_t h, int64_t rgb);
 int64_t hpui_ctrl_set_fg(int64_t h, int64_t rgb);
+int64_t hpui_ctrl_accent(int64_t h, int64_t rgb);
+int64_t hpui_ctrl_radius(int64_t h, int64_t r);
+int64_t hpui_ctrl_style(int64_t h, int64_t role);
 int64_t hpui_ctrl_font(int64_t h, int64_t size, bool bold);
+int64_t hpui_range_set(int64_t h, int64_t lo, int64_t hi);
+int64_t hpui_repaint(int64_t h);
+int64_t hpui_theme_set(int64_t win, const int64_t *v, int n);
 int64_t hpui_picture_load(int64_t h, const char *path);
 
 /* events: cb is a closure; id identifies which control fired */
@@ -692,6 +702,17 @@ hval hpbi_ui_pick_folder(hval win);
 hval hpbi_ui_pick_color(hval win, hval init);
 hval hpbi_ui_clip_set(hval text);
 hval hpbi_ui_clip_get(void);
+hval hpbi_ui_style(hval h, hval role);
+hval hpbi_ui_accent(hval h, hval rgb);
+hval hpbi_ui_radius(hval h, hval r);
+hval hpbi_ui_range(hval h, hval lo, hval hi);
+hval hpbi_ui_repaint(hval h);
+hval hpbi_ui_enabled(hval h);
+hval hpbi_ui_count(hval h);
+hval hpbi_ui_progress_get(hval h);
+hval hpbi_ui_theme(hval win, hval bg, hval surface, hval elevated, hval text,
+                   hval muted, hval accent, hval onAccent, hval border,
+                   hval radius, hval fontPt, hval titlePt, hval rowH, hval dark);
 
 /* heap boxes for by-ref captures (use (&$x)) */
 hval *hp_box_new(void);

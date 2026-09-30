@@ -145,8 +145,19 @@ static void to_hval(Codegen *g, Expr *e, Buf *dst) {
     emit_expr(g, e, &b);
     const Type *t = e->type;
     if (!t) {
-        buf_write(dst, b.data ? b.data : "", b.len);
-    } else switch (t->kind) {
+        /* sema left this expression untyped — common for parameter defaults.
+         * Box from the literal's own shape; emitting it raw would drop a
+         * bare hstr pointer or int64_t straight into an hval slot. */
+        switch (e->kind) {
+        case EX_STR:   buf_printf(dst, "hp_of_str(%s)", buf_take(&b)); break;
+        case EX_INT:   buf_printf(dst, "hp_of_int(%s)", buf_take(&b)); break;
+        case EX_FLOAT: buf_printf(dst, "hp_of_float(%s)", buf_take(&b)); break;
+        default:       buf_printf(dst, "hv(%s)", buf_take(&b)); break;
+        }
+        free(b.data);
+        return;
+    }
+    switch (t->kind) {
     case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64:
         buf_printf(dst, "hp_of_int(%s)", buf_take(&b)); break;
     case TY_FLOAT: case TY_F32: case TY_F64:
@@ -1557,14 +1568,15 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             buf_init(&v);
             emit_expr(g, e->u.assign.value, &v);
             const Type *vt = e->u.assign.value->type;
-            if (vt && (vt->kind == TY_ARRAY || vt->kind == TY_VEC ||
-                       vt->kind == TY_MAP || vt->kind == TY_SET)) {
-                bool boxed = tgt_is_box;
-                if (boxed) /* the box slot is an hval: wrap the harr* */
-                    buf_printf(dst, "(%s = hp_of_arr(hp_arr_clone(%s)))",
-                               name, buf_take(&v));
-                else
-                    buf_printf(dst, "(%s = hp_arr_clone(%s))", name, buf_take(&v));
+            bool is_arr_v = vt && (vt->kind == TY_ARRAY || vt->kind == TY_VEC ||
+                                   vt->kind == TY_MAP || vt->kind == TY_SET);
+            if (tgt_is_box && is_arr_v) {
+                /* the slot is an hval but the value is a bare harr*: box it */
+                buf_printf(dst, "(%s = hp_of_arr(hp_arr_clone(%s)))",
+                           name, buf_take(&v));
+            }
+            else if (!tgt_is_box && is_arr_v) {
+                buf_printf(dst, "(%s = hp_arr_clone(%s))", name, buf_take(&v));
             }
             else {
                 free(v.data);
@@ -1711,6 +1723,76 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             lval = fmt("(%s)->%s", os, sf ? sf->name : "hp_missing_field");
         }
         free((void *)os);
+        if (op != T_ASSIGN) {
+            /* `$this->x += 1` is read-modify-write on the field, exactly like
+             * a plain variable: the previous value must participate. */
+            const Type *ft = sf ? sf->type : NULL;
+            bool fboxed = !ft || ft->kind == TY_MIXED;
+            if (op == T_DOTASSIGN) {
+                emit_expr(g, e->u.assign.value, &v);
+                if (fboxed)
+                    buf_printf(dst,
+                        "((%s) = hp_of_str(hp_str_concat_v(hv(%s), hv(%s))))",
+                        lval, lval, buf_take(&v));
+                else
+                    buf_printf(dst, "(%s = hp_str_concat_v(hv(%s), hv(%s)))",
+                               lval, lval, buf_take(&v));
+            } else if (op == T_POWASSIGN) {
+                emit_expr(g, e->u.assign.value, &v);
+                if (fboxed)
+                    buf_printf(dst, "((%s) = hp_powv((%s), hv(%s)))",
+                               lval, lval, buf_take(&v));
+                else if (ft && type_is_integral(ft->kind))
+                    buf_printf(dst, "(%s = hp_val_to_int(hp_powv(hv(%s), hv(%s))))",
+                               lval, lval, buf_take(&v));
+                else if (ft && type_is_numeric(ft->kind))
+                    buf_printf(dst, "(%s = hp_val_to_float(hp_powv(hv(%s), hv(%s))))",
+                               lval, lval, buf_take(&v));
+                else
+                    buf_printf(dst, "(%s = hp_powv((%s), hv(%s)))",
+                               lval, lval, buf_take(&v));
+            } else {
+                const char *c_op = "+=";
+                switch (op) {
+                case T_MINUSASSIGN: c_op = "-="; break;
+                case T_STARASSIGN: c_op = "*="; break;
+                case T_SLASHASSIGN: c_op = "/="; break;
+                case T_PERCENTASSIGN: c_op = "%="; break;
+                case T_SHLASSIGN: c_op = "<<="; break;
+                case T_SHRASSIGN: c_op = ">>="; break;
+                default: c_op = "+="; break;
+                }
+                const char *rop = op == T_MINUSASSIGN ? "hpbi_scalar_sub" :
+                                  op == T_STARASSIGN  ? "hpbi_scalar_mul" :
+                                  op == T_SLASHASSIGN ? "hp_divv" : "hp_add";
+                bool arith = op == T_PLUSASSIGN || op == T_MINUSASSIGN ||
+                             op == T_STARASSIGN || op == T_SLASHASSIGN;
+                const Type *cvt2 = e->u.assign.value->type;
+                if (fboxed && arith) {
+                    emit_expr(g, e->u.assign.value, &v);
+                    buf_printf(dst, "((%s) = %s((%s), hv(%s)))",
+                               lval, rop, lval, buf_take(&v));
+                } else if (cvt2 && cvt2->kind == TY_MIXED && ft &&
+                           (type_is_integral(ft->kind) || ft->kind == TY_BOOL)) {
+                    emit_expr(g, e->u.assign.value, &v);
+                    buf_printf(dst, "(%s %s hp_val_to_int(%s))",
+                               lval, c_op, buf_take(&v));
+                } else if (cvt2 && cvt2->kind == TY_MIXED && ft &&
+                           type_is_numeric(ft->kind)) {
+                    emit_expr(g, e->u.assign.value, &v);
+                    buf_printf(dst, "(%s %s hp_val_to_float(%s))",
+                               lval, c_op, buf_take(&v));
+                } else {
+                    if (sf && sf->type)
+                        emit_to_type(g, e->u.assign.value, sf->type, &v);
+                    else
+                        emit_expr(g, e->u.assign.value, &v);
+                    buf_printf(dst, "(%s %s %s)", lval, c_op, buf_take(&v));
+                }
+            }
+            free((void *)lval); free(v.data);
+            return;
+        }
         if (sf && sf->type) {
             if (sf->type->kind == TY_MIXED)
                 to_hval(g, e->u.assign.value, &v); /* dynamic slot: box */
@@ -3148,8 +3230,24 @@ static void emit_struct(Codegen *g, AstClass *c) {
     line(g, "");
 }
 
+/* Structs are emitted for every class before any method body, so a method
+ * may touch a class declared later in the file (mutual references). */
+static bool g_structs_emitted;
+
+/* `self->field` at depth 0, `self->__base.field` one level up, and so on —
+ * each ancestor struct is embedded as the next `__base` member. */
+static const char *class_field_lval_depth(int depth, const char *name) {
+    if (depth <= 0) return fmt("self->%s", name ? name : "hp_missing_field");
+    /* each ancestor struct is embedded by value, so the chain uses `.` */
+    char path[256];
+    snprintf(path, sizeof path, "self->__base");
+    for (int i = 1; i < depth; i++)
+        snprintf(path + strlen(path), sizeof(path) - strlen(path), ".__base");
+    return fmt("%s.%s", path, name ? name : "hp_missing_field");
+}
+
 static void emit_class(Codegen *g, AstClass *c) {
-    emit_struct(g, c);
+    if (!g_structs_emitted) emit_struct(g, c);
     /* generic constructor: Class_new_args("Class", field-init values...) */
     line(g, "static struct %s* %s_new_args(const char* cls, ...);", c->name, c->name);
     line(g, "static struct %s* %s_new_args(const char* cls, ...) {", c->name, c->name);
@@ -3166,38 +3264,55 @@ static void emit_class(Codegen *g, AstClass *c) {
             snprintf(path + strlen(path), sizeof(path) - strlen(path), ".__base");
         }
     }
-    for (size_t i = 0; i < c->fields.len; i++) {
-        StructField *f = c->fields.items[i];
-        if (f->is_static) continue;
-        const Type *ft = f->type;
-        /* an untyped property (`pub $cb = null;`) is hval-typed: PHP-style
-         * dynamic members must not dereference a NULL type here */
-        if (!ft) { line(g, "self->%s = hp_null;", f->name); continue; }
-        if (type_is_integral(ft->kind)) line(g, "self->%s = 0;", f->name);
-        else if (type_is_numeric(ft->kind)) line(g, "self->%s = 0.0;", f->name);
-        else if (ft->kind == TY_BOOL) line(g, "self->%s = false;", f->name);
-        else if (ft->kind == TY_STRING) line(g, "self->%s = hp_null_str();", f->name);
-        else if (ft->kind == TY_ARRAY || ft->kind == TY_VEC ||
-                 ft->kind == TY_MAP || ft->kind == TY_SET)
-            line(g, "self->%s = hp_arr_new();", f->name);
-        else if (ft->kind == TY_CLASS || ft->kind == TY_STRUCT ||
-                 ft->kind == TY_OWN || ft->kind == TY_RC ||
-                 ft->kind == TY_INTERFACE || ft->kind == TY_FN)
-            line(g, "self->%s = 0;", f->name);   /* pointer slots start null */
-        else line(g, "self->%s = hp_null;", f->name);
-    }
-    /* declared property defaults: `pub int $n = 42;` must actually be 42.
-     * The zero pass above has run, so this overwrites it in declaration
-     * order — PHP semantics. */
-    for (size_t i = 0; i < c->fields.len; i++) {
-        StructField *f = c->fields.items[i];
-        if (f->is_static || !f->dflt) continue;
-        Buf dv;
-        buf_init(&dv);
-        if (!f->type || f->type->kind == TY_MIXED) to_hval(g, f->dflt, &dv);
-        else emit_to_type(g, f->dflt, f->type, &dv);
-        line(g, "self->%s = %s;", f->name, buf_take(&dv));
-        free(dv.data);
+    /* Property initialisation walks the whole inheritance chain: a subclass
+     * must also zero and default every field its ancestors declare, or
+     * `class App extends Widgets` silently starts with garbage metrics. */
+    for (AstClass *k = c; k; k = k->base) {
+        int depth = 0;
+        for (AstClass *p = c; p && p != k; p = p->base) depth++;
+        for (size_t i = 0; i < k->fields.len; i++) {
+            StructField *f = k->fields.items[i];
+            if (f->is_static) continue;
+            if (f->cls && f->cls != k) continue;   /* handled at its own depth */
+            const char *lv = class_field_lval_depth(depth, f->name);
+            const Type *ft = f->type;
+            /* an untyped property (`pub $cb = null;`) is hval-typed: PHP-style
+             * dynamic members must not dereference a NULL type here */
+            if (!ft) { line(g, "%s = hp_null;", lv); continue; }
+            if (type_is_integral(ft->kind)) line(g, "%s = 0;", lv);
+            else if (type_is_numeric(ft->kind)) line(g, "%s = 0.0;", lv);
+            else if (ft->kind == TY_BOOL) line(g, "%s = false;", lv);
+            else if (ft->kind == TY_STRING) line(g, "%s = hp_null_str();", lv);
+            else if (ft->kind == TY_ARRAY || ft->kind == TY_VEC ||
+                     ft->kind == TY_MAP || ft->kind == TY_SET)
+                line(g, "%s = hp_arr_new();", lv);
+            else if (ft->kind == TY_CLASS || ft->kind == TY_STRUCT ||
+                     ft->kind == TY_OWN || ft->kind == TY_RC ||
+                     ft->kind == TY_INTERFACE || ft->kind == TY_FN)
+                line(g, "%s = 0;", lv);   /* pointer slots start null */
+            else line(g, "%s = hp_null;", lv);
+        }
+        /* declared property defaults: `pub int $n = 42;` must actually be 42.
+         * The zero pass above has run, so this overwrites it in declaration
+         * order — PHP semantics. */
+        for (size_t i = 0; i < k->fields.len; i++) {
+            StructField *f = k->fields.items[i];
+            if (f->is_static || !f->dflt) continue;
+            if (f->cls && f->cls != k) continue;
+            Buf dv;
+            buf_init(&dv);
+            /* a pointer-typed slot (`pub Flow $flow = null;`) must stay a NULL
+             * C pointer — emitting the hval null constant fails to compile */
+            if (f->dflt->kind == EX_NULL && f->type &&
+                (f->type->kind == TY_CLASS || f->type->kind == TY_STRUCT ||
+                 f->type->kind == TY_OWN || f->type->kind == TY_RC ||
+                 f->type->kind == TY_INTERFACE || f->type->kind == TY_FN))
+                buf_puts(&dv, "0");
+            else if (!f->type || f->type->kind == TY_MIXED) to_hval(g, f->dflt, &dv);
+            else emit_to_type(g, f->dflt, f->type, &dv);
+            line(g, "%s = %s;", class_field_lval_depth(depth, f->name), buf_take(&dv));
+            free(dv.data);
+        }
     }
     /* run the user constructor if present (search base classes too — PHP-style
      * constructor inheritance: new Hund("Rex") runs Tier::__construct) */
@@ -3683,6 +3798,13 @@ void codegen_emit(Program *prog, Buf *out) {
         emit_closure_prototype(&g, g.closures.items[i]);
 
     /* 3) struct + class definitions, then closure definitions */
+    g_structs_emitted = false;
+    for (size_t i = 0; i < prog->decls.len; i++) {
+        Decl *d = prog->decls.items[i];
+        if (d->kind == DK_CLASS || d->kind == DK_INTERFACE || d->kind == DK_TRAIT)
+            emit_struct(&g, d->u.cls);
+    }
+    g_structs_emitted = true;
     for (size_t i = 0; i < prog->decls.len; i++) {
         Decl *d = prog->decls.items[i];
         if (d->kind == DK_CLASS || d->kind == DK_INTERFACE || d->kind == DK_TRAIT)

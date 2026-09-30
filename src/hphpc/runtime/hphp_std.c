@@ -2307,6 +2307,62 @@ hval hpbi_ui_clip_set(hval text) {
 }
 hval hpbi_ui_clip_get(void) { return ui_clip_get(); }
 
+/* ---- UI 2.0: styling ---- */
+hval hpbi_ui_style(hval h, hval role) {
+    return hp_of_int(hpui_ctrl_style((int64_t)hp_val_to_int(h),
+                                     (int64_t)hp_val_to_int(role)));
+}
+hval hpbi_ui_accent(hval h, hval rgb) {
+    return hp_of_int(hpui_ctrl_accent((int64_t)hp_val_to_int(h),
+                                      (int64_t)hp_val_to_int(rgb)));
+}
+hval hpbi_ui_radius(hval h, hval r) {
+    return hp_of_int(hpui_ctrl_radius((int64_t)hp_val_to_int(h),
+                                      (int64_t)hp_val_to_int(r)));
+}
+hval hpbi_ui_range(hval h, hval lo, hval hi) {
+    return hp_of_int(hpui_range_set((int64_t)hp_val_to_int(h),
+                                    (int64_t)hp_val_to_int(lo),
+                                    (int64_t)hp_val_to_int(hi)));
+}
+hval hpbi_ui_enabled(hval h) {
+    return hp_of_int(hpui_ctrl_enabled((int64_t)hp_val_to_int(h)));
+}
+hval hpbi_ui_count(hval h) {
+    int64_t n = 0;
+    hpui_list_count((int64_t)hp_val_to_int(h), &n);
+    return hp_of_int(n);
+}
+hval hpbi_ui_progress_get(hval h) {
+    return hp_of_int(hpui_progress_get((int64_t)hp_val_to_int(h)));
+}
+hval hpbi_ui_repaint(hval h) {
+
+    return hp_of_int(hpui_repaint((int64_t)hp_val_to_int(h)));
+}
+/* ui_theme(win, bg, surface, elevated, text, muted, accent, onAccent, border,
+ *         radius, fontPt, titlePt, rowH, dark) */
+hval hpbi_ui_theme(hval win, hval bg, hval surface, hval elevated, hval text,
+                   hval muted, hval accent, hval onAccent, hval border,
+                   hval radius, hval fontPt, hval titlePt, hval rowH, hval dark) {
+    int64_t v[14];
+    v[0]  = hp_val_to_int(bg);
+    v[1]  = hp_val_to_int(surface);
+    v[2]  = hp_val_to_int(elevated);
+    v[3]  = hp_val_to_int(text);
+    v[4]  = hp_val_to_int(muted);
+    v[5]  = hp_val_to_int(accent);
+    v[6]  = hp_val_to_int(onAccent);
+    v[7]  = hp_val_to_int(border);
+    v[8]  = hp_val_to_int(radius);
+    v[9]  = hp_val_to_int(fontPt);
+    v[10] = hp_val_to_int(titlePt);
+    v[11] = hp_val_to_int(rowH);
+    v[12] = 0;
+    v[13] = hp_val_to_bool(dark) ? 1 : 0;
+    return hp_of_int(hpui_theme_set((int64_t)hp_val_to_int(win), v, 14));
+}
+
 /* ---------- PHP 8 parity additions ---------- */
 #include <errno.h>
 #include <sys/stat.h>
