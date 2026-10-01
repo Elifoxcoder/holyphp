@@ -33,5 +33,15 @@ for f in tests/negative/*.hphp; do
     fi
 done
 
+echo "== docs =="
+# the UI examples in docs/*.html drift with the library; keep them honest
+if bash tests/positive/check_docs.sh; then
+    echo "PASS docs snippets"
+    pass=$((pass+1))
+else
+    echo "FAIL docs snippets"
+    fail=$((fail+1))
+fi
+
 echo "== $pass passed, $fail failed =="
 [ $fail -eq 0 ]

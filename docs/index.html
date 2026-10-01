@@ -79,8 +79,8 @@
         </a>
         <a class="card" href="lib-ui.html"><span class="ico">&#128421;</span>
           <h3>Native desktop GUI</h3>
-          <p>The ui standard library builds real windows,
-            buttons, sliders, menus and timers in a few lines.</p>
+          <p>The ui library builds themed windows, cards, forms,
+            lists and meters — laid out for you.</p>
         </a>
         <a class="card" href="lib-websocket.html"><span class="ico">&#127760;</span>
           <h3>Browsers included</h3>
@@ -121,16 +121,18 @@ function fib(int $n): int {
 }
 echo "fib(10) = " . fib(10) . "\n";</code></pre>
 
-      <h2>A real GUI in 12 lines</h2>
+    <h2>A real GUI in 12 lines</h2>
+    <p>One theme call styles every control, and widgets place themselves
+      &mdash; no coordinates, no event assignment, no boilerplate:</p>
       <pre><code class="hphp">import "ui";
 
-$app = new App("My App", 640, 420);
-$btn = $app-&gt;button("Click me", 16, 40);
-$name = $app-&gt;input("world", 16, 80);
+$app = new App("My App", 560, 300);
+$app-&gt;theme("midnight")-&gt;pad(24)-&gt;gap(10)-&gt;radius(12);
 
-$btn-&gt;onClick = function() use ($app, $name) {
-    $app-&gt;msg("Hello, " . $name-&gt;value() . "!");
-};
+$name = $app-&gt;input("world");
+$app-&gt;button("Click me", "primary", function() use ($app, $name) {
+    $app-&gt;msg("Hello, " . $name-&gt;content() . "!");
+});
 
 $app-&gt;run();   // real desktop event loop</code></pre>
 

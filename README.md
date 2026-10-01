@@ -117,7 +117,7 @@ On top of that, five libraries ship **embedded in the compiler binary** —
 
 | Library | Import | What you get |
 |---|---|---|
-| `ui` | `import "ui";` | native Win32 desktop GUI (windows, buttons, inputs, menus, timers) |
+| `ui` | `import "ui";` | themed native Win32 desktop GUI (windows, cards, forms, lists, meters, menus, timers) |
 | `websocket` | `import "websocket";` | RFC 6455 WebSocket server, browser-compatible |
 | `async` | `import "async";` | cooperative event loop: timers, socket watchers, TCP line servers, HTTP client |
 | `thread` | `import "thread";` | real OS threads: Go-style channels, mutexes, atomics, barriers, worker Pool |
@@ -216,7 +216,8 @@ src/hphpc/
   main.c         driver (run / build / emit / check)
   runtime/       hphp_rt.c (value system) + hphp_std.c (PHP functions)
 examples/        hello.hphp, demo.hphp (feature tour), thr_demo.hphp (threads),
-                 async_demo.hphp (event loop + HTTP), websocket_demo.hphp (chat)
+                 async_demo.hphp (event loop + HTTP), websocket_demo.hphp (chat),
+                 ui_demo.hphp (UI 2.0 showcase), ui_gallery.hphp (all themes)
 registry/        package registry server — see registry/README.md
 lib/             the five embedded libraries (ui, websocket, async, thread, mathx)
 tests/           positive/ (must run) + negative/ (must be rejected)

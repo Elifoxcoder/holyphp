@@ -98,28 +98,48 @@ $word = strtolower(trim(readline("Geheimes Wort: ")));
 $found = [];
 // ... loop: guess letters until mask_word shows everything</code></pre>
 
-  <h2>ui_demo.hphp — desktop GUI tour</h2>
-  <p>Every widget in one window: button with a click counter (by-ref closure capture!),
-  gated input, checkbox, list box, combo, progress + slider, groups, menus, timers:</p>
+  <h2>ui_demo.hphp &mdash; UI 2.0 showcase</h2>
+  <p>One theme for the whole window, then widgets that lay themselves out: the button
+  roles, a sign-in card, sliders, a theme picker, a list box, a live progress bar,
+  menus and a timer:</p>
 <pre><code class="hphp">import "ui";
 
-$app = new App("HolyPHP UI Demo", 640, 440);
-$counterLbl = $app-&gt;label("Clicked 0 times", 16, 12);
-$clicks = 0;
+$app = new App("HolyPHP UI 2.0", 880, 780);
+$app-&gt;theme("midnight")-&gt;pad(28)-&gt;gap(12)-&gt;radius(12);
 
-$greet = $app-&gt;button("Greet", 16, 40);
-$greet-&gt;onClick = function() use ($app, $name, $counterLbl, &amp;$clicks) {
-    $clicks = $clicks + 1;                        // real by-ref capture
-    $counterLbl-&gt;text("Clicked " . $clicks . " times");
-};
+$app-&gt;heading("HolyPHP UI 2.0");
+$app-&gt;sub("One theme for everything. Zero pixel maths.");
 
-$slider = $app-&gt;slider(430, 70, 180);
-$slider-&gt;onChange = function(int $v) use ($sliderLbl) {
-    $sliderLbl-&gt;text("slider: " . $v);            // live while dragging
-};
+$roles = $app-&gt;row();                    // a row lays its children out
+$roles-&gt;button("Subtle")-&gt;style("subtle");
+$roles-&gt;button("Primary", "primary");
+$roles-&gt;button("Ghost", "ghost");
+$roles-&gt;button("Danger", "danger");
 
-$app-&gt;every(2000, function() use ($status) {      // timer
-    $status-&gt;text("tick " . hrtime(true));
+$cols = $app-&gt;row();                    // two side-by-side columns
+$left = $cols-&gt;column(400);
+$right = $cols-&gt;column(400);
+
+$form = $left-&gt;card(400);
+$form-&gt;label("Sign in")-&gt;font(13, true);
+$email = $form-&gt;input("you@example.com");
+$form-&gt;label("Password");
+$pass = $form-&gt;input("........");
+$form-&gt;checkbox("Remember me", true);
+$actions = $form-&gt;row(370);
+$actions-&gt;button("Cancel", "ghost")-&gt;disable();
+$actions-&gt;button("Sign in", "primary", function() use ($app, $email) {
+    $app-&gt;msg("Welcome, {$email-&gt;content()}!");
+});
+
+$ticks = 0;                              // a timer drives the bar
+$bar = $right-&gt;card(400)-&gt;progress(0);
+$status = $right-&gt;sub("Idle");
+$app-&gt;every(400, function() use (&$ticks, $bar, $status) {
+    $ticks = $ticks + 1;
+    $pct = ($ticks * 5) % 100;
+    $bar-&gt;progress($pct);
+    $status-&gt;text("{$pct}% complete");
 });
 
 $app-&gt;run();</code></pre>
