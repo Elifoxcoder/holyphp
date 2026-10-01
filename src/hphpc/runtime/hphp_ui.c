@@ -1598,10 +1598,14 @@ static void draw_control_at(HWND hw, HDC dc, const RECT *where) {
     }
     int w = rc.right - rc.left, h = rc.bottom - rc.top;
     int font_pt = e->ov_font_pt > 0 ? e->ov_font_pt : g_theme.font_pt;
-    /* owner-draw controls are never erased for us; clear the item first so a
-     * repaint after a font or theme change cannot leave a ghost behind.
-     * Labels are exempt: they sit on whatever their container drew. */
-    if (where && e->kind != HPUI_LABEL) fill_rect(dc, rc, p.bg);
+    /* Owner-drawn and custom controls are never erased for us, so clear the
+     * frame first. Without this a slider leaves its old thumb behind on every
+     * repaint -- the track proc claims WM_ERASEBKGND and never paints one, so
+     * every drag draws another thumb on top of the last. Labels and inputs are
+     * exempt: a label sits on whatever its container drew, and an input erases
+     * its own rounded field in WM_ERASEBKGND. */
+    if (e->kind != HPUI_LABEL && e->kind != HPUI_INPUT)
+        fill_rect(dc, rc, p.bg);
 
     switch (e->kind) {
     case HPUI_LABEL: {
@@ -1617,11 +1621,14 @@ static void draw_control_at(HWND hw, HDC dc, const RECT *where) {
         wchar_t buf[512];
         GetWindowTextW(hw, buf, 512);
         RECT tr = rc;
-        int in = sc(e->role == UI_ROLE_LINK ? 0 : g_theme.pad);
-        if (e->role == UI_ROLE_LINK) {
-            tr.left = rc.left; tr.right = rc.right;
-        } else {
+        /* inset BOTH edges. Centring inside a box that is only inset on the
+         * left pushes the label right by half the inset, which reads as less
+         * padding on the right than on the left. */
+        if (e->role != UI_ROLE_LINK) {
+            int in = sc(g_theme.pad);
             tr.left += in;
+            tr.right -= in;
+            if (tr.right < tr.left) tr.right = tr.left;
         }
         draw_str(dc, tr, buf, p.fg, entry_font(e, p.bold),
                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);

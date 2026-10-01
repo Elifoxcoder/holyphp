@@ -83,8 +83,26 @@ ck($r->measure() == 70, "flow: row wraps and stacks");
 
 $c = new Flow("v", 0, 0, 200, 10);
 $c->take(100, 30, false);
-$c->bump(40);
-ck($c->measure() == 80, "flow: bump moves the cursor");
+$c->grow(40, 70);
+ck($c->measure() == 70, "flow: grow moves the cursor by the delta");
+$c->grow(0, 70);
+ck($c->measure() == 70, "flow: an unchanged child adds nothing");
+/* The gap belongs to take(), which already counted it when the child was
+ * placed. Charging it again on every growth event used to reserve a phantom
+ * gap per *descendant* of a nested container. */
+$cg = new Flow("v", 0, 0, 200, 10);
+$cg->take(200, 1, true);
+$cg->grow(30, 31); $cg->grow(30, 61); $cg->grow(30, 91);
+ck($cg->measure() == 91, "flow: three growths do not add three gaps");
+
+/* Children of a row share one line, so the line is as tall as the tallest of
+ * them -- adding the deltas instead stacked three columns into one huge one. */
+$rw = new Flow("h", 0, 0, 900, 10);
+$rw->take(270, 1, true);
+$rw->grow(399, 400);
+$rw->grow(199, 200);
+$rw->grow(129, 130);
+ck($rw->measure() == 400, "flow: a row is as tall as its tallest child");
 
 // ---- containers -------------------------------------------------------
 $col = $app->column(300);
@@ -170,6 +188,16 @@ ck(rw($bt1->h, 3) == rw($bt2->h, 3) && rw($bt2->h, 3) == rw($bt3->h, 3),
    "buttons in a column share a height");
 ck(rw($other->h, 0) > rw($bt1->h, 0) + rw($bt1->h, 2) - 4,
    "the second column sits beside the first");
+/* A container only tells its parent how tall it is when something is added to
+ * *it*. Without walking the chain back up, a row of columns stays one pixel
+ * tall in the app's flow and whatever comes next is drawn on top of it. */
+$after = $app->label("after the columns");
+$app->tick(20);
+$bottom = rw($bt3->h, 1) + rw($bt3->h, 3);
+ck(rw($after->h, 1) >= $bottom,
+   "a widget added after a row clears the whole row");
+ck(rw($after->h, 1) - $bottom < 200,
+   "and does not clear far more than the row needs");
 
 // A row is the other direction: same baseline, widths tracking the label.
 $rrow = $app->row();
@@ -179,6 +207,12 @@ $app->tick(20);
 ck(rw($r1->h, 1) == rw($r2->h, 1), "buttons in a row share a baseline");
 ck(rw($r2->h, 2) > rw($r1->h, 2) * 2,
    "a wide label gets a wider button, not the same padding");
+/* Text widgets fill a column so a later ->font() cannot clip them into
+ * "Butt..."; buttons must not, or a two-letter label gets a full-width box. */
+$cl = $c1->label("a label in a column");
+$app->tick(20);
+ck(rw($cl->h, 2) >= rw($bt1->h, 2) * 2, "a label in a column spans it");
+ck(rw($bt1->h, 2) < rw($cl->h, 2), "a button in a column still hugs its label");
 
 // ---- scrolling ---------------------------------------------------------
 $deep = $app->label("far below the fold");

@@ -6,6 +6,24 @@ param(
 )
 
 Add-Type -AssemblyName System.Drawing
+
+# Without this the host is DPI-unaware, GetWindowRect hands back virtualised
+# (logical) coordinates and PrintWindow renders a 1350x1200 window into a
+# 900x800 bitmap -- so the capture comes out scaled and every measurement
+# taken from it is wrong.
+try {
+    Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class DpiAwake {
+    [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+}
+"@
+    [void][DpiAwake]::SetProcessDpiAwarenessContext([IntPtr](-4))
+    if (-not $?) { [void][DpiAwake]::SetProcessDPIAware() }
+} catch { }
+
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;

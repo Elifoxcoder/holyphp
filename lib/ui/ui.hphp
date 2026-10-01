@@ -377,20 +377,28 @@ class Flow {
         return $this->v;
     }
 
-    /** A nested container grew by $d pixels: move the cursor along. */
-    pub function bump(int $d) {
-        if ($d <= 0) { return; }
+    /** A nested container changed size: $d is how much it grew, $hgt how tall
+     * it is now. */
+    pub function grow(int $d, int $hgt) {
         if ($this->dir == "h") {
-            /* the child sits on the line being built, so the LINE gets taller
-             * — zeroing it here would break wrapping for everything after */
-            $this->lineH += $d;
+            /* Children share a line, so the line is as tall as the TALLEST of
+             * them, not the sum. Adding the delta instead stacked three 400px
+             * columns into a 1200px line and threw the next section off the
+             * bottom of the window. Never shrink a line either. */
+            if ($hgt > $this->lineH) { $this->lineH = $hgt; }
             $this->v = $this->doneH + $this->lineH;
             return;
         }
-        if ($this->placed) { $this->v += $this->gap; }
+        if ($d == 0) { return; }
+        /* No gap here: take() already counted the space before this child when
+         * it was placed. Adding one again on every growth event used to add a
+         * phantom gap per *descendant*, so a column of seven labels reserved
+         * seventy pixels that nothing ever drew into. */
         $this->v += $d;
-        $this->placed = true;
     }
+
+    /** Backwards-compatible alias for the old delta-only call. */
+    pub function bump(int $d) { $this->grow($d, $this->lineH + $d); }
 }
 
 // ---------------------------------------------------------------------
@@ -604,6 +612,8 @@ class Widgets {
     pub Flow $flow = null;
     /** Flow a child Layout must grow when it resizes (null on the App). */
     pub Flow $growInto = null;
+    /** The container that created this one, so growth can travel upward. */
+    public Widgets $up = null;
     pub int $fontPt = 10;
     pub int $titlePt = 17;
     pub int $padX = 16;
@@ -634,6 +644,7 @@ class Widgets {
         $lay->defRole = $this->defRole;
         $lay->mutedColor = $this->mutedColor;
         $lay->growInto = $this->flow;
+        $lay->up = $this;
         return $lay;
     }
 
@@ -643,11 +654,13 @@ class Widgets {
     // ---- text --------------------------------------------------------
     pub function heading(string $text, int $x = -1, int $y = -1, int $w = 0): Label {
         $nat = ui_textw($text, $this->titlePt, true) + 14;
-        $box = $this->flow->take($nat, 36, false);
+        /* In a column a heading gets the full width. Sizing it to the exact
+         * text means any later ->font() clips it ("Buttons" -> "Butt..."). */
+        $box = $this->flow->take($nat, 36, $w <= 0 && $this->flow->dir == "v");
+        $bw = $w > 0 ? $w : ($box[2] < $nat ? ($nat < 120 ? 120 : $nat) : $box[2]);
         $l = new Label(ui_add($this->h, 3, $text,
                               $x >= 0 ? $x : $box[0],
-                              $y >= 0 ? $y : $box[1],
-                              $w > 0 ? $w : ($nat < 120 ? 120 : $nat), 36));
+                              $y >= 0 ? $y : $box[1], $bw, 36));
         ui_font($l->h, $this->titlePt, true);
         $this->_placed();
         return $l;
@@ -655,11 +668,11 @@ class Widgets {
 
     pub function sub(string $text, int $x = -1, int $y = -1, int $w = 0): Label {
         $nat = ui_textw($text, $this->fontPt) + 10;
-        $box = $this->flow->take($nat, 24, false);
+        $box = $this->flow->take($nat, 24, $w <= 0 && $this->flow->dir == "v");
+        $bw = $w > 0 ? $w : ($box[2] < $nat ? ($nat < 80 ? 80 : $nat) : $box[2]);
         $l = new Label(ui_add($this->h, 3, $text,
                               $x >= 0 ? $x : $box[0],
-                              $y >= 0 ? $y : $box[1],
-                              $w > 0 ? $w : ($nat < 80 ? 80 : $nat), 24));
+                              $y >= 0 ? $y : $box[1], $bw, 24));
         ui_fg($l->h, $this->mutedColor);
         $this->_placed();
         return $l;
@@ -671,11 +684,11 @@ class Widgets {
          * and larger after the fact, and ellipsis would eat the last letters */
         $nat = ui_textw($text, $this->fontPt) + 10;
         $hh = $hgt > 0 ? $hgt : $this->hLabel;
-        $box = $this->flow->take($nat, $hh, false);
+        $box = $this->flow->take($nat, $hh, $w <= 0 && $this->flow->dir == "v");
+        $bw = $w > 0 ? $w : ($box[2] < $nat ? ($nat < 40 ? 40 : $nat) : $box[2]);
         $l = new Label(ui_add($this->h, 3, $text,
                               $x >= 0 ? $x : $box[0],
-                              $y >= 0 ? $y : $box[1],
-                              $w > 0 ? $w : ($nat < 40 ? 40 : $nat), $hh));
+                              $y >= 0 ? $y : $box[1], $bw, $hh));
         $this->_placed();
         return $l;
     }
@@ -707,6 +720,8 @@ class Widgets {
         if (is_string($role)) { $r = $role; } else { $cb = $role; }
         $nat = ui_textw($text, $this->fontPt) + $this->padX * 2;
         $hh = $hgt > 0 ? $hgt : $this->hButton;
+        /* A button in a column hugs its label -- a full-width button for a
+         * two-letter label looks broken. Only the text widgets stretch. */
         $box = $this->flow->take($nat, $hh, false);
         $b = new Button(ui_add($this->h, 2, $text,
                                $x >= 0 ? $x : $box[0],
@@ -923,7 +938,13 @@ class Layout extends Widgets {
     pub function _report(int $hgt) {
         $d = $hgt - $this->lastH;
         $this->lastH = $hgt;
-        if ($d > 0 && $this->growInto != null) { $this->growInto->bump($d); }
+        if ($d <= 0 || $this->growInto == null) { return; }
+        $this->growInto->grow($d, $hgt);
+        /* Carry it further up. A column only bumps the row's flow, so without
+         * this the row itself never learns it got taller and whatever the app
+         * places after the row lands on top of it. Heights only ever grow, so
+         * the recursion stops as soon as an ancestor is unchanged. */
+        if ($this->up != null) { $this->up->_placed(); }
     }
 
     pub function _placed() {
