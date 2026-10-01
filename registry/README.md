@@ -49,7 +49,7 @@ The public registry currently serves:
 | `thread`    | 1.0.0   | OS threads, channels, Pool (`lib/thread/`)             |
 | `async`     | 1.0.0   | event loop + HTTP (`lib/async/`)                       |
 | `websocket` | 1.0.0   | RFC 6455 WebSocket server (`lib/websocket/`)           |
-| `ui`        | 1.0.0   | native Win32 UI toolkit (`lib/ui/`)                    |
+| `ui`        | 2.0.0   | themed Win32 UI toolkit (`lib/ui/`)                   |
 | `mathx`     | 1.0.0   | tiny math helpers                                      |
 
 (`thread` and `async` also ship embedded in the compiler, so `import "thread";`

@@ -1,0 +1,7 @@
+# .hpx is a packed archive with byte-length-prefixed entries ("<name> <len>\n").
+# Git's CRLF conversion changes byte counts and shifts every payload offset,
+# so a converted .hpx no longer parses. Treat archives as binary.
+*.hpx binary
+
+# Scripts that must keep LF line endings (bash/CI).
+*.sh text eol=lf
