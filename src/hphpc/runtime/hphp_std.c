@@ -2340,6 +2340,33 @@ hval hpbi_ui_repaint(hval h) {
 
     return hp_of_int(hpui_repaint((int64_t)hp_val_to_int(h)));
 }
+/* ui_textw(text, pt, bold) -- real measured width of a string in the font the
+ * ui library will draw it with. The library used to estimate this, which left
+ * buttons and inputs with visibly uneven padding. */
+/* ui_scroll(win, dy, to) -> [offset, contentHeight, viewportHeight] */
+hval hpbi_ui_scroll(hval win, hval dy, hval to) {
+    int64_t sy = 0, ch = 0;
+    int64_t view = hpui_window_scroll((int64_t)hp_val_to_int(win),
+                                      (int)hp_val_to_int(dy),
+                                      (int)hp_val_to_int(to), &sy, &ch);
+    if (view < 0) return hp_null;
+    const hval v[3] = { hp_of_int(sy), hp_of_int(ch), hp_of_int(view) };
+    return hp_of_arr(hp_arr_of(3, v));
+}
+/* ui_rect(handle) -> [x, y, w, h] in the parent's logical coordinates. */
+hval hpbi_ui_rect(hval h) {
+    int64_t x = 0, y = 0, w = 0, ht = 0;
+    if (hpui_ctrl_rect((int64_t)hp_val_to_int(h), &x, &y, &w, &ht) != 0)
+        return hp_null;
+    const hval v[4] = { hp_of_int(x), hp_of_int(y), hp_of_int(w), hp_of_int(ht) };
+    return hp_of_arr(hp_arr_of(4, v));
+}
+hval hpbi_ui_text_px(hval s, hval pt, hval bold) {
+    hstr *t = hp_val_to_str(s);
+    return hp_of_int(hpui_textw(t ? t->data : "",
+                                (int)hp_val_to_int(pt),
+                                hp_val_to_int(bold) != 0));
+}
 /* ui_theme(win, bg, surface, elevated, text, muted, accent, onAccent, border,
  *         radius, fontPt, titlePt, rowH, dark) */
 hval hpbi_ui_theme(hval win, hval bg, hval surface, hval elevated, hval text,

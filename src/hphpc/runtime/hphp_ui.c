@@ -61,6 +61,8 @@ static fn_DwmSetWindowAttribute p_DwmSetWindowAttribute;
 static int   g_dpi = 96;
 static bool  g_dpi_aware = true;
 
+static void ensure_common(void);   /* needed by hpui_textw, defined further down */
+
 static void load_optional_apis(void) {
     static bool done = false;
     if (done) return;
@@ -198,6 +200,10 @@ typedef struct UiEntry {
     int     n_items, cap_items;
     int     sel;                                 /* combo selection   */
     WNDPROC old_proc;                            /* subclassed wndproc*/
+    /* --- scrolling (window entry owns the offset) --- */
+    int     scroll_y, content_h;
+    /* --- logical, unscrolled geometry: scrolling replays these --- */
+    int     base_x, base_y, base_w, base_h;
 } UiEntry;
 
 static UiEntry *tbl = NULL;
@@ -291,6 +297,33 @@ static int entry_radius(UiEntry *e) {
 static HFONT entry_font(UiEntry *e, bool role_bold) {
     int pt = e->ov_font_pt > 0 ? e->ov_font_pt : g_theme.font_pt;
     return ui_font(pt, e->ov_font_bold || role_bold);
+}
+
+/* Real pixel width of a string in the font it will actually be drawn with.
+ * The library used to guess strlen * pt * 0.62, which is fine for average
+ * text but leaves "iiii" swimming in padding and "WWWW" clipped -- that is
+ * what made button padding look inconsistent from one label to the next. */
+int64_t hpui_textw(const char *text, int pt, bool bold) {
+    if (!text || !*text) return 0;
+    ensure_common();
+    wchar_t w[1024];
+    int n = MultiByteToWideChar(CP_UTF8, 0, text, -1, w, 1024);
+    if (n <= 1) return 0;
+    n -= 1; /* n counted the terminating NUL; the extent API wants the real
+             * length. GetTextExtentPoint32W rejects -1 outright (it fails with
+             * ERROR_INVALID_PARAMETER), which silently produced garbage
+             * widths and hence the lopsided button padding. */
+    int64_t guess = (int64_t)strlen(text) * (pt > 0 ? pt : 12) * 13 / 20;
+    HDC dc = CreateCompatibleDC(NULL);
+    if (!dc) return guess;
+    HFONT old = (HFONT)SelectObject(dc, ui_font(pt, bold));
+    SIZE sz;
+    sz.cx = sz.cy = 0;
+    BOOL ok = GetTextExtentPoint32W(dc, w, n, &sz);
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    if (!ok || sz.cx <= 0) return guess;
+    return (int64_t)sz.cx;
 }
 /* HolyPHP colours are 0xRRGGBB integers; Win32 COLORREF is 0x00BBGGRR.
  * Every colour entering the layer from the language goes through here, or
@@ -585,7 +618,17 @@ int64_t hpui_window_new(const char *title, int x, int y, int w, int h) {
         if (p_GetDpiForWindow) {
             UINT d = p_GetDpiForWindow(hw);
             if (d >= 72 && d <= 480) {
-                if (d != (UINT)g_dpi) { g_dpi = (int)d; fonts_drop(); }
+                if (d != (UINT)g_dpi) {
+                    g_dpi = (int)d;
+                    fonts_drop();
+                    /* The frame was sized from the *guessed* DPI. On a monitor
+                     * with a different scale that guess is wrong, and every
+                     * widget inside is scaled by the real one -- so the window
+                     * ends up too small, the flow wraps, and rows overlap.
+                     * Re-measure now that we know. */
+                    SetWindowPos(hw, NULL, 0, 0, sc(w), sc(h),
+                                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                }
             }
         }
         apply_dark_decor(hw);
@@ -638,6 +681,103 @@ bool hpui_window_alive(int64_t win) {
     return e && e->hwnd && IsWindow(e->hwnd);
 }
 
+/* ================= brush cache ================= */
+/* One solid brush per colour. WM_CTLCOLOR* is called on every repaint and
+ * allocating a GDI object each time leaks handles fast. */
+static HBRUSH brush_for(COLORREF c) {
+    static HBRUSH b[16];
+    static COLORREF bc[16];
+    static int bn = 0;
+    for (int i = 0; i < bn; i++)
+        if (bc[i] == c) return b[i];
+    if (bn == 16) { DeleteObject(b[0]); memmove(b, b + 1, 15 * sizeof(HBRUSH));
+                    memmove(bc, bc + 1, 15 * sizeof(COLORREF)); bn = 15; }
+    b[bn] = CreateSolidBrush(c);
+    bc[bn] = c;
+    return b[bn++];
+}
+
+/* Clip an edit to the rounded field shape so it can paint an opaque
+ * background without losing the rounded corners. */
+static void input_region(UiEntry *e) {
+    if (!e->hwnd || e->kind != HPUI_INPUT) return;
+    RECT rc;
+    GetClientRect(e->hwnd, &rc);
+    int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) return;
+    UiPaint p;
+    resolve_paint(e, &p);
+    int rr = (p.radius > 0 ? p.radius : 6) * 2;
+    if (rr > h) rr = h;
+    HRGN r = CreateRoundRectRgn(0, 0, w + 1, h + 1, rr, rr);
+    SetWindowRgn(e->hwnd, r, TRUE);   /* system owns r on success */
+}
+
+/* ================= scrolling =================
+ * A window taller than its content is fine; content taller than the window
+ * used to simply run off the bottom with no way to reach it. Every control
+ * remembers its unscrolled logical box, so scrolling is just replaying those
+ * boxes at an offset -- no re-layout, no second window. */
+static void scroll_place(UiEntry *win) {
+    if (!win->hwnd) return;
+    RECT rc;
+    GetClientRect(win->hwnd, &rc);
+    int view = rc.bottom - rc.top;
+    int max = win->content_h - view;
+    if (max < 0) max = 0;
+    if (win->scroll_y > max) win->scroll_y = max;
+    if (win->scroll_y < 0) win->scroll_y = 0;
+    for (size_t i = 0; i < tbl_len; i++) {
+        UiEntry *c = &tbl[i];
+        if (!c->hwnd || c->hwnd == win->hwnd) continue;
+        if (GetParent(c->hwnd) != win->hwnd) continue;
+        SetWindowPos(c->hwnd, NULL, sc(c->base_x), sc(c->base_y - win->scroll_y),
+                     sc(c->base_w), sc(c->base_h),
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+static void scroll_refresh(UiEntry *win) {
+    if (!win->hwnd) return;
+    int max = 0;
+    for (size_t i = 0; i < tbl_len; i++) {
+        UiEntry *c = &tbl[i];
+        if (!c->hwnd || c->hwnd == win->hwnd) continue;
+        if (GetParent(c->hwnd) != win->hwnd) continue;
+        int b = c->base_y + c->base_h;
+        if (b > max) max = b;
+    }
+    win->content_h = max;
+    scroll_place(win);
+}
+
+static void scroll_by(UiEntry *win, int dy) {
+    if (!win->hwnd) return;
+    int before = win->scroll_y;
+    win->scroll_y += dy;
+    scroll_place(win);
+    if (win->scroll_y != before)
+        InvalidateRect(win->hwnd, NULL, FALSE);
+}
+
+/* Scroll state, for scripts that want to drive it themselves and for the
+ * headless layout test. out_scroll receives the clamped offset, out_content
+ * the full content height; either may be NULL. */
+int64_t hpui_window_scroll(int64_t h, int dy, int to, int64_t *out_scroll,
+                           int64_t *out_content) {
+    UiEntry *win = tbl_find(h);
+    if (!win || win->kind != HPUI_WINDOW) return -1;
+    if (to >= 0) win->scroll_y = to;
+    if (dy) scroll_by(win, dy);
+    if (!win->hwnd) return -1;
+    scroll_place(win);
+    RECT rc;
+    GetClientRect(win->hwnd, &rc);
+    if (out_scroll) *out_scroll = win->scroll_y;
+    if (out_content) *out_content = win->content_h;
+    return (int64_t)(rc.bottom - rc.top);
+}
+
 /* ================= hover / state subclass for native controls ================= */
 /* Buttons, checkboxes and edits are real Win32 controls, but they look like
  * Win95 without help, so we subclass them to track hover/press/focus and to
@@ -669,10 +809,23 @@ static LRESULT CALLBACK hover_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSELEAVE: hover_leave(e); break;
     case WM_LBUTTONDOWN:
         e->pressed = true;
+        /* An edit MUST still see the click: swallowing it left the control
+         * with no caret, so typing looked dead and Ctrl+A had nothing to
+         * select. Track the state, then let the real control have it. */
+        if (e->kind == HPUI_INPUT) {
+            LRESULT r = CallWindowProcW(e->old_proc, hw, msg, wp, lp);
+            InvalidateRect(hw, NULL, TRUE);
+            return r;
+        }
         InvalidateRect(hw, NULL, TRUE);
         break;
     case WM_LBUTTONUP:
         e->pressed = false;
+        if (e->kind == HPUI_INPUT) {
+            LRESULT r = CallWindowProcW(e->old_proc, hw, msg, wp, lp);
+            InvalidateRect(hw, NULL, TRUE);
+            return r;
+        }
         InvalidateRect(hw, NULL, TRUE);
         if (e->kind == HPUI_CHECKBOX) {
             e->checked_flag = !e->checked_flag;
@@ -685,19 +838,36 @@ static LRESULT CALLBACK hover_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     case WM_SETFOCUS:  e->focused = true;  InvalidateRect(hw, NULL, TRUE); break;
     case WM_KILLFOCUS: e->focused = false; InvalidateRect(hw, NULL, TRUE); break;
+    case WM_GETDLGCODE:
+        /* the caret has to move with the arrow keys even though this is not a
+         * dialog -- without DLGC_WANTARROWS the parent eats them */
+        if (e->kind == HPUI_INPUT)
+            return (LRESULT)(DefWindowProcW(hw, msg, wp, lp) | DLGC_WANTARROWS);
+        break;
+    case WM_KEYDOWN:
+        /* Ctrl+A. The stock edit only honours it on some builds, and a
+         * subclassed control is exactly the case where it goes missing, so
+         * do it here rather than leave select-all silently dead. */
+        if (e->kind == HPUI_INPUT && (int)wp == 'A' &&
+            (GetKeyState(VK_CONTROL) & 0x8000) &&
+            !(GetKeyState(VK_SHIFT) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000)) {
+            SendMessageW(hw, EM_SETSEL, 0, -1);
+            return 0;
+        }
+        break;
     case WM_ENABLE:
         InvalidateRect(hw, NULL, TRUE);
         break;
     case WM_ERASEBKGND:
         /* edits paint their own rounded field here; the text that follows is
-         * drawn transparently on top, so the field shows through */
+         * drawn on top of it (opaquely, so nothing ghosts) */
         if (e->kind == HPUI_INPUT) {
             UiPaint p;
             resolve_paint(e, &p);
             RECT rc;
             GetClientRect(hw, &rc);
+            input_region(e);
             fill_round((HDC)wp, rc, p.radius, p.bg, p.border, e->focused ? 2 : 1);
-            SetBkMode((HDC)wp, TRANSPARENT);
             return 1;
         }
         break;
@@ -790,6 +960,11 @@ int64_t hpui_ctrl_new(int64_t kind, int64_t parent, const char *text,
     if (!hw) return -1;
     tbl_add(id, (int)kind, hw);
     UiEntry *e = tbl_find(id);
+    e->base_x = x; e->base_y = y; e->base_w = w; e->base_h = h;
+    /* honour whatever the window has already scrolled to */
+    if (p && p->scroll_y != 0)
+        SetWindowPos(hw, NULL, sx, sc(y - p->scroll_y), sw, sh,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
     SetWindowLongPtrW(hw, GWLP_USERDATA, (LONG_PTR)id);
     fonts_apply(hw);
     if (kind == HPUI_BUTTON || kind == HPUI_CHECKBOX || kind == HPUI_INPUT)
@@ -802,6 +977,8 @@ int64_t hpui_ctrl_new(int64_t kind, int64_t parent, const char *text,
      * so an owner-drawn control would find no entry and draw nothing. Ask it
      * to paint again now that it is fully registered. */
     InvalidateRect(hw, NULL, FALSE);
+    /* a new child changes how far the window has to scroll */
+    if (p && p->kind == HPUI_WINDOW) scroll_refresh(p);
     return id;
 }
 
@@ -854,7 +1031,34 @@ int64_t hpui_ctrl_enable(int64_t h, bool enabled) {
 int64_t hpui_ctrl_move(int64_t h, int x, int y, int w, int hgt) {
     UiEntry *e = tbl_find(h);
     if (!e || !e->hwnd) return -1;
+    e->base_x = x; e->base_y = y; e->base_w = w; e->base_h = hgt;
+    /* the card a Layout resizes may now be taller than the window */
+    HWND par = GetParent(e->hwnd);
+    if (par) {
+        UiEntry *pe = entry_of(par);
+        if (pe) scroll_refresh(pe);
+    }
     MoveWindow(e->hwnd, sc(x), sc(y), sc(w), sc(hgt), TRUE);
+    return 0;
+}
+
+/* Where a control is actually painted, in window coordinates: its own
+ * rectangle plus every ancestor's offset, minus whatever the window has
+ * scrolled. Two siblings that report intersecting rects really are drawn on
+ * top of each other, and a control that scrolled off the fold reports a
+ * negative y -- which is exactly what a headless layout test needs. */
+int64_t hpui_ctrl_rect(int64_t h, int64_t *x, int64_t *y, int64_t *w, int64_t *ht) {
+    UiEntry *e = tbl_find(h);
+    if (!e) return -1;
+    int64_t ax = 0, ay = 0;
+    for (UiEntry *c = e; c; ) {
+        ax += c->base_x;
+        ay += c->base_y;
+        UiEntry *par = (c->hwnd && GetParent(c->hwnd)) ? entry_of(GetParent(c->hwnd)) : NULL;
+        if (par) ay -= par->scroll_y;
+        c = par;
+    }
+    *x = ax; *y = ay; *w = e->base_w; *ht = e->base_h;
     return 0;
 }
 
@@ -1837,12 +2041,55 @@ static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         int vk = (int)wp;
         if (vk == VK_ESCAPE && we && we->kind == HPUI_WINDOW)
             DestroyWindow(hwnd);
-        if (we && we->cb_key.tag == HV_CLO && we->cb_key.u.c) {
-            wchar_t ch = (wchar_t)wp;
-            if (ch < 32 || ch > 126) ch = 0;
-            fire(we, &we->cb_key, vk, (int64_t)ch);
+        /* PageUp/Down and Ctrl+Home/End scroll a window whose content does not
+         * fit. The arrow keys are deliberately left alone: a script that binds
+         * them through onKey() (the gallery cycles themes with Left/Right)
+         * must keep getting them. */
+        if (we && we->kind == HPUI_WINDOW) {
+            RECT rc; GetClientRect(hwnd, &rc);
+            int page = rc.bottom - rc.top - sc(40);
+            if (page < 1) page = 1;
+            if (vk == VK_PRIOR) scroll_by(we, -page);
+            else if (vk == VK_NEXT) scroll_by(we, page);
+            else if (vk == VK_HOME && GetKeyState(VK_CONTROL) < 0) scroll_by(we, -we->content_h);
+            else if (vk == VK_END && GetKeyState(VK_CONTROL) < 0) scroll_by(we, we->content_h);
         }
+        if (we && we->cb_key.tag == HV_CLO && we->cb_key.u.c) {
+            /* WPARAM is the *virtual key*, not the character. Casting it to
+             * wchar gave '[' as VK_OEM_4 (0xDB), so every arrow-key and
+             * punctuation binding in a script silently never fired.
+             * Translate through the keyboard layout instead. */
+            BYTE state[256];
+            GetKeyboardState(state);
+            wchar_t buf[8];
+            int n = ToUnicode(vk, (int)(lp >> 16), state, buf, 8, 0);
+            int64_t ch = (n > 0) ? (int64_t)buf[0] : 0;
+            if (ch == VK_RETURN) ch = '\r';
+            if (ch == VK_BACK)   ch = '\b';
+            fire(we, &we->cb_key, vk, ch);
+        }
+        if (!we || we->cb_key.tag != HV_CLO || !we->cb_key.u.c)
+            return DefWindowProcW(hwnd, msg, wp, lp);
         return 0;
+    }
+
+    /* Wheel scrolling: content taller than the window used to be unreachable. */
+    case WM_MOUSEWHEEL: {
+        UiEntry *we = entry_of(hwnd);
+        if (!we || we->kind != HPUI_WINDOW) break;
+        int delta = GET_WHEEL_DELTA_WPARAM(wp);
+        int lines = 3;
+        SystemParametersInfoA(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+        if (lines <= 0) lines = 3;
+        int step = (abs(delta) / WHEEL_DELTA) * lines * sc(g_theme.row_h);
+        scroll_by(we, delta > 0 ? step : -step);
+        return 0;
+    }
+
+    case WM_SIZE: {
+        UiEntry *we = entry_of(hwnd);
+        if (we && we->kind == HPUI_WINDOW) scroll_place(we);
+        break;
     }
 
     case WM_COMMAND: {
@@ -1902,6 +2149,16 @@ static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (se) resolve_paint(se, &p);
         else { p.fg = g_theme.text; p.bg = g_theme.bg; p.border = g_theme.border; p.radius = 0; }
         SetTextColor((HDC)wp, p.fg);
+        /* An edit must own its background. With a NULL_BRUSH it never clears
+         * the pixels it stops covering -- scrolling the caret or shrinking a
+         * selection smears the old glyphs into the new text. The rounded field
+         * is kept by clipping the control to a rounded region (input_region),
+         * so an opaque brush no longer squares off the corners. */
+        if (se && se->kind == HPUI_INPUT) {
+            SetBkColor((HDC)wp, p.bg);
+            SetBkMode((HDC)wp, OPAQUE);
+            return (LRESULT)brush_for(p.bg);
+        }
         SetBkMode((HDC)wp, TRANSPARENT);
         return (LRESULT)GetStockObject(NULL_BRUSH);
     }
@@ -1983,6 +2240,9 @@ int64_t hpui_window_title(int64_t w, const char *t) { (void)w; (void)t; return -
 int64_t hpui_window_size(int64_t w, int a, int b) { (void)w; (void)a; (void)b; return -1; }
 int64_t hpui_window_pos(int64_t w, int a, int b) { (void)w; (void)a; (void)b; return -1; }
 int64_t hpui_window_close(int64_t w) { (void)w; return -1; }
+int64_t hpui_window_scroll(int64_t w, int a, int b, int64_t *s, int64_t *c) {
+    (void)w; (void)a; (void)b; if (s) *s = 0; if (c) *c = 0; return -1;
+}
 bool hpui_window_alive(int64_t w) { (void)w; return false; }
 int64_t hpui_ctrl_new(int64_t k, int64_t p, const char *t, int x, int y, int w, int h) {
     (void)k; (void)p; (void)t; (void)x; (void)y; (void)w; (void)h; return -1;
@@ -1993,6 +2253,9 @@ int64_t hpui_ctrl_show(int64_t h, bool v) { (void)h; (void)v; return -1; }
 int64_t hpui_ctrl_enable(int64_t h, bool v) { (void)h; (void)v; return -1; }
 int64_t hpui_ctrl_move(int64_t h, int a, int b, int c, int d) {
     (void)h; (void)a; (void)b; (void)c; (void)d; return -1;
+}
+int64_t hpui_ctrl_rect(int64_t h, int64_t *x, int64_t *y, int64_t *w, int64_t *ht) {
+    (void)h; *x = *y = *w = *ht = 0; return -1;
 }
 int64_t hpui_ctrl_focus(int64_t h) { (void)h; return -1; }
 int64_t hpui_list_add(int64_t h, const char *i) { (void)h; (void)i; return -1; }

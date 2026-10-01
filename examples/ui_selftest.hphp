@@ -125,7 +125,76 @@ ck(ui_rgb(0x4C, 0x7D, 0xFF) == 0x4C7DFF, "ui_rgb packs channels");
 ck(ui_channel(0x4C7DFF, 0) == 0x4C, "ui_channel red");
 ck(ui_channel(0x4C7DFF, 1) == 0x7D, "ui_channel green");
 ck(ui_channel(0x4C7DFF, 2) == 0xFF, "ui_channel blue");
-ck(ui_textw("hello", 10) > 0, "ui_textw estimates a width");
+ck(ui_textw("hello", 10) > 0, "ui_textw measures a width");
+
+// ---- text measurement -------------------------------------------------
+// These are the assertions that catch the "headings overlap each other and
+// the button padding is ragged" class of bug: text used to be estimated as
+// strlen * pt * 0.62, which is far too narrow for anything but lowercase.
+ck(ui_textw("W", 12) > ui_textw("i", 12) * 2, "W measures wider than i");
+ck(ui_textw("WWWW", 12) > ui_textw("iiii", 12), "wide words measure wider");
+ck(ui_textw("hello", 12, true) > ui_textw("hello", 12), "bold measures wider");
+ck(ui_textw("", 12) == 0, "empty string measures zero");
+
+// ---- layout ------------------------------------------------------------
+// Build the same three-column shape the gallery uses and check the geometry
+// the engine actually handed out.
+$cols = $app->row();
+$c1 = $cols->column(190);
+$c2 = $cols->column(190);
+$hd = $c1->heading("A heading");
+$sb = $c1->sub("a quiet subtitle");
+$bt1 = $c1->button("Subtle");
+$bt2 = $c1->button("Primary", "primary");
+$bt3 = $c1->button("Ghost", "ghost");
+$other = $c2->label("right column");
+$app->tick(20);
+
+function overlaps(int $a, int $b): bool {
+    $ra = ui_rect($a); $rb = ui_rect($b);
+    if ($ra == null || $rb == null) { return false; }
+    return ($ra[0] < $rb[0] + $rb[2]) && ($rb[0] < $ra[0] + $ra[2]) &&
+           ($ra[1] < $rb[1] + $rb[3]) && ($rb[1] < $ra[1] + $ra[3]);
+}
+function rw(int $h, int $i): int { $r = ui_rect($h); return $r[$i]; }
+
+ck(rw($hd->h, 2) > ui_textw("A heading", 12, true) + 20,
+   "heading is as wide as its measured text");
+ck(!overlaps($hd->h, $sb->h), "heading does not overlap the sub");
+ck(!overlaps($sb->h, $bt1->h), "sub does not overlap the buttons");
+ck(!overlaps($bt1->h, $bt2->h) && !overlaps($bt2->h, $bt3->h),
+   "buttons in a column do not overlap");
+ck(rw($bt1->h, 0) == rw($bt2->h, 0) && rw($bt2->h, 0) == rw($bt3->h, 0),
+   "buttons in a column share a left edge");
+ck(rw($bt1->h, 3) == rw($bt2->h, 3) && rw($bt2->h, 3) == rw($bt3->h, 3),
+   "buttons in a column share a height");
+ck(rw($other->h, 0) > rw($bt1->h, 0) + rw($bt1->h, 2) - 4,
+   "the second column sits beside the first");
+
+// A row is the other direction: same baseline, widths tracking the label.
+$rrow = $app->row();
+$r1 = $rrow->button("i");
+$r2 = $rrow->button("WWWWWWWWWW");
+$app->tick(20);
+ck(rw($r1->h, 1) == rw($r2->h, 1), "buttons in a row share a baseline");
+ck(rw($r2->h, 2) > rw($r1->h, 2) * 2,
+   "a wide label gets a wider button, not the same padding");
+
+// ---- scrolling ---------------------------------------------------------
+$deep = $app->label("far below the fold");
+$app->tick(20);
+$sc = $app->scroll();
+ck($sc[1] > $sc[2], "content is taller than the viewport");
+$y0 = rw($deep->h, 1);
+$app->scrollBy(120);
+ck($app->scrollOffset() > 0, "scrollBy moves the offset");
+ck(rw($deep->h, 1) == $y0 - 120, "scrolling moves the child by the same amount");
+$app->scrollTo(0);
+ck($app->scrollOffset() == 0, "scrollTo(0) returns to the top");
+$app->scrollTo(100000);
+ck($app->scrollOffset() == $sc[1] - $sc[2],
+   "scrolling past the end clamps to the bottom");
+$app->scrollTo(0);
 
 // ---- event pump -------------------------------------------------------
 $clicks = 0;

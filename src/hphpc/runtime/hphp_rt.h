@@ -628,6 +628,8 @@ int64_t hpui_slider_get(int64_t h, int64_t *out);
 int64_t hpui_slider_set(int64_t h, int64_t pos);
 int64_t hpui_ctrl_checked(int64_t h);                    /* menu item check */
 int64_t hpui_ctrl_enabled(int64_t h);                   /* 1 = accepts input */
+int64_t hpui_ctrl_rect(int64_t h, int64_t *x, int64_t *y, int64_t *w, int64_t *ht);
+int64_t hpui_window_scroll(int64_t w, int dy, int to, int64_t *scroll, int64_t *content);
 int64_t hpui_menu_new(int64_t win, const char *label);
 int64_t hpui_menu_item(int64_t menu, const char *label, int64_t id);
 int64_t hpui_menu_sep(int64_t menu);
@@ -639,6 +641,7 @@ int64_t hpui_ctrl_style(int64_t h, int64_t role);
 int64_t hpui_ctrl_font(int64_t h, int64_t size, bool bold);
 int64_t hpui_range_set(int64_t h, int64_t lo, int64_t hi);
 int64_t hpui_repaint(int64_t h);
+int64_t hpui_textw(const char *text, int pt, bool bold);
 int64_t hpui_theme_set(int64_t win, const int64_t *v, int n);
 int64_t hpui_picture_load(int64_t h, const char *path);
 
@@ -708,8 +711,11 @@ hval hpbi_ui_radius(hval h, hval r);
 hval hpbi_ui_range(hval h, hval lo, hval hi);
 hval hpbi_ui_repaint(hval h);
 hval hpbi_ui_enabled(hval h);
+hval hpbi_ui_rect(hval h);
+hval hpbi_ui_scroll(hval win, hval dy, hval to);
 hval hpbi_ui_count(hval h);
 hval hpbi_ui_progress_get(hval h);
+hval hpbi_ui_text_px(hval s, hval pt, hval bold);
 hval hpbi_ui_theme(hval win, hval bg, hval surface, hval elevated, hval text,
                    hval muted, hval accent, hval onAccent, hval border,
                    hval radius, hval fontPt, hval titlePt, hval rowH, hval dark);

@@ -142,6 +142,7 @@ $sec-&gt;progress(35);</code></pre>
 <span class="t">UIObject</span> show() / hide()  <span class="ret">bool</span> enabled() / disable()
 <span class="t">UIObject</span> move(<span class="t">int</span> $x, <span class="t">int</span> $y, <span class="t">int</span> $w = 0, <span class="t">int</span> $h = 0)
 <span class="t">UIObject</span> size(<span class="t">int</span> $w, <span class="t">int</span> $h)  <span class="t">UIObject</span> focus()
+<span class="ret">array</span>  rect()  <span class="tok-com">// [x, y, w, h] as painted, in window coordinates</span>
 <span class="t">UIObject</span> font(<span class="t">int</span> $pt, <span class="t">bool</span> $bold = false)
 <span class="t">UIObject</span> color(<span class="t">int</span> $rgb) / bg(<span class="t">int</span> $rgb) / accent(<span class="t">int</span> $rgb)
 <span class="t">UIObject</span> radius(<span class="t">int</span> $px)  <span class="t">UIObject</span> style(<span class="t">string</span> $role)
@@ -157,6 +158,13 @@ $sec-&gt;progress(35);</code></pre>
 <span class="t">void</span>   every(<span class="t">int</span> $ms, <span class="t">fn</span>)
 <span class="t">void</span>   onClose(<span class="t">fn</span>) <span class="tok-com">// return false to veto</span>
 <span class="t">void</span>   onKey(<span class="t">fn</span>)   <span class="tok-com">// fn(int $vk, int $char)</span></div>
+  <h3>Scrolling</h3>
+  <p>A window whose content is taller than its client area scrolls with the
+  mouse wheel, <kbd>PageUp</kbd>/<kbd>PageDown</kbd> and
+  <kbd>Ctrl</kbd>+<kbd>Home</kbd>/<kbd>End</kbd>. A script can also drive it:</p>
+  <div class="api-sig"><span class="ret">array</span>  scroll()  <span class="tok-com">// [offset, contentHeight, viewportHeight]</span>
+<span class="t">App</span>      scrollBy(<span class="t">int</span> $dy) / scrollTo(<span class="t">int</span> $y)
+<span class="t">int</span>     scrollOffset() / contentHeight()</div>
   <div class="note"><b>Tip:</b> <code>run()</code> blocks like a normal desktop app
   (best with <code>hphp build</code>). <code>tick()</code> returns every ~15 ms so your
   script keeps control and console output stays alive (best with <code>hphp run</code>).</div>

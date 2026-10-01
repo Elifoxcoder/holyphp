@@ -31,7 +31,10 @@ $roles->link("link");
 $app->divider();
 
 // ---- three columns of widgets -----------------------------------------
-$left = $app->column(270);
+// The columns have to share a row: a column added straight to the app joins
+// the app's vertical flow, so three of them just stack down the page.
+$cols = $app->row();
+$left = $cols->column(270);
 $left->label("Text")->font(13, true);
 $left->heading("A heading");
 $left->sub("and a quiet subtitle");
@@ -40,7 +43,7 @@ $left->input("editable text");
 $left->checkbox("a checkbox", true);
 $left->checkbox("an unchecked one");
 
-$mid = $app->section("Collections", 270);
+$mid = $cols->section("Collections", 270);
 $mid->list(["alpha", "beta", "gamma", "delta"]);
 $mid->combo(["one", "two", "three"]);
 $mid->divider();
@@ -48,7 +51,7 @@ $mid->label("A card inside a section");
 $inner = $mid->card(230);
 $inner->sub("nested containers inherit every metric from the parent");
 
-$right = $app->section("Meters", 270);
+$right = $cols->section("Meters", 270);
 $right->sub("progress");
 $right->progress(35);
 $right->progress(80);

@@ -183,10 +183,12 @@ function ui_channel(int $rgb, int $i): int {
     return $rgb & 255;
 }
 
-/** Rough text width in pixels, used by the auto-layout to size widgets. */
-function ui_textw(string $s, int $pt): int {
+/** Text width in pixels, measured in the font it will be drawn with. */
+function ui_textw(string $s, int $pt, bool $bold = false): int {
     if ($s == "") { return 0; }
-    return intval(strlen($s) * $pt * 0.62) + 4;
+    /* measured in the real font, not estimated: an average-width guess left
+     * "iiii" swimming in padding and clipped "WWWW" */
+    return ui_text_px($s, $pt, $bold);
 }
 
 /** Read $k out of a theme map, falling back to $def. */
@@ -435,6 +437,15 @@ class UIObject {
     }
     pub function focus(): UIObject { ui_focus($this->h); return $this; }
 
+    /** Laid-out rectangle inside the parent: [x, y, w, h]. These are the
+     * numbers the layout engine used, so two siblings reporting intersecting
+     * rects really are painted on top of one another. */
+    pub function rect(): array { return ui_rect($this->h); }
+    pub function left(): int { $r = $this->rect(); return $r[0]; }
+    pub function top(): int { $r = $this->rect(); return $r[1]; }
+    pub function width(): int { $r = $this->rect(); return $r[2]; }
+    pub function height(): int { $r = $this->rect(); return $r[3]; }
+
     // ---- style -------------------------------------------------------
     pub function font(int $pt, bool $bold = false): UIObject {
         ui_font($this->h, $pt, $bold);
@@ -631,7 +642,7 @@ class Widgets {
 
     // ---- text --------------------------------------------------------
     pub function heading(string $text, int $x = -1, int $y = -1, int $w = 0): Label {
-        $nat = ui_textw($text, $this->titlePt) + 14;
+        $nat = ui_textw($text, $this->titlePt, true) + 14;
         $box = $this->flow->take($nat, 36, false);
         $l = new Label(ui_add($this->h, 3, $text,
                               $x >= 0 ? $x : $box[0],
@@ -1147,6 +1158,22 @@ class App extends Widgets {
     }
     pub function clip(string $text) { ui_clip_set($text); }
     pub function paste(): string { return ui_clip_get(); }
+
+    // ---- scrolling ----------------------------------------------------
+    /** Scroll state of the window: [offset, contentHeight, viewportHeight].
+     * The wheel, PageUp/PageDown and Ctrl+Home/End all move this. */
+    pub function scroll(): array { return ui_scroll($this->h, 0, -1); }
+    /** Scroll by $dy pixels, or to an absolute offset when $to >= 0. */
+    pub function scrollBy(int $dy): App {
+        ui_scroll($this->h, $dy, -1);
+        return $this;
+    }
+    pub function scrollTo(int $y): App {
+        ui_scroll($this->h, 0, $y);
+        return $this;
+    }
+    pub function contentHeight(): int { $s = $this->scroll(); return $s[1]; }
+    pub function scrollOffset(): int { $s = $this->scroll(); return $s[0]; }
 
     // ---- run ---------------------------------------------------------
     /** Blocking desktop loop. Best with `hphp build`. */
