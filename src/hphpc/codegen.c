@@ -2368,6 +2368,17 @@ static void emit_to_type(Codegen *g, Expr *val, const Type *want, Buf *dst) {
         to_hval(g, val, dst);
         return;
     }
+    /* `pub Widget $w = null;` is a NULL C pointer (emit_class writes the
+     * declaration that way), so `$o->w = null;` has to write a NULL C
+     * pointer too. Falling through to emit_expr would box the literal as
+     * `hp_null`, an hval, and C rejects assigning it to `struct Widget *`. */
+    if (val && val->kind == EX_NULL && want &&
+        (want->kind == TY_CLASS || want->kind == TY_STRUCT ||
+         want->kind == TY_OWN  || want->kind == TY_RC ||
+         want->kind == TY_INTERFACE || want->kind == TY_FN)) {
+        buf_puts(dst, "0");
+        return;
+    }
     emit_expr(g, val, dst);
 }
 

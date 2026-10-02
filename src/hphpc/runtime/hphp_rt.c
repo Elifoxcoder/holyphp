@@ -467,6 +467,13 @@ bool hp_val_to_bool(hval v) {
     case HV_BOOL: return v.u.b;
     case HV_STR: return v.u.s && v.u.s->len > 0;
     case HV_ARR: return v.u.a && v.u.a->len > 0;
+    /* A property declared with a class type but defaulted to null --
+       `public Button $tab = null;` -- is an object slot holding a NULL
+       pointer, not a real object. Reading it as unconditionally truthy
+       made every `if ($o->f == null)` guard lie, so callers went on to
+       dereference the null. An absent object is falsy, as in PHP. */
+    case HV_OBJ:
+    case HV_CLO: return v.u.p != NULL;
     default: return true;
     }
 }

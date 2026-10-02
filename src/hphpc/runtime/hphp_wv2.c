@@ -33,6 +33,7 @@
 #include <wchar.h>
 
 #define WV2_CALL __stdcall
+
 #define WV2_GUID(a, b, c, d0, d1, d2, d3, d4, d5, d6, d7) \
     { a, b, c, { d0, d1, d2, d3, d4, d5, d6, d7 } }
 
@@ -44,111 +45,54 @@ static const GUID IID_WV2NavStartingH =
 static const GUID IID_WV2NavDoneH =
     WV2_GUID(0xd33a35bf, 0x1c49, 0x4f98, 0x93, 0xab, 0x00, 0x6e, 0x05, 0x33, 0xfe, 0x1c);
 static const GUID IID_WV2NewWindowH =
-    WV2_GUID(0xd4c185fe, 0xc81c, 0x4989, 0x97, 0xaf, 0x2d, 0x3f, 0xa7, 0xeb, 0x56, 0x51);
+    WV2_GUID(0xd4c185fe, 0xc81c, 0x4989, 0x97, 0xaf, 0x2d, 0x3f, 0xa7, 0xab, 0x56, 0x51);
 static const GUID IID_WV2WebMsgH =
     WV2_GUID(0x57213f19, 0x00e6, 0x49fa, 0x8e, 0x07, 0x89, 0x8e, 0xa0, 0x1e, 0xcb, 0xd2);
 static const GUID IID_WV2EnvDoneH =
     WV2_GUID(0x4e8a3389, 0xc9d8, 0x4bd2, 0xb6, 0xb5, 0x12, 0x4f, 0xee, 0x6c, 0xc1, 0x4d);
 static const GUID IID_WV2CtlDoneH =
-    WV2_GUID(0x6c4819f3, 0xc9b7, 0x4260, 0x81, 0x27, 0xc9, 0xf5, 0xbd, 0xe7, 0xb8, 0x68);
+    WV2_GUID(0x6c4819f3, 0xc9b7, 0x4260, 0x81, 0x27, 0xc9, 0xf5, 0xbd, 0xe7, 0xf6, 0x8c);/* ---- vtables -------------------------------------------------------
+ * Every WebView2 interface derives from IUnknown, so slots 0, 1 and 2 are
+ * QueryInterface/AddRef/Release and the FIRST declared method lands on
+ * slot 3. That offset is the single easiest thing to get wrong by hand,
+ * so instead of writing out structs with unnamed filler members (where
+ * one miscounted `void *` silently shifts every later call) we keep a
+ * plain array of slots and address the ones we want by name.
+ *
+ * The numbers are the slot positions in the SDK's own
+ * ICoreWebView2*Vtbl structs -- Microsoft.Web.WebView2 1.0.3124.44 --
+ * which is the ABI we are talking to. Do not renumber them by eye.      */
+typedef struct { void *s[52]; } WvWeb;   /* ICoreWebView2           */
+typedef struct { void *s[26]; } WvCtl;   /* ICoreWebView2Controller */
+typedef struct { void *s[8];  } WvEnv;   /* ICoreWebView2Environment*/
+typedef struct { void *s[21]; } WvSet;   /* ICoreWebView2Settings   */
+typedef struct { void *s[10]; } WvNavA;  /* ...NavigationStartingEventArgs  */
+typedef struct { void *s[6];  } WvDoneA; /* ...NavigationCompletedEventArgs */
+typedef struct { void *s[11]; } WvNewA;  /* ...NewWindowRequestedEventArgs   */
+typedef struct { void *s[6];  } WvMsgA;  /* ...WebMessageReceivedEventArgs   */
 
-/* ---- vtables: only the slots we call are named. The unnamed ones still
- *      have to occupy their exact position or the offsets drift. -------- */
-typedef struct CtlVtbl {
-    void *get_IsVisible;                          /*  0 */
-    HRESULT (WV2_CALL *put_IsVisible)(void *, BOOL); /*  1 */
-    void *get_Bounds;                             /*  2 */
-    HRESULT (WV2_CALL *put_Bounds)(void *, RECT); /*  3 */
-    HRESULT (WV2_CALL *get_ZoomFactor)(void *, double *);  /* 4 */
-    HRESULT (WV2_CALL *put_ZoomFactor)(void *, double);   /* 5 */
-    void *SetBoundsAndZoomFactor;                 /*  6 */
-    void *MoveFocus;                              /*  7 */
-    void *get_ParentWindow;                       /*  8 */
-    void *put_ParentWindow;                       /*  9 */
-    HRESULT (WV2_CALL *NotifyParentWindowPositionChanged)(void *); /* 10 */
-    HRESULT (WV2_CALL *Close)(void *);            /* 11 */
-    HRESULT (WV2_CALL *get_CoreWebView2)(void *, void **); /* 12 */
-} CtlVtbl;
-
-typedef struct EnvVtbl {
-    void *get_BrowserVersionString;                            /* 0 */
-    HRESULT (WV2_CALL *CreateCoreWebView2Controller)(void *, HWND, void *, void *); /* 1 */
-} EnvVtbl;
-
-typedef struct WebVtbl {
-    HRESULT (WV2_CALL *get_Settings)(void *, void **);         /*  0 */
-    HRESULT (WV2_CALL *get_Source)(void *, LPWSTR *);           /*  1 */
-    HRESULT (WV2_CALL *Navigate)(void *, LPCWSTR);              /*  2 */
-    HRESULT (WV2_CALL *NavigateToString)(void *, LPCWSTR);      /*  3 */
-    void *add_NavigationStarting;                               /*  4 */
-    void *m05;                                                  /*  5 */
-    void *m06, *m07;                                            /*  6- 7 */
-    void *m08, *m09;                                            /*  8- 9 */
-    void *m10, *m11;                                            /* 10-11 */
-    void *add_NavigationCompleted;                              /* 12 */
-    void *m13;                                                  /* 13 */
-    void *m14, *m15, *m16, *m17;                                /* 14-17 */
-    void *m18, *m19, *m20, *m21;                                /* 18-21 */
-    void *m22, *m23;                                            /* 22-23 */
-    HRESULT (WV2_CALL *AddScriptToExecuteOnDocumentCreated)(void *, LPCWSTR, void *); /* 24 */
-    void *m25;                                                  /* 25 */
-    void *m26, *m27;                                            /* 26-27 */
-    HRESULT (WV2_CALL *Reload)(void *);                         /* 28 */
-    void *m29, *m30;                                            /* 29-30 */
-    void *add_WebMessageReceived;                               /* 31 */
-    void *m32, *m33;                                            /* 32-33 */
-    void *m34;                                                  /* 34 BrowserProcessId */
-    HRESULT (WV2_CALL *get_CanGoBack)(void *, BOOL *);          /* 35 */
-    HRESULT (WV2_CALL *get_CanGoForward)(void *, BOOL *);       /* 36 */
-    HRESULT (WV2_CALL *GoBack)(void *);                         /* 37 */
-    HRESULT (WV2_CALL *GoForward)(void *);                      /* 38 */
-    void *m39;                                                  /* 39 */
-    HRESULT (WV2_CALL *Stop)(void *);                           /* 40 */
-    void *add_NewWindowRequested;                               /* 41 */
-    void *m42, *m43, *m44;                                      /* 42-44 */
-    HRESULT (WV2_CALL *get_DocumentTitle)(void *, LPWSTR *);    /* 45 */
-    void *m46, *m47;                                            /* 46-47 */
-    HRESULT (WV2_CALL *OpenDevToolsWindow)(void *);             /* 48 */
-    void *m49, *m50, *m51, *m52, *m53, *m54, *m55, *m56, *m57;  /* 49-57 */
-} WebVtbl;
-
-typedef struct SetVtbl {
-    HRESULT (WV2_CALL *put_IsScriptEnabled)(void *, BOOL);        /*  0 */
-    HRESULT (WV2_CALL *put_IsWebMessageEnabled)(void *, BOOL);    /*  1 */
-    void *get_IsStatusBarEnabled;                                 /*  2 */
-    HRESULT (WV2_CALL *put_IsStatusBarEnabled)(void *, BOOL);     /*  3 */
-    void *get_AreDevToolsEnabled;                                 /*  4 */
-    HRESULT (WV2_CALL *put_AreDevToolsEnabled)(void *, BOOL);     /*  5 */
-    void *m06, *m07, *m08, *m09;
-    void *get_IsZoomControlEnabled;                               /* 10 */
-    HRESULT (WV2_CALL *put_IsZoomControlEnabled)(void *, BOOL);   /* 11 */
-    void *m12, *m13;
-} SetVtbl;
-
-typedef struct NavStartArgsVtbl {
-    HRESULT (WV2_CALL *get_Uri)(void *, LPWSTR *);              /* 0 */
-    void *m01, *m02, *m03;
-    HRESULT (WV2_CALL *put_Cancel)(void *, BOOL);               /* 5 */
-    void *m06;
-} NavStartArgsVtbl;
-
-typedef struct NewWinArgsVtbl {
-    HRESULT (WV2_CALL *get_Uri)(void *, LPWSTR *);              /* 0 */
-    void *m01, *m02;
-    HRESULT (WV2_CALL *put_Handled)(void *, BOOL);              /* 3 */
-    void *m04, *m05, *m06, *m07;
-} NewWinArgsVtbl;
-
-typedef struct WebMsgArgsVtbl {
-    void *m00;
-    HRESULT (WV2_CALL *get_WebMessageAsJson)(void *, LPWSTR *); /* 1 */
-    void *m02;
-} WebMsgArgsVtbl;
-
-typedef struct NavDoneArgsVtbl {
-    HRESULT (WV2_CALL *get_IsSuccess)(void *, BOOL *);          /* 0 */
-    void *m01;
-} NavDoneArgsVtbl;
+enum {                      /* ICoreWebView2 */
+    W_SETTINGS  =  3, W_SOURCE    =  4, W_NAVIGATE =  5, W_NAVSTR  =  6,
+    W_ADD_NAVSTART = 7, W_ADD_NAVDONE = 15, W_ADDSCRIPT = 27,
+    W_RELOAD    = 31, W_ADD_WEBMSG = 34, W_CANBACK   = 38,
+    W_CANFWD    = 39, W_GOBACK    = 40, W_GOFWD     = 41,
+    W_STOP      = 43, W_ADD_NEWWIN = 44, W_DOCTITLE  = 48,
+    W_DEVTOOLS  = 51
+};
+enum {                      /* ICoreWebView2Controller */
+    C_ISVISIBLE =  4, C_BOUNDS   =  6, C_ZOOMGET  =  7,
+    C_ZOOMPUT   =  8, C_NOTIFY   = 23, C_CLOSE    = 24,
+    C_GETWEB    = 25
+};
+enum { E_CREATECTL = 3, E_VERSION = 5 };          /* ICoreWebView2Environment */
+enum {                      /* ICoreWebView2Settings */
+    S_SCRIPT = 4, S_WEBMSG = 6, S_STATUSBAR = 10,
+    S_DEVTOOLS = 12, S_ZOOMCTL = 18
+};
+enum { A_URI = 3, A_CANCEL = 8 };          /* NavigationStartingEventArgs  */
+enum { D_SUCCESS = 3 };                     /* NavigationCompletedEventArgs */
+enum { X_URI = 3, X_HANDLED = 6 };          /* NewWindowRequestedEventArgs   */
+enum { G_JSON = 4 };                        /* WebMessageReceivedEventArgs   */
 
 /* add_* event methods all share one shape */
 typedef HRESULT (WV2_CALL *fn_add_ev)(void *, void *, long *);
@@ -156,14 +100,119 @@ typedef HRESULT (WV2_CALL *fn_add_ev)(void *, void *, long *);
 /* every COM interface starts with a pointer to its vtable */
 typedef struct WObj { const void *vt; } WObj;
 
-static const CtlVtbl         *ctl_v(void *o) { return (const CtlVtbl *)((const WObj *)o)->vt; }
-static const EnvVtbl         *env_v(void *o) { return (const EnvVtbl *)((const WObj *)o)->vt; }
-static const WebVtbl         *web_v(void *o) { return (const WebVtbl *)((const WObj *)o)->vt; }
-static const SetVtbl         *set_v(void *o) { return (const SetVtbl *)((const WObj *)o)->vt; }
-static const NavStartArgsVtbl *nav_v(void *o) { return (const NavStartArgsVtbl *)((const WObj *)o)->vt; }
-static const NewWinArgsVtbl *neww_v(void *o) { return (const NewWinArgsVtbl *)((const WObj *)o)->vt; }
-static const WebMsgArgsVtbl *msg_v(void *o) { return (const WebMsgArgsVtbl *)((const WObj *)o)->vt; }
-static const NavDoneArgsVtbl *don_v(void *o) { return (const NavDoneArgsVtbl *)((const WObj *)o)->vt; }
+static const WvWeb   *web_v (void *o) { return (const WvWeb  *)((const WObj *)o)->vt; }
+static const WvCtl   *ctl_v (void *o) { return (const WvCtl  *)((const WObj *)o)->vt; }
+static const WvEnv   *env_v (void *o) { return (const WvEnv  *)((const WObj *)o)->vt; }
+static const WvSet   *set_v (void *o) { return (const WvSet  *)((const WObj *)o)->vt; }
+static const WvNavA  *nav_v (void *o) { return (const WvNavA *)((const WObj *)o)->vt; }
+static const WvNewA  *neww_v(void *o) { return (const WvNewA *)((const WObj *)o)->vt; }
+static const WvMsgA  *msg_v (void *o) { return (const WvMsgA *)((const WObj *)o)->vt; }
+static const WvDoneA *don_v (void *o) { return (const WvDoneA*)((const WObj *)o)->vt; }
+
+/* ---- one typed entry point per call, so the casts live in one place --- */
+typedef HRESULT (WV2_CALL *fn_out_obj)(void *, void **);
+typedef HRESULT (WV2_CALL *fn_out_wstr)(void *, LPWSTR *);
+typedef HRESULT (WV2_CALL *fn_in_wstr)(void *, LPCWSTR);
+typedef HRESULT (WV2_CALL *fn_void)(void *);
+typedef HRESULT (WV2_CALL *fn_bool_out)(void *, BOOL *);
+typedef HRESULT (WV2_CALL *fn_bool_in)(void *, BOOL);
+typedef HRESULT (WV2_CALL *fn_dbl_out)(void *, double *);
+typedef HRESULT (WV2_CALL *fn_dbl_in)(void *, double);
+typedef HRESULT (WV2_CALL *fn_rect_in)(void *, RECT);
+
+static HRESULT web_get_settings(void *o, void **out) {
+    return ((fn_out_obj)web_v(o)->s[W_SETTINGS])(o, out);
+}
+static HRESULT web_get_source(void *o, LPWSTR *out) {
+    return ((fn_out_wstr)web_v(o)->s[W_SOURCE])(o, out);
+}
+static HRESULT web_navigate(void *o, LPCWSTR u) {
+    return ((fn_in_wstr)web_v(o)->s[W_NAVIGATE])(o, u);
+}
+static HRESULT web_navstr(void *o, LPCWSTR u) {
+    return ((fn_in_wstr)web_v(o)->s[W_NAVSTR])(o, u);
+}
+static HRESULT web_addscript(void *o, LPCWSTR js) {
+    return ((HRESULT (WV2_CALL *)(void *, LPCWSTR, void *))web_v(o)->s[W_ADDSCRIPT])
+           (o, js, NULL);
+}
+static HRESULT web_can_back(void *o, BOOL *b) {
+    return ((fn_bool_out)web_v(o)->s[W_CANBACK])(o, b);
+}
+static HRESULT web_can_fwd(void *o, BOOL *b) {
+    return ((fn_bool_out)web_v(o)->s[W_CANFWD])(o, b);
+}
+static HRESULT web_goback(void *o)  { return ((fn_void)web_v(o)->s[W_GOBACK])(o); }
+static HRESULT web_gofwd(void *o)   { return ((fn_void)web_v(o)->s[W_GOFWD])(o); }
+static HRESULT web_reload(void *o)  { return ((fn_void)web_v(o)->s[W_RELOAD])(o); }
+static HRESULT web_stop(void *o)    { return ((fn_void)web_v(o)->s[W_STOP])(o); }
+static HRESULT web_title(void *o, LPWSTR *out) {
+    return ((fn_out_wstr)web_v(o)->s[W_DOCTITLE])(o, out);
+}
+static HRESULT web_devtools(void *o) { return ((fn_void)web_v(o)->s[W_DEVTOOLS])(o); }
+static HRESULT web_add_navstart(void *o, void *h, long *t) {
+    return ((fn_add_ev)web_v(o)->s[W_ADD_NAVSTART])(o, h, t);
+}
+static HRESULT web_add_navdone(void *o, void *h, long *t) {
+    return ((fn_add_ev)web_v(o)->s[W_ADD_NAVDONE])(o, h, t);
+}
+static HRESULT web_add_webmsg(void *o, void *h, long *t) {
+    return ((fn_add_ev)web_v(o)->s[W_ADD_WEBMSG])(o, h, t);
+}
+static HRESULT web_add_newwin(void *o, void *h, long *t) {
+    return ((fn_add_ev)web_v(o)->s[W_ADD_NEWWIN])(o, h, t);
+}
+
+static HRESULT ctl_visible(void *o, BOOL b) {
+    return ((fn_bool_in)ctl_v(o)->s[C_ISVISIBLE])(o, b);
+}
+static HRESULT ctl_bounds(void *o, RECT r) {
+    return ((fn_rect_in)ctl_v(o)->s[C_BOUNDS])(o, r);
+}
+static HRESULT ctl_notify(void *o) { return ((fn_void)ctl_v(o)->s[C_NOTIFY])(o); }
+static HRESULT ctl_close(void *o)  { return ((fn_void)ctl_v(o)->s[C_CLOSE])(o); }
+static HRESULT ctl_web(void *o, void **out) {
+    return ((fn_out_obj)ctl_v(o)->s[C_GETWEB])(o, out);
+}
+/* vtable slot 1 of every COM interface is AddRef */
+static ULONG ctl_ar_addref(void *o) {
+    return ((ULONG (WV2_CALL *)(void *))ctl_v(o)->s[1])(o);
+}
+static HRESULT ctl_zoom_get(void *o, double *z) {
+    return ((fn_dbl_out)ctl_v(o)->s[C_ZOOMGET])(o, z);
+}
+static HRESULT ctl_zoom_put(void *o, double z) {
+    return ((fn_dbl_in)ctl_v(o)->s[C_ZOOMPUT])(o, z);
+}
+
+/* ICoreWebView2Environment::CreateCoreWebView2Controller takes only the
+ * parent window and the handler; the old options argument is gone. */
+static HRESULT env_create_ctl(void *o, HWND parent, void *handler) {
+    return ((HRESULT (WV2_CALL *)(void *, HWND, void *))env_v(o)->s[E_CREATECTL])
+           (o, parent, handler);
+}
+
+static void set_flag(void *o, int slot, BOOL b) {
+    ((fn_bool_in)set_v(o)->s[slot])(o, b);
+}
+static HRESULT nav_uri(void *o, LPWSTR *out) {
+    return ((fn_out_wstr)nav_v(o)->s[A_URI])(o, out);
+}
+static void nav_cancel(void *o) {
+    ((fn_bool_in)nav_v(o)->s[A_CANCEL])(o, TRUE);
+}
+static HRESULT neww_uri(void *o, LPWSTR *out) {
+    return ((fn_out_wstr)neww_v(o)->s[X_URI])(o, out);
+}
+static void neww_handled(void *o) {
+    ((fn_bool_in)neww_v(o)->s[X_HANDLED])(o, TRUE);
+}
+static HRESULT msg_json(void *o, LPWSTR *out) {
+    return ((fn_out_wstr)msg_v(o)->s[G_JSON])(o, out);
+}
+static HRESULT done_success(void *o, BOOL *b) {
+    return ((fn_bool_out)don_v(o)->s[D_SUCCESS])(o, b);
+}
 
 /* ================= instances ================= */
 typedef struct Wv2 Wv2;
@@ -528,27 +577,27 @@ static HRESULT WV2_CALL hnd_Invoke(void *self, void *sender, void *args) {
 
     if (h->kind == HND_NAVSTART) {
         LPWSTR wuri = NULL;
-        if (FAILED(nav_v(args)->get_Uri(args, &wuri))) return S_OK;
+        if (FAILED(nav_uri(args, &wuri))) return S_OK;
         char *uri = utf8_of(wuri);
         if (wuri) CoTaskMemFree(wuri);
         if (!uri) return S_OK;
         /* holybrowser:// never reaches Chromium: cancel it and hand the URL
          * back to the script, which decides what to show instead. */
-        if (starts_with_ci(uri, "holybrowser://")) nav_v(args)->put_Cancel(args, TRUE);
+        if (starts_with_ci(uri, "holybrowser://")) nav_cancel(args);
         fire(e->cb_nav, uri);
         free(uri);
         return S_OK;
     }
     if (h->kind == HND_NAVDONE) {
         BOOL ok = FALSE;
-        don_v(args)->get_IsSuccess(args, &ok);
+        done_success(args, &ok);
         fire(e->cb_load, ok ? "1" : "0");
         return S_OK;
     }
     if (h->kind == HND_NEWWIN) {
-        neww_v(args)->put_Handled(args, TRUE);   /* tabs are the script's job */
+        neww_handled(args);   /* tabs are the script's job */
         LPWSTR wuri = NULL;
-        if (SUCCEEDED(neww_v(args)->get_Uri(args, &wuri)) && wuri) {
+        if (SUCCEEDED(neww_uri(args, &wuri)) && wuri) {
             char *uri = utf8_of(wuri);
             if (uri) { fire(e->cb_new, uri); free(uri); }
         }
@@ -557,7 +606,7 @@ static HRESULT WV2_CALL hnd_Invoke(void *self, void *sender, void *args) {
     }
     if (h->kind == HND_WEBMSG) {
         LPWSTR wj = NULL;
-        if (FAILED(msg_v(args)->get_WebMessageAsJson(args, &wj)) || !wj) return S_OK;
+        if (FAILED(msg_json(args, &wj)) || !wj) return S_OK;
         char *json = utf8_of(wj);
         CoTaskMemFree(wj);
         if (json) { fire(e->cb_msg, json); free(json); }
@@ -610,14 +659,18 @@ static HRESULT WV2_CALL done_Invoke(void *self, HRESULT hr, void *result) {
     if (FAILED(hr) || !result) { g_stage = -1; return S_OK; }
     if (d->is_env) {
         if (!g_ctl_done) { g_stage = -1; return S_OK; }
-        if (FAILED(env_v(result)->CreateCoreWebView2Controller(result, e->parent,
-                                                                NULL, g_ctl_done))) {
+        if (FAILED(env_create_ctl(result, e->parent, g_ctl_done))) {
             g_stage = -1;
             return S_OK;
         }
         g_stage = 1;
         return S_OK;
     }
+    /* The runtime owns a reference to the controller for the duration of this
+     * callback and drops it as soon as we return. We keep using the pointer
+     * long after that (navigation, bounds, events), so take our own
+     * reference or it dangles and every later call reads freed memory. */
+    ctl_ar_addref(result);
     e->ctl = result;
     e->ready = true;
     g_stage = 2;
@@ -625,8 +678,12 @@ static HRESULT WV2_CALL done_Invoke(void *self, HRESULT hr, void *result) {
 }
 
 /* ================= the public API ================= */
+/* Since WebView2 SDK 1.0.3xxx the factory takes FOUR arguments: the extra
+ * `additionalBrowserArguments` string moved into ICoreWebView2EnvironmentOptions.
+ * Calling it with the old five argument shape leaves the handler on the stack
+ * where the loader never looks, and it answers E_POINTER. */
 typedef HRESULT (WV2_CALL *fn_create_env)(LPCWSTR browserFolder, LPCWSTR userDataFolder,
-                                          LPCWSTR args, void *options, void *handler);
+                                          void *options, void *handler);
 
 static void pump_until(int timeout_ms) {
     DWORD t0 = GetTickCount();
@@ -700,36 +757,35 @@ int64_t hpwv2_create(int64_t parent_hwnd, const char *user_data_dir) {
     wchar_t *wdir = wide_of(user_data_dir);
     g_stage = 0;
 
-    HRESULT hr = ((fn_create_env)g_factory)(NULL, wdir,
-                                           L"--autoplay-policy=no-user-gesture-required",
-                                           NULL, &env_done);
+    /* (browser folder, user data folder, environment options, handler) */
+    HRESULT hr = ((fn_create_env)g_factory)(NULL, wdir, NULL, &env_done);
     if (wdir) free(wdir);
     if (FAILED(hr)) return -1;
 
-    /* Bounded, and deliberately short: this runs before the app has an
-     * event loop, so a runtime that never answers would otherwise look like
-     * a hang. Failing fast lets the caller show a message and carry on. */
-    pump_until(12000);
+    /* Bounded: this runs before the app has an event loop, so a runtime that
+     * never answers would otherwise look like a hang. Failing fast lets the
+     * caller show a message and carry on. The first run on a machine also has
+     * to create the profile, which is the slow case. */
+    pump_until(25000);
     g_ctl_done = NULL;
     if (!e->ready || !e->ctl) { hpwv2_destroy(e->id); return -1; }
 
     void *web = NULL;
-    if (FAILED(ctl_v(e->ctl)->get_CoreWebView2(e->ctl, &web)) || !web) {
+    if (FAILED(ctl_web(e->ctl, &web)) || !web) {
         hpwv2_destroy(e->id);
         return -1;
     }
     e->web = web;
 
     void *st = NULL;
-    if (SUCCEEDED(web_v(web)->get_Settings(web, &st)) && st) {
-        const SetVtbl *sv = set_v(st);
-        sv->put_IsScriptEnabled(st, TRUE);
-        sv->put_IsWebMessageEnabled(st, TRUE);
-        sv->put_AreDevToolsEnabled(st, TRUE);
-        sv->put_IsStatusBarEnabled(st, FALSE);
-        sv->put_IsZoomControlEnabled(st, FALSE);
+    if (SUCCEEDED(web_get_settings(web, &st)) && st) {
+        set_flag(st, S_SCRIPT,     TRUE);
+        set_flag(st, S_WEBMSG,     TRUE);
+        set_flag(st, S_DEVTOOLS,   TRUE);
+        set_flag(st, S_STATUSBAR,  FALSE);
+        set_flag(st, S_ZOOMCTL,    FALSE);
     }
-    web_v(web)->AddScriptToExecuteOnDocumentCreated(web, HB_BRIDGE_JS, NULL);
+    web_addscript(web, HB_BRIDGE_JS);
 
     e->h[0].kind = HND_NAVSTART;
     e->h[1].kind = HND_NAVDONE;
@@ -743,10 +799,10 @@ int64_t hpwv2_create(int64_t parent_hwnd, const char *user_data_dir) {
     subclass_widget(e, find_widget(e->parent));
 
     long t1 = 0, t2 = 0, t3 = 0, t4 = 0;
-    ((fn_add_ev)web_v(web)->add_NavigationStarting)(web, &e->h[0], &t1);
-    ((fn_add_ev)web_v(web)->add_NavigationCompleted)(web, &e->h[1], &t2);
-    ((fn_add_ev)web_v(web)->add_NewWindowRequested)(web, &e->h[2], &t3);
-    ((fn_add_ev)web_v(web)->add_WebMessageReceived)(web, &e->h[3], &t4);
+    web_add_navstart(web, &e->h[0], &t1);
+    web_add_navdone(web, &e->h[1], &t2);
+    web_add_newwin(web, &e->h[2], &t3);
+    web_add_webmsg(web, &e->h[3], &t4);
 
     return e->id;
 }
@@ -754,7 +810,7 @@ int64_t hpwv2_create(int64_t parent_hwnd, const char *user_data_dir) {
 int64_t hpwv2_destroy(int64_t id) {
     Wv2 *e = wv2_find(id);
     if (!e) return -1;
-    if (e->ctl) { ctl_v(e->ctl)->Close(e->ctl); e->ctl = NULL; }
+    if (e->ctl) { ctl_close(e->ctl); e->ctl = NULL; }
     e->web = NULL;
     if (e->com_init) CoUninitialize();
     for (int i = 0; i < g_len; i++) {
@@ -783,7 +839,7 @@ int64_t hpwv2_fit(int64_t id, int top_logical) {
     if (top > ch) top = ch;
 
     BOOL vis = (e->shown && !IsIconic(e->parent)) ? TRUE : FALSE;
-    ctl_v(e->ctl)->put_IsVisible(e->ctl, vis);
+    ctl_visible(e->ctl, vis);
     if (!vis) return 0;
     if (cw == e->last_cw && ch == e->last_ch) return 0;
     e->last_cw = cw;
@@ -797,8 +853,8 @@ int64_t hpwv2_fit(int64_t id, int top_logical) {
     b.top = pt.y;
     b.right = pt.x + cw;
     b.bottom = pt.y + (ch - top);
-    ctl_v(e->ctl)->put_Bounds(e->ctl, b);
-    ctl_v(e->ctl)->NotifyParentWindowPositionChanged(e->ctl);
+    ctl_bounds(e->ctl, b);
+    ctl_notify(e->ctl);
     return 0;
 }
 
@@ -807,7 +863,7 @@ int64_t hpwv2_navigate(int64_t id, const char *url) {
     if (!e || !e->web || !url || !url[0]) return -1;
     wchar_t *w = wide_of(url);
     if (!w) return -1;
-    HRESULT hr = web_v(e->web)->Navigate(e->web, w);
+    HRESULT hr = web_navigate(e->web, w);
     free(w);
     return SUCCEEDED(hr) ? 0 : -1;
 }
@@ -817,7 +873,7 @@ int64_t hpwv2_html(int64_t id, const char *html) {
     if (!e || !e->web || !html) return -1;
     wchar_t *w = wide_of(html);
     if (!w) return -1;
-    HRESULT hr = web_v(e->web)->NavigateToString(e->web, w);
+    HRESULT hr = web_navstr(e->web, w);
     free(w);
     return SUCCEEDED(hr) ? 0 : -1;
 }
@@ -826,35 +882,35 @@ int64_t hpwv2_back(int64_t id) {
     Wv2 *e = wv2_find(id);
     if (!e || !e->web) return -1;
     BOOL can = FALSE;
-    if (FAILED(web_v(e->web)->get_CanGoBack(e->web, &can)) || !can) return -1;
-    return SUCCEEDED(web_v(e->web)->GoBack(e->web)) ? 0 : -1;
+    if (FAILED(web_can_back(e->web, &can)) || !can) return -1;
+    return SUCCEEDED(web_goback(e->web)) ? 0 : -1;
 }
 
 int64_t hpwv2_forward(int64_t id) {
     Wv2 *e = wv2_find(id);
     if (!e || !e->web) return -1;
     BOOL can = FALSE;
-    if (FAILED(web_v(e->web)->get_CanGoForward(e->web, &can)) || !can) return -1;
-    return SUCCEEDED(web_v(e->web)->GoForward(e->web)) ? 0 : -1;
+    if (FAILED(web_can_fwd(e->web, &can)) || !can) return -1;
+    return SUCCEEDED(web_gofwd(e->web)) ? 0 : -1;
 }
 
 int64_t hpwv2_reload(int64_t id) {
     Wv2 *e = wv2_find(id);
     if (!e || !e->web) return -1;
-    return SUCCEEDED(web_v(e->web)->Reload(e->web)) ? 0 : -1;
+    return SUCCEEDED(web_reload(e->web)) ? 0 : -1;
 }
 
 int64_t hpwv2_stop(int64_t id) {
     Wv2 *e = wv2_find(id);
     if (!e || !e->web) return -1;
-    return SUCCEEDED(web_v(e->web)->Stop(e->web)) ? 0 : -1;
+    return SUCCEEDED(web_stop(e->web)) ? 0 : -1;
 }
 
 int64_t hpwv2_can_back(int64_t id) {
     Wv2 *e = wv2_find(id);
     if (!e || !e->web) return 0;
     BOOL can = FALSE;
-    web_v(e->web)->get_CanGoBack(e->web, &can);
+    web_can_back(e->web, &can);
     return can ? 1 : 0;
 }
 
@@ -862,7 +918,7 @@ int64_t hpwv2_can_forward(int64_t id) {
     Wv2 *e = wv2_find(id);
     if (!e || !e->web) return 0;
     BOOL can = FALSE;
-    web_v(e->web)->get_CanGoForward(e->web, &can);
+    web_can_fwd(e->web, &can);
     return can ? 1 : 0;
 }
 
@@ -871,7 +927,7 @@ int64_t hpwv2_url(int64_t id, char **out) {
     if (out) *out = NULL;
     if (!e || !e->web) return -1;
     LPWSTR w = NULL;
-    if (FAILED(web_v(e->web)->get_Source(e->web, &w)) || !w) return -1;
+    if (FAILED(web_get_source(e->web, &w)) || !w) return -1;
     char *u = utf8_of(w);
     CoTaskMemFree(w);
     if (!u) return -1;
@@ -884,7 +940,7 @@ int64_t hpwv2_title(int64_t id, char **out) {
     if (out) *out = NULL;
     if (!e || !e->web) return -1;
     LPWSTR w = NULL;
-    if (FAILED(web_v(e->web)->get_DocumentTitle(e->web, &w)) || !w) return -1;
+    if (FAILED(web_title(e->web, &w)) || !w) return -1;
     char *t = utf8_of(w);
     CoTaskMemFree(w);
     if (!t) return -1;
@@ -897,14 +953,14 @@ int64_t hpwv2_zoom(int64_t id, double factor) {
     if (!e || !e->ctl) return -1;
     if (factor < 0.25) factor = 0.25;
     if (factor > 3.0) factor = 3.0;
-    return SUCCEEDED(ctl_v(e->ctl)->put_ZoomFactor(e->ctl, factor)) ? 0 : -1;
+    return SUCCEEDED(ctl_zoom_put(e->ctl, factor)) ? 0 : -1;
 }
 
 int64_t hpwv2_zoom_get(int64_t id, double *out) {
     Wv2 *e = wv2_find(id);
     if (!e || !e->ctl) return -1;
     double z = 1.0;
-    if (FAILED(ctl_v(e->ctl)->get_ZoomFactor(e->ctl, &z))) return -1;
+    if (FAILED(ctl_zoom_get(e->ctl, &z))) return -1;
     if (out) *out = z;
     return 0;
 }
@@ -912,7 +968,7 @@ int64_t hpwv2_zoom_get(int64_t id, double *out) {
 int64_t hpwv2_devtools(int64_t id) {
     Wv2 *e = wv2_find(id);
     if (!e || !e->web) return -1;
-    return SUCCEEDED(web_v(e->web)->OpenDevToolsWindow(e->web)) ? 0 : -1;
+    return SUCCEEDED(web_devtools(e->web)) ? 0 : -1;
 }
 
 /* Show or hide this view. Several controllers share one window, one per
@@ -921,7 +977,7 @@ int64_t hpwv2_visible(int64_t id, bool on) {
     Wv2 *e = wv2_find(id);
     if (!e || !e->ctl) return -1;
     e->shown = on;
-    ctl_v(e->ctl)->put_IsVisible(e->ctl, on ? TRUE : FALSE);
+    ctl_visible(e->ctl, on ? TRUE : FALSE);
     return 0;
 }
 

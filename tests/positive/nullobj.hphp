@@ -1,0 +1,46 @@
+// tests/positive/nullobj.hphp — a class-typed property defaulted to null.
+// `pub Widget $w = null;` is an object slot holding a NULL pointer, not a real
+// object. Reading it as unconditionally truthy made every
+// `if ($o->w == null)` guard lie, so callers went on to dereference the null.
+
+class Widget {
+    pub function move(int $x): int { return $x + 1; }
+}
+
+class Holder {
+    pub Widget $w = null;
+    pub int $n = 0;
+    pub function fill() { $this->w = new Widget(); }
+}
+
+// ---- an unset field reads as null --------------------------------------
+$h = new Holder();
+if ($h->w != null) { echo "FAIL unset field != null\n"; exit(1); }
+if ($h->w == null) { $h->w = new Widget(); $h->w = null; }
+
+// ---- a filled field does not --------------------------------------------
+$h->fill();
+if ($h->w == null) { echo "FAIL filled field == null\n"; exit(1); }
+if ($h->w != null) { $h->w = null; $h->w = new Widget(); }
+
+// ---- the guard pattern the browser relies on ---------------------------
+// The guard has to fire for a field that was never set ...
+$h2 = new Holder();
+$skipped = 0;
+if ($h2->w == null) { $skipped = $skipped + 1; }
+if ($skipped != 1) { echo "FAIL guard did not fire for an absent widget\n"; exit(1); }
+
+// ... and stay quiet for one that was, so the guard is not simply always-true.
+$h2->fill();
+$hit = 0;
+if ($h2->w == null) { $hit = $hit + 1; }
+if ($hit != 0) { echo "FAIL guard fired for a present widget\n"; exit(1); }
+
+// ---- and the field is usable once set ----------------------------------
+if ($h2->w->move(41) != 42) { echo "FAIL call through a filled field\n"; exit(1); }
+
+// a plain int field is unaffected
+$h2->n = 0;
+if ($h2->n != 0) { echo "FAIL int field default\n"; exit(1); }
+
+echo "nullobj OK\n";
