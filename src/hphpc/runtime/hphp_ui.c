@@ -1457,6 +1457,14 @@ int64_t hpui_on_event(int64_t handle, int64_t evtype, hval cb) {
     return 0;
 }
 
+/* The raw HWND of a window, so something that must be a real child window
+ * (an embedded Chromium view) can be parented inside it. */
+int64_t hpui_hwnd(int64_t win) {
+    UiEntry *e = tbl_find(win);
+    if (!e || !e->hwnd) return 0;
+    return (int64_t)(intptr_t)e->hwnd;
+}
+
 int64_t hpui_repaint(int64_t h) {
     UiEntry *e = tbl_find(h);
     if (!e || !e->hwnd) return -1;
@@ -2352,6 +2360,7 @@ int64_t hpui_picture_load(int64_t h, const char *p) { (void)h; (void)p; return -
 int64_t hpui_theme_set(int64_t w, const int64_t *v, int n) { (void)w; (void)v; (void)n; return -1; }
 int64_t hpui_repaint(int64_t h) { (void)h; return -1; }
 int64_t hpui_on_event(int64_t h, int64_t e, hval c) { (void)h; (void)e; (void)c; return -1; }
+int64_t hpui_hwnd(int64_t win) { (void)win; return 0; }
 int64_t hpui_timer(int64_t ms, hval c) { (void)ms; (void)c; return -1; }
 int64_t hpui_msgbox(int64_t w, const char *t, const char *x, int ty) {
     (void)w; (void)t; (void)x; (void)ty; return 0;

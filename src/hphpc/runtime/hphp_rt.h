@@ -643,6 +643,7 @@ int64_t hpui_range_set(int64_t h, int64_t lo, int64_t hi);
 int64_t hpui_repaint(int64_t h);
 int64_t hpui_textw(const char *text, int pt, bool bold);
 int64_t hpui_text_lines(const char *text, int pt, bool bold, int maxw);
+int64_t hpui_hwnd(int64_t win);                 /* raw HWND, for embedding */
 int64_t hpui_theme_set(int64_t win, const int64_t *v, int n);
 int64_t hpui_picture_load(int64_t h, const char *path);
 
@@ -718,6 +719,51 @@ hval hpbi_ui_count(hval h);
 hval hpbi_ui_progress_get(hval h);
 hval hpbi_ui_text_px(hval s, hval pt, hval bold);
 hval hpbi_ui_text_lines(hval s, hval pt, hval bold, hval maxw);
+hval hpbi_ui_hwnd(hval win);
+hval hpbi_ui_browser_ready(void);
+hval hpbi_ui_browser_loader(void);
+hval hpbi_ui_browser_new(hval parent, hval dir);
+hval hpbi_ui_browser_free(hval b);
+hval hpbi_ui_browser_fit(hval b, hval top);
+hval hpbi_ui_browser_go(hval b, hval url);
+hval hpbi_ui_browser_html(hval b, hval html);
+hval hpbi_ui_browser_back(hval b);
+hval hpbi_ui_browser_forward(hval b);
+hval hpbi_ui_browser_reload(hval b);
+hval hpbi_ui_browser_stop(hval b);
+hval hpbi_ui_browser_can_back(hval b);
+hval hpbi_ui_browser_can_forward(hval b);
+hval hpbi_ui_browser_url(hval b);
+hval hpbi_ui_browser_title(hval b);
+hval hpbi_ui_browser_zoom(hval b, hval factor);
+hval hpbi_ui_browser_zoom_get(hval b);
+hval hpbi_ui_browser_devtools(hval b);
+hval hpbi_ui_browser_visible(hval b, hval on);
+hval hpbi_ui_browser_key(hval b, hval mod, hval vk, hval cmd, hval cb);
+hval hpbi_ui_browser_on(hval b, hval ev, hval cb);
+
+/* ---- embedded Chromium (WebView2), see hphp_wv2.c ---- */
+int64_t hpwv2_available(void);
+const char *hpwv2_loader_path(void);
+int64_t hpwv2_create(int64_t parent_hwnd, const char *user_data_dir);
+int64_t hpwv2_destroy(int64_t id);
+int64_t hpwv2_fit(int64_t id, int top_logical);
+int64_t hpwv2_navigate(int64_t id, const char *url);
+int64_t hpwv2_html(int64_t id, const char *html);
+int64_t hpwv2_back(int64_t id);
+int64_t hpwv2_forward(int64_t id);
+int64_t hpwv2_reload(int64_t id);
+int64_t hpwv2_stop(int64_t id);
+int64_t hpwv2_can_back(int64_t id);
+int64_t hpwv2_can_forward(int64_t id);
+int64_t hpwv2_url(int64_t id, char **out);
+int64_t hpwv2_title(int64_t id, char **out);
+int64_t hpwv2_zoom(int64_t id, double factor);
+int64_t hpwv2_zoom_get(int64_t id, double *out);
+int64_t hpwv2_devtools(int64_t id);
+int64_t hpwv2_on(int64_t id, int64_t evtype, hval cb);
+int64_t hpwv2_visible(int64_t id, bool on);
+int64_t hpwv2_shortcut(int64_t id, int64_t mod, int64_t vk, int64_t cmd, hval cb);
 hval hpbi_ui_theme(hval win, hval bg, hval surface, hval elevated, hval text,
                    hval muted, hval accent, hval onAccent, hval border,
                    hval radius, hval fontPt, hval titlePt, hval rowH, hval dark);

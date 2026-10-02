@@ -85,6 +85,8 @@ int main(int argc, char **argv) {
     emit(o, "hp_embed_thr_c", p);
     snprintf(p, sizeof p, "%s/hphp_ui.c", argv[2]);
     emit(o, "hp_embed_ui_c", p);
+    snprintf(p, sizeof p, "%s/hphp_wv2.c", argv[2]);
+    emit(o, "hp_embed_wv2_c", p);
     snprintf(p, sizeof p, "%s/hphp_rt.h", argv[2]);
     emit(o, "hp_embed_rt_h", p);
 

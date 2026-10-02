@@ -343,6 +343,7 @@ static char *embed_read(const char *self, const char *file) {
     if (strcmp(file, "hphp_std.c") == 0) return xstrdup(hp_embed_std_c);
     if (strcmp(file, "hphp_thr.c") == 0) return xstrdup(hp_embed_thr_c);
     if (strcmp(file, "hphp_ui.c") == 0) return xstrdup(hp_embed_ui_c);
+    if (strcmp(file, "hphp_wv2.c") == 0) return xstrdup(hp_embed_wv2_c);
     if (strcmp(file, "hphp_rt.h") == 0) return xstrdup(hp_embed_rt_h);
     fatal("hphp: unknown runtime file '%s'", file);
     return NULL;
@@ -359,7 +360,8 @@ static void mkdir_p(const char *dir) { system_sh(fmt("mkdir -p \"%s\"", dir)); }
 /* Write the three runtime files into <wd>/rt. Overwrite unconditionally so
  * the runtime always matches the compiler version. */
 static void extract_runtime(const char *wd, const char *self) {
-    static const char *files[] = {"hphp_rt.c", "hphp_std.c", "hphp_thr.c", "hphp_ui.c", "hphp_rt.h"};
+    static const char *files[] = {"hphp_rt.c", "hphp_std.c", "hphp_thr.c", "hphp_ui.c",
+                                  "hphp_wv2.c", "hphp_rt.h"};
     mkdir_p(wd);
     char *rtdir = path_join(wd, "rt");
     mkdir_p(rtdir);
@@ -368,7 +370,7 @@ static void extract_runtime(const char *wd, const char *self) {
 #else
     system_sh(fmt("mkdir -p \"%s\"", rtdir));
 #endif
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         char *data = embed_read(self, files[i]);
         char *dest = fmt("%s/%s", rtdir, files[i]);
         FILE *f = fopen(dest, "wb");
@@ -391,7 +393,8 @@ static void extract_runtime(const char *wd, const char *self) {
 static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
                            const char *exepath) {
     /* all paths below are relative to wd */
-    const char *po = "prog.o", *ro = "hp_rt.o", *so = "hp_std.o", *to = "hp_thr.o", *uo = "hp_ui.o";
+    const char *po = "prog.o", *ro = "hp_rt.o", *so = "hp_std.o",
+                 *to = "hp_thr.o", *uo = "hp_ui.o", *vo = "hp_wv2.o";
     const char *out = "prog.out";
     char *out_abs = path_join(wd, out);
     int verbose = getenv("HPHP_VERBOSE") != NULL;
@@ -416,10 +419,10 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
     for (int attempt = 1; attempt <= 3; attempt++) {
         /* --- compile the three objects (gcc -c is rock solid) --- */
         bool compiled = true;
-        const char *ccs[5] = {"prog.c:prog.o", "rt/hphp_rt.c:hp_rt.o",
+        const char *ccs[6] = {"prog.c:prog.o", "rt/hphp_rt.c:hp_rt.o",
                               "rt/hphp_std.c:hp_std.o", "rt/hphp_thr.c:hp_thr.o",
-                              "rt/hphp_ui.c:hp_ui.o"};
-        for (int i = 0; i < 5; i++) {
+                              "rt/hphp_ui.c:hp_ui.o", "rt/hphp_wv2.c:hp_wv2.o"};
+        for (int i = 0; i < 6; i++) {
             char src[128], obj[64];
             const char *colon = strchr(ccs[i], ':');
             snprintf(src, sizeof src, "%.*s", (int)(colon - ccs[i]), ccs[i]);
@@ -452,20 +455,22 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
             const char *crtdir = path_dir_of(crt2);
             char *link = fmt(
                 "\"%s\" -m i386pep -Bdynamic -o %s %s %s "
-                "-L\"%s\" -L\"%s\" %s %s %s %s %s "
+                "-L\"%s\" -L\"%s\" %s %s %s %s %s %s "
                 "-lmingw32 -lgcc -lgcc_eh -lmingwex -lmsvcrt -lkernel32 "
                 "-lws2_32 -lpthread -ladvapi32 -lshell32 -luser32 "
-                "-lgdi32 -lcomctl32 -lcomdlg32 -lole32 \"%s\" \"%s\"",
+                "-lgdi32 -lcomctl32 -lcomdlg32 -lole32 -loleaut32 -luuid "
+                "-lversion -lshlwapi -lwinmm \"%s\" \"%s\"",
                 ld, out, crt2, crtbegin, gccdir, crtdir,
-                po, ro, so, to, uo, manifest, crtend);
+                po, ro, so, to, uo, vo, manifest, crtend);
             rc = system_sh(link);
             free(link);
         }
         if (rc != 0 || !file_nonempty(out_abs)) {
 #ifdef _WIN32
-            char *link = fmt("gcc -O2 %s %s %s %s %s -o %s -lm -lws2_32 "
-                             "-lgdi32 -lcomctl32 -lcomdlg32 -lole32",
-                             po, ro, so, to, uo, out);
+            char *link = fmt("gcc -O2 %s %s %s %s %s %s -o %s -lm -lws2_32 "
+                             "-lgdi32 -lcomctl32 -lcomdlg32 -lole32 -loleaut32 "
+                             "-luuid -lversion -lshlwapi -lwinmm",
+                             po, ro, so, to, uo, vo, out);
 #else
             /* POSIX: sockets live in libc, the UI layer is inert stubs */
             char *link = fmt("gcc -O2 %s %s %s %s %s -o %s -lm -lpthread",

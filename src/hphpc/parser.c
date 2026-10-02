@@ -428,7 +428,10 @@ static void parse_class_body(Parser *p, AstClass *c) {
     m->vis = vis;
     ptrvec_push(&c->methods, m);
         } else if (ts_check(p->ts, T_VAR) || ts_check(p->ts, T_KW_MUT) || ts_check(p->ts, T_KW_OWN) ||
-                   ts_check(p->ts, T_INT) || ts_check(p->ts, T_IDENT)) {
+                   ts_check(p->ts, T_INT) || ts_check(p->ts, T_IDENT) ||
+                   /* a field may lead with its type, and a collection type
+                    * starts with '[' -- the same form parameters accept */
+                   ts_check(p->ts, T_LBRACKET)) {
             StructField *f = parse_field(p, vis, is_const);
             ptrvec_push(&c->fields, f);
         } else if (lead_static || ts_check(p->ts, T_KW_STATIC) || is_const) {

@@ -2368,6 +2368,122 @@ hval hpbi_ui_text_px(hval s, hval pt, hval bold) {
                                 hp_val_to_int(bold) != 0));
 }
 /* ui_text_lines(text, pt, bold, maxWidth) -> how many lines it wraps to */
+hval hpbi_ui_hwnd(hval win) {
+    return hp_of_int(hpui_hwnd((int64_t)hp_val_to_int(win)));
+}
+
+/* ================= embedded Chromium (WebView2) =================
+ * hphp_wv2.c owns the COM side; these are the thin value marshalling. */
+
+hval hpbi_ui_browser_ready(void) { return hp_of_bool(hpwv2_available()); }
+
+hval hpbi_ui_browser_loader(void) {
+    const char *p = hpwv2_loader_path();
+    return hp_of_str(hp_str_new(p ? p : "", p ? strlen(p) : 0));
+}
+
+hval hpbi_ui_browser_new(hval parent, hval dir) {
+    hstr *d = hp_val_to_str(dir);
+    return hp_of_int(hpwv2_create((int64_t)hp_val_to_int(parent),
+                                 (d && d->len) ? d->data : NULL));
+}
+
+hval hpbi_ui_browser_free(hval b) {
+    return hp_of_int(hpwv2_destroy((int64_t)hp_val_to_int(b)));
+}
+
+hval hpbi_ui_browser_fit(hval b, hval top) {
+    return hp_of_int(hpwv2_fit((int64_t)hp_val_to_int(b), (int)hp_val_to_int(top)));
+}
+
+hval hpbi_ui_browser_go(hval b, hval url) {
+    hstr *s = hp_val_to_str(url);
+    return hp_of_int(hpwv2_navigate((int64_t)hp_val_to_int(b), s ? s->data : NULL));
+}
+
+hval hpbi_ui_browser_html(hval b, hval html) {
+    hstr *s = hp_val_to_str(html);
+    return hp_of_int(hpwv2_html((int64_t)hp_val_to_int(b), s ? s->data : NULL));
+}
+
+hval hpbi_ui_browser_back(hval b) {
+    return hp_of_int(hpwv2_back((int64_t)hp_val_to_int(b)));
+}
+
+hval hpbi_ui_browser_forward(hval b) {
+    return hp_of_int(hpwv2_forward((int64_t)hp_val_to_int(b)));
+}
+
+hval hpbi_ui_browser_reload(hval b) {
+    return hp_of_int(hpwv2_reload((int64_t)hp_val_to_int(b)));
+}
+
+hval hpbi_ui_browser_stop(hval b) {
+    return hp_of_int(hpwv2_stop((int64_t)hp_val_to_int(b)));
+}
+
+hval hpbi_ui_browser_can_back(hval b) {
+    return hp_of_bool(hpwv2_can_back((int64_t)hp_val_to_int(b)));
+}
+
+hval hpbi_ui_browser_can_forward(hval b) {
+    return hp_of_bool(hpwv2_can_forward((int64_t)hp_val_to_int(b)));
+}
+
+/* C hands back a malloc'd UTF-8 string; the VM takes ownership of an hstr. */
+static hval wv2_string(int64_t rc, char *owned) {
+    if (owned) return hp_of_str(hp_str_new(owned, strlen(owned)));
+    (void)rc;
+    return hp_of_str(hp_str_lit(""));
+}
+
+hval hpbi_ui_browser_url(hval b) {
+    char *out = NULL;
+    hpwv2_url((int64_t)hp_val_to_int(b), &out);
+    hval r = wv2_string(0, out);
+    free(out);
+    return r;
+}
+
+hval hpbi_ui_browser_title(hval b) {
+    char *out = NULL;
+    hpwv2_title((int64_t)hp_val_to_int(b), &out);
+    hval r = wv2_string(0, out);
+    free(out);
+    return r;
+}
+
+hval hpbi_ui_browser_zoom(hval b, hval factor) {
+    return hp_of_int(hpwv2_zoom((int64_t)hp_val_to_int(b), hp_val_to_float(factor)));
+}
+
+hval hpbi_ui_browser_zoom_get(hval b) {
+    double z = 1.0;
+    hpwv2_zoom_get((int64_t)hp_val_to_int(b), &z);
+    return hp_of_float(z);
+}
+
+hval hpbi_ui_browser_devtools(hval b) {
+    return hp_of_int(hpwv2_devtools((int64_t)hp_val_to_int(b)));
+}
+
+hval hpbi_ui_browser_visible(hval b, hval on) {
+    return hp_of_int(hpwv2_visible((int64_t)hp_val_to_int(b),
+                                   hp_val_to_bool(on)));
+}
+
+hval hpbi_ui_browser_key(hval b, hval mod, hval vk, hval cmd, hval cb) {
+    return hp_of_int(hpwv2_shortcut((int64_t)hp_val_to_int(b),
+                                    (int64_t)hp_val_to_int(mod),
+                                    (int64_t)hp_val_to_int(vk),
+                                    (int64_t)hp_val_to_int(cmd), cb));
+}
+
+hval hpbi_ui_browser_on(hval b, hval ev, hval cb) {
+    return hp_of_int(hpwv2_on((int64_t)hp_val_to_int(b),
+                              (int64_t)hp_val_to_int(ev), cb));
+}
+
 hval hpbi_ui_text_lines(hval s, hval pt, hval bold, hval maxw) {
     hstr *t = hp_val_to_str(s);
     return hp_of_int(hpui_text_lines(t ? t->data : "",

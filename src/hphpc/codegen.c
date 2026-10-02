@@ -40,6 +40,46 @@ struct Codegen {
 
 static void emit_stmt(Codegen *g, Stmt *s);
 static void emit_expr(Codegen *g, Expr *e, Buf *dst);
+
+/* ---------------- concatenation chains ----------------
+ *
+ * PHP's `.` is left-associative, so "a" . "b" . "c" parses as ((a . b) . c).
+ * Emitting that shape verbatim produced one nested hp_str_concat_v() call per
+ * operand, which is fine for two or three parts and pathological past that:
+ * a 60-part HTML literal emitted 60 nested calls, and gcc needs memory
+ * exponential in the nesting depth (it died with "out of memory allocating
+ * 67108848 bytes"). Balancing the tree keeps the depth at log2(n). */
+
+static int dot_chain_len(Expr *e) {
+    int n = 1;
+    while (e && e->kind == EX_BIN && !e->is_nullcoal && e->u.bin.op.kind == T_DOT) {
+        n++;
+        e = e->u.bin.l;
+    }
+    return n;
+}
+
+/* operands in source order: down the left spine, right children first */
+static int dot_collect(Expr *e, Expr **out, int cap) {
+    if (e && e->kind == EX_BIN && !e->is_nullcoal && e->u.bin.op.kind == T_DOT) {
+        int n = dot_collect(e->u.bin.l, out, cap);
+        if (n < cap) out[n] = e->u.bin.r;
+        return n + 1 > cap ? cap : n + 1;
+    }
+    if (cap > 0) out[0] = e;
+    return cap > 0 ? 1 : 0;
+}
+
+static void emit_dot_chain(Codegen *g, Expr **parts, int lo, int hi, Buf *dst) {
+    if (hi - lo == 1) { emit_expr(g, parts[lo], dst); return; }
+    int mid = lo + (hi - lo) / 2;
+    Buf a, b;
+    buf_init(&a);
+    buf_init(&b);
+    emit_dot_chain(g, parts, lo, mid, &a);
+    emit_dot_chain(g, parts, mid, hi, &b);
+    buf_printf(dst, "hp_str_concat_v(hv(%s), hv(%s))", buf_take(&a), buf_take(&b));
+}
 static const char *ctype_of(const Type *t);
 
 /* A local captured by the try-helper currently being emitted: its name is a
@@ -184,6 +224,17 @@ static void to_hval(Codegen *g, Expr *e, Buf *dst) {
 /* If a builtin's hval result is consumed as a scalar, project it. */
 static void project_hval(Buf *dst, const Type *ret) {
     if (!ret) return;
+    /* Objects are carried in hval.u.p, which is a void*. Unboxing one needs a
+     * cast to the concrete struct: without it a `[Thing]`-typed array read
+     * yields void* and `->field` on it does not compile. The whole rewrite
+     * happens here rather than at each site so method arguments, returns and
+     * index reads all agree. */
+    if (ret->kind == TY_CLASS || ret->kind == TY_STRUCT) {
+        char *raw = buf_take(dst);
+        buf_printf(dst, "((struct %s *)((%s).u.p))", ret->name, raw);
+        free(raw);
+        return;
+    }
     switch (ret->kind) {
     case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64: case TY_ENUM:
         buf_printf(dst, ".u.i"); break;
@@ -370,6 +421,15 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
         return;
     }
     TokKind op = e->u.bin.op.kind;
+    /* long `.` chains are emitted balanced, before the operands are walked */
+    if (op == T_DOT && !e->is_nullcoal && dot_chain_len(e) > 3) {
+        int cap = dot_chain_len(e);
+        Expr **parts = (Expr **)xmalloc((size_t)cap * sizeof(Expr *));
+        int n = dot_collect(e, parts, cap);
+        emit_dot_chain(g, parts, 0, n, dst);
+        free(parts);
+        return;
+    }
     const Type *lt = e->u.bin.l->type;
     const Type *rt = e->u.bin.r->type;
     bool ln = type_is_numeric(lt ? lt->kind : TY_ERROR);

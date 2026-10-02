@@ -370,6 +370,30 @@ void builtins_init(void) {
     add("ui_count",        B_MISC,    ty_int,     false, false);
     add("ui_progress_get", B_MISC,    ty_int,     false, false);
 
+    /* embedded Chromium (WebView2): HolyBrowser's engine */
+    add("ui_hwnd",          B_MISC,    ty_int,     false, false);
+    add("ui_browser_ready", B_ZERO,    ty_bool,    false, false);
+    add("ui_browser_loader",B_ZERO,    ty_string,  false, false);
+    add("ui_browser_new",   B_MISC,    ty_int,     false, false);
+    add("ui_browser_free",  B_MISC,    ty_int,     false, false);
+    add("ui_browser_fit",   B_MISC,    ty_int,     false, false);
+    add("ui_browser_go",    B_MISC,    ty_int,     false, false);
+    add("ui_browser_html",  B_MISC,    ty_int,     false, false);
+    add("ui_browser_back",  B_MISC,    ty_int,     false, false);
+    add("ui_browser_forward",B_MISC,   ty_int,     false, false);
+    add("ui_browser_reload",B_MISC,    ty_int,     false, false);
+    add("ui_browser_stop",  B_MISC,    ty_int,     false, false);
+    add("ui_browser_can_back",   B_MISC, ty_bool,  false, false);
+    add("ui_browser_can_forward",B_MISC, ty_bool,  false, false);
+    add("ui_browser_url",   B_MISC,    ty_string,  false, false);
+    add("ui_browser_title", B_MISC,    ty_string,  false, false);
+    add("ui_browser_zoom",  B_MISC,    ty_int,     false, false);
+    add("ui_browser_zoom_get", B_MISC, ty_float,  false, false);
+    add("ui_browser_devtools",  B_MISC, ty_int,    false, false);
+    add("ui_browser_on",    B_MISC,    ty_int,     false, false);
+    add("ui_browser_key",   B_MISC,    ty_int,     false, false);
+    add("ui_browser_visible",B_MISC,    ty_int,     false, false);
+
     /* threading: workers, channels, mutexes, barriers, atomics */
     add("thr_spawn",       B_MISC,  ty_mixed,  false, false);  /* (closure[, args]) -> tid|false */
     add("thr_join",        B_MISC,  ty_mixed,  false, false);  /* (tid) -> bool */
