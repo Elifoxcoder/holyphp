@@ -299,10 +299,21 @@ static HFONT entry_font(UiEntry *e, bool role_bold) {
     return ui_font(pt, e->ov_font_bold || role_bold);
 }
 
-/* Real pixel width of a string in the font it will actually be drawn with.
+/* Width of a string in the font it will actually be drawn with, in the SAME
+ * logical units the layout engine works in.
+ *
  * The library used to guess strlen * pt * 0.62, which is fine for average
  * text but leaves "iiii" swimming in padding and "WWWW" clipped -- that is
- * what made button padding look inconsistent from one label to the next. */
+ * what made button padding look inconsistent from one label to the next.
+ *
+ * Measuring it for real is only half the job. ui_font() builds the font at
+ * -MulDiv(pt, g_dpi, 72), so GetTextExtentPoint32W reports DEVICE pixels,
+ * while Flow hands out rectangles in 96-DPI "logical" pixels that
+ * hpui_ctrl_new() multiplies by sc() on the way to CreateWindow. Returning
+ * the raw extent therefore inflated every measurement by the DPI scale (1.5x
+ * on a 150% display): a button then reserved 1.5x the text it would draw,
+ * which is exactly how "Danger" ended up as "Dan...". Divide it back out.
+ */
 int64_t hpui_textw(const char *text, int pt, bool bold) {
     if (!text || !*text) return 0;
     ensure_common();
@@ -313,6 +324,7 @@ int64_t hpui_textw(const char *text, int pt, bool bold) {
              * length. GetTextExtentPoint32W rejects -1 outright (it fails with
              * ERROR_INVALID_PARAMETER), which silently produced garbage
              * widths and hence the lopsided button padding. */
+    /* the fallback has to be in logical units too */
     int64_t guess = (int64_t)strlen(text) * (pt > 0 ? pt : 12) * 13 / 20;
     HDC dc = CreateCompatibleDC(NULL);
     if (!dc) return guess;
@@ -323,8 +335,46 @@ int64_t hpui_textw(const char *text, int pt, bool bold) {
     SelectObject(dc, old);
     DeleteDC(dc);
     if (!ok || sz.cx <= 0) return guess;
-    return (int64_t)sz.cx;
+    /* device pixels -> logical pixels, rounding UP so a run of text is never
+     * measured a pixel short of what GDI will actually draw */
+    int64_t logical = ((int64_t)sz.cx * 96 + g_dpi - 1) / (g_dpi > 0 ? g_dpi : 96);
+    return logical < 1 ? 1 : logical;
 }
+/* How many lines `text` needs when word-wrapped to `maxw` LOGICAL pixels.
+ * A label wider than its container used to be silently ellipsised; the layout
+ * engine now asks this first and grows the label instead, so a long sentence
+ * wraps rather than disappearing. Returns 0 for empty text, 1 if it fits. */
+int64_t hpui_text_lines(const char *text, int pt, bool bold, int maxw) {
+    if (!text || !*text || maxw <= 0) return text && *text ? 1 : 0;
+    ensure_common();
+    wchar_t w[1024];
+    int n = MultiByteToWideChar(CP_UTF8, 0, text, -1, w, 1024);
+    if (n <= 1) return 0;
+    n -= 1;
+    HDC dc = CreateCompatibleDC(NULL);
+    if (!dc) return 1;
+    HFONT font = ui_font(pt, bold);
+    HFONT old = (HFONT)SelectObject(dc, font);
+    /* BOTH numbers below must come from the same space. DT_CALCRECT reports
+     * DEVICE pixels, so the line height has to be a device height too --
+     * dividing it by a logical value (or worse, by the width of "Ag") made
+     * every label report two lines and double the height of the whole page. */
+    TEXTMETRICW tm;
+    memset(&tm, 0, sizeof tm);
+    GetTextMetricsW(dc, &tm);
+    int lh = (int)tm.tmHeight;
+    if (lh <= 0) lh = MulDiv(pt, g_dpi, 72) * 6 / 5;
+    RECT r = { 0, 0, sc(maxw), sc(maxw) * 4 };
+    DrawTextW(dc, w, n, &r, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    if (r.bottom <= 0) return 1;
+    /* ceil, because DT_CALCRECT can come back a hair under a whole number of
+     * line boxes and would otherwise lose the final line */
+    int64_t lines = ((int64_t)r.bottom + lh - 1) / lh;
+    return lines < 1 ? 1 : lines;
+}
+
 /* HolyPHP colours are 0xRRGGBB integers; Win32 COLORREF is 0x00BBGGRR.
  * Every colour entering the layer from the language goes through here, or
  * the red and blue channels come out swapped. */
@@ -1612,8 +1662,16 @@ static void draw_control_at(HWND hw, HDC dc, const RECT *where) {
         wchar_t buf[1024];
         GetWindowTextW(hw, buf, 1024);
         RECT tr = rc;
-        draw_str(dc, tr, buf, p.fg, entry_font(e, false),
-                 DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        /* Multi-line labels word-wrap instead of being ellipsised. The layout
+         * engine sizes them with ui_text_lines(), so a long sentence keeps all
+         * of its words rather than losing the tail to "...". Short labels are
+         * unaffected: they still get DT_SINGLELINE vertical centring. */
+        int oneLine = sc(18);
+        bool wraps = h > oneLine + sc(6);
+        UINT fl = DT_LEFT | DT_END_ELLIPSIS | DT_NOPREFIX;
+        if (wraps) { fl = DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS; }
+        else { fl |= DT_VCENTER | DT_SINGLELINE; }
+        draw_str(dc, tr, buf, p.fg, entry_font(e, false), fl);
         break;
     }
     case HPUI_BUTTON: {
@@ -2304,4 +2362,7 @@ hval hpui_pick_folder(int64_t w) { (void)w; return hp_null; }
 hval hpui_color_pick(int64_t w, int64_t r) { (void)w; (void)r; return hp_null; }
 int64_t ui_clip_set(const char *t) { (void)t; return -1; }
 hval ui_clip_get(void) { return hp_null; }
+int64_t hpui_text_lines(const char *t, int pt, bool b, int mw) {
+    (void)t; (void)pt; (void)b; (void)mw; return 1;
+}
 #endif

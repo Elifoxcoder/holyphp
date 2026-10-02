@@ -214,6 +214,33 @@ $app->tick(20);
 ck(rw($cl->h, 2) >= rw($bt1->h, 2) * 2, "a label in a column spans it");
 ck(rw($bt1->h, 2) < rw($cl->h, 2), "a button in a column still hugs its label");
 
+/* Nothing may be wider than the container it sits in. A label that measured
+ * 312px used to be handed all 312px inside a 234px card and ran off the edge
+ * ("nested containers inherit every metric from th..."). */
+$nest = $app->card(230);
+$wrap = $nest->sub("nested containers inherit every metric from the parent");
+$ncard = ui_rect($nest->frameHandle);
+$app->tick(20);
+ck(rw($wrap->h, 2) <= ncard[2],
+   "a long label never overflows its card");
+ck(rw($wrap->h, 3) > ncard[3] - 74,
+   "a long label grows taller instead of being clipped");
+ck(rw($wrap->h, 0) >= ncard[0] && rw($wrap->h, 0) + rw($wrap->h, 2) <= ncard[0] + ncard[2],
+   "the wrapped label stays inside the card's left and right edges");
+
+/* ui_textw must answer in the SAME logical pixels the layout engine uses.
+ * It used to return device pixels, so at 150% DPI every measurement was 1.5x
+ * too wide and buttons ended up with less room than their own label. */
+ck(ui_textw("Danger", 10) < rw($bt1->h, 2) * 2,
+   "ui_textw returns logical pixels, not device pixels");
+ck(ui_text_lines("a", 10, false, 400) == 1,
+   "short text is one line");
+ck(ui_text_lines("one two three four five six seven eight nine ten", 10, false, 60) > 1,
+   "long text wraps to several lines");
+ck(ui_text_lines("short", 10, false, 400) <= ui_text_lines(
+      "one two three four five six seven eight nine ten", 10, false, 60),
+   "a wider box needs fewer lines");
+
 // ---- scrolling ---------------------------------------------------------
 $deep = $app->label("far below the fold");
 $app->tick(20);

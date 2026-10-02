@@ -363,6 +363,7 @@ void builtins_init(void) {
     add("ui_range",       B_MISC,    ty_int,     false, false);
     add("ui_repaint",     B_MISC,    ty_int,     false, false);
     add("ui_text_px",      B_MISC,    ty_int,     false, false);
+    add("ui_text_lines",   B_MISC,    ty_int,     false, false);
     add("ui_enabled",     B_MISC,    ty_bool,    false, false);
     add("ui_rect",        B_MISC,    type_array_of(ty_int), false, false);
     add("ui_scroll",      B_MISC,    type_array_of(ty_int), false, false);

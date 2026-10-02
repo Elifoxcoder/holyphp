@@ -2367,6 +2367,14 @@ hval hpbi_ui_text_px(hval s, hval pt, hval bold) {
                                 (int)hp_val_to_int(pt),
                                 hp_val_to_int(bold) != 0));
 }
+/* ui_text_lines(text, pt, bold, maxWidth) -> how many lines it wraps to */
+hval hpbi_ui_text_lines(hval s, hval pt, hval bold, hval maxw) {
+    hstr *t = hp_val_to_str(s);
+    return hp_of_int(hpui_text_lines(t ? t->data : "",
+                                     (int)hp_val_to_int(pt),
+                                     hp_val_to_int(bold) != 0,
+                                     (int)hp_val_to_int(maxw)));
+}
 /* ui_theme(win, bg, surface, elevated, text, muted, accent, onAccent, border,
  *         radius, fontPt, titlePt, rowH, dark) */
 hval hpbi_ui_theme(hval win, hval bg, hval surface, hval elevated, hval text,

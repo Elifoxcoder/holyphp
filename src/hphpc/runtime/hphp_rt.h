@@ -642,6 +642,7 @@ int64_t hpui_ctrl_font(int64_t h, int64_t size, bool bold);
 int64_t hpui_range_set(int64_t h, int64_t lo, int64_t hi);
 int64_t hpui_repaint(int64_t h);
 int64_t hpui_textw(const char *text, int pt, bool bold);
+int64_t hpui_text_lines(const char *text, int pt, bool bold, int maxw);
 int64_t hpui_theme_set(int64_t win, const int64_t *v, int n);
 int64_t hpui_picture_load(int64_t h, const char *path);
 
@@ -716,6 +717,7 @@ hval hpbi_ui_scroll(hval win, hval dy, hval to);
 hval hpbi_ui_count(hval h);
 hval hpbi_ui_progress_get(hval h);
 hval hpbi_ui_text_px(hval s, hval pt, hval bold);
+hval hpbi_ui_text_lines(hval s, hval pt, hval bold, hval maxw);
 hval hpbi_ui_theme(hval win, hval bg, hval surface, hval elevated, hval text,
                    hval muted, hval accent, hval onAccent, hval border,
                    hval radius, hval fontPt, hval titlePt, hval rowH, hval dark);

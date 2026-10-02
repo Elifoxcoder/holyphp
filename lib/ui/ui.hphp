@@ -652,15 +652,40 @@ class Widgets {
     pub function _placed() { }
 
     // ---- text --------------------------------------------------------
+    /** Height $text needs when word-wrapped to $avail px, never below $base.
+     *
+     * A label that is wider than its container used to be silently
+     * ellipsised, so a long sentence lost its tail. The native side can now
+     * count the wrapped lines with ui_text_lines(); the factories below ask it
+     * first and reserve the full height, so the text wraps instead. Text that
+     * already fits keeps the theme's standard line height. */
+    pub function _textHeight(string $text, int $pt, bool $bold,
+                             int $avail, int $base): int {
+        if ($avail <= 0) { return $base; }
+        $lines = ui_text_lines($text, $pt, $bold, $avail);
+        if ($lines <= 1) { return $base; }
+        $lh = $pt * 4 / 3 + 4;
+        $need = $lines * $lh + 4;
+        return $need > $base ? $need : $base;
+    }
+
+    /* Every text widget takes its final width from the flow's box rather than
+     * from its own measurement. The box is already clamped to the container
+     * by Flow::take(), so this can never overflow -- the old
+     * "$box[2] < $nat ? $nat : $box[2]" could hand a label 478px inside a
+     * 234px card, which is what clipped the "nested containers" line. The
+     * measurement still goes into take() so the flow reserves room for it,
+     * and in a column it stretches to the full width so a later ->font()
+     * cannot clip ("Buttons" -> "Butt..."). */
     pub function heading(string $text, int $x = -1, int $y = -1, int $w = 0): Label {
         $nat = ui_textw($text, $this->titlePt, true) + 14;
-        /* In a column a heading gets the full width. Sizing it to the exact
-         * text means any later ->font() clips it ("Buttons" -> "Butt..."). */
-        $box = $this->flow->take($nat, 36, $w <= 0 && $this->flow->dir == "v");
-        $bw = $w > 0 ? $w : ($box[2] < $nat ? ($nat < 120 ? 120 : $nat) : $box[2]);
+        $avail = $w > 0 ? $w : ($nat < $this->flow->w ? $nat : $this->flow->w);
+        $hh = $this->_textHeight($text, $this->titlePt, true, $avail, 36);
+        $box = $this->flow->take($nat, $hh, $w <= 0 && $this->flow->dir == "v");
+        $bw = $w > 0 ? $w : $box[2];
         $l = new Label(ui_add($this->h, 3, $text,
                               $x >= 0 ? $x : $box[0],
-                              $y >= 0 ? $y : $box[1], $bw, 36));
+                              $y >= 0 ? $y : $box[1], $bw, $hh));
         ui_font($l->h, $this->titlePt, true);
         $this->_placed();
         return $l;
@@ -668,11 +693,13 @@ class Widgets {
 
     pub function sub(string $text, int $x = -1, int $y = -1, int $w = 0): Label {
         $nat = ui_textw($text, $this->fontPt) + 10;
-        $box = $this->flow->take($nat, 24, $w <= 0 && $this->flow->dir == "v");
-        $bw = $w > 0 ? $w : ($box[2] < $nat ? ($nat < 80 ? 80 : $nat) : $box[2]);
+        $avail = $w > 0 ? $w : ($nat < $this->flow->w ? $nat : $this->flow->w);
+        $hh = $this->_textHeight($text, $this->fontPt, false, $avail, 24);
+        $box = $this->flow->take($nat, $hh, $w <= 0 && $this->flow->dir == "v");
+        $bw = $w > 0 ? $w : $box[2];
         $l = new Label(ui_add($this->h, 3, $text,
                               $x >= 0 ? $x : $box[0],
-                              $y >= 0 ? $y : $box[1], $bw, 24));
+                              $y >= 0 ? $y : $box[1], $bw, $hh));
         ui_fg($l->h, $this->mutedColor);
         $this->_placed();
         return $l;
@@ -680,12 +707,15 @@ class Widgets {
 
     pub function label(string $text, int $x = -1, int $y = -1, int $w = 0,
                        int $hgt = 0): Label {
-        /* room for the text plus a little slack: ->font() may make it bolder
-         * and larger after the fact, and ellipsis would eat the last letters */
+        /* the +10 is slack so a later ->font() cannot make it clip */
         $nat = ui_textw($text, $this->fontPt) + 10;
         $hh = $hgt > 0 ? $hgt : $this->hLabel;
+        $avail = $w > 0 ? $w : ($nat < $this->flow->w ? $nat : $this->flow->w);
+        if ($hgt <= 0) {
+            $hh = $this->_textHeight($text, $this->fontPt, false, $avail, $hh);
+        }
         $box = $this->flow->take($nat, $hh, $w <= 0 && $this->flow->dir == "v");
-        $bw = $w > 0 ? $w : ($box[2] < $nat ? ($nat < 40 ? 40 : $nat) : $box[2]);
+        $bw = $w > 0 ? $w : $box[2];
         $l = new Label(ui_add($this->h, 3, $text,
                               $x >= 0 ? $x : $box[0],
                               $y >= 0 ? $y : $box[1], $bw, $hh));
