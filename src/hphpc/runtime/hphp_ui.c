@@ -147,7 +147,7 @@ static COLORREF tint(COLORREF c) {
 }
 
 /* ================= font cache ================= */
-typedef struct { int pt; bool bold; HFONT f; } FontEnt;
+typedef struct { int pt; bool bold; HFONT f; const wchar_t *fam; } FontEnt;
 static FontEnt g_fonts[64];
 static int      g_nfonts = 0;
 
@@ -157,10 +157,11 @@ static void fonts_drop(void) {
     g_nfonts = 0;
 }
 
-static HFONT ui_font(int pt, bool bold) {
+static HFONT ui_font_family(int pt, bool bold, const wchar_t *fam) {
     if (pt <= 0) pt = g_theme.font_pt;
     for (int i = 0; i < g_nfonts; i++)
-        if (g_fonts[i].pt == pt && g_fonts[i].bold == bold)
+        if (g_fonts[i].pt == pt && g_fonts[i].bold == bold &&
+            g_fonts[i].fam == fam)
             return g_fonts[i].f;
     if (g_nfonts >= (int)(sizeof g_fonts / sizeof g_fonts[0])) fonts_drop();
     HFONT f = CreateFontW(-MulDiv(pt, g_dpi, 72), 0, 0, 0,
@@ -168,12 +169,65 @@ static HFONT ui_font(int pt, bool bold) {
                           FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                           OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                          L"Segoe UI");
+                          fam);
     g_fonts[g_nfonts].pt = pt;
     g_fonts[g_nfonts].bold = bold;
+    g_fonts[g_nfonts].fam = fam;
     g_fonts[g_nfonts].f = f;
     g_nfonts++;
     return f;
+}
+
+static HFONT ui_font(int pt, bool bold) {
+    return ui_font_family(pt, bold, L"Segoe UI");
+}
+
+/* Segoe UI covers Latin, Greek, Cyrillic and the punctuation blocks, and
+ * stops there. The characters apps reach for when they want an icon -- the
+ * gear, the cross, the house, the refresh arrow -- live in Segoe UI Symbol,
+ * and asking GDI for a glyph the face does not have draws a placeholder box
+ * or a stray stroke instead of the icon. So ask the face whether it covers
+ * the string and hand back the symbol face when it does not. Measuring has
+ * to make the same choice, or the width reserved is the width of the wrong
+ * font and every button that holds an icon comes out lopsided. */
+static bool font_covers(HDC dc, const wchar_t *s) {
+    for (const wchar_t *p = s; p && *p; p++) {
+        if (*p < 0x80) continue;              /* plain ASCII is always there */
+        WORD idx = 0xFFFF;
+        if (GetGlyphIndicesW(dc, p, 1, &idx, GGI_MARK_NONEXISTING_GLYPHS)
+                == GDI_ERROR)
+            return true;                      /* cannot tell, so do not guess */
+        if (idx == 0xFFFF) return false;
+    }
+    return true;
+}
+
+static HFONT font_for_wstr(const wchar_t *s, HFONT base) {
+    if (!s || !*s || !base) return base;
+    HDC dc = CreateCompatibleDC(NULL);
+    if (!dc) return base;
+    HFONT old = (HFONT)SelectObject(dc, base);
+    bool ok = font_covers(dc, s);
+    SelectObject(dc, old);
+    DeleteDC(dc);
+    if (ok) return base;
+    /* same size and weight as the face that could not draw it; the cache is
+       keyed on family, so look the original entry up rather than guess */
+    int pt = g_theme.font_pt;
+    bool bold = false;
+    for (int i = 0; i < g_nfonts; i++)
+        if (g_fonts[i].f == base) { pt = g_fonts[i].pt; bold = g_fonts[i].bold; break; }
+    return ui_font_family(pt, bold, L"Segoe UI Symbol");
+}
+
+/* UTF-8 entry point, for the measuring paths */
+static HFONT font_for_text(const char *text, int pt, bool bold) {
+    HFONT base = ui_font(pt, bold);
+    if (!text || !*text) return base;
+    wchar_t w[8];
+    int n = MultiByteToWideChar(CP_UTF8, 0, text, -1, w, 8);
+    if (n <= 1) return base;
+    return font_for_wstr(w, base);
 }
 
 static void fonts_apply(HWND hw) {
@@ -278,7 +332,8 @@ static void draw_str(HDC dc, RECT r, const wchar_t *s, COLORREF fg, HFONT f,
     if (!s || !*s) return;
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, fg);
-    HFONT of = (HFONT)SelectObject(dc, f ? f : (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+    HFONT base = f ? f : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    HFONT of = (HFONT)SelectObject(dc, font_for_wstr(s, base));
     DrawTextW(dc, s, -1, &r, flags | DT_NOPREFIX);
     SelectObject(dc, of);
 }
@@ -328,7 +383,7 @@ int64_t hpui_textw(const char *text, int pt, bool bold) {
     int64_t guess = (int64_t)strlen(text) * (pt > 0 ? pt : 12) * 13 / 20;
     HDC dc = CreateCompatibleDC(NULL);
     if (!dc) return guess;
-    HFONT old = (HFONT)SelectObject(dc, ui_font(pt, bold));
+    HFONT old = (HFONT)SelectObject(dc, font_for_text(text, pt, bold));
     SIZE sz;
     sz.cx = sz.cy = 0;
     BOOL ok = GetTextExtentPoint32W(dc, w, n, &sz);
@@ -353,7 +408,7 @@ int64_t hpui_text_lines(const char *text, int pt, bool bold, int maxw) {
     n -= 1;
     HDC dc = CreateCompatibleDC(NULL);
     if (!dc) return 1;
-    HFONT font = ui_font(pt, bold);
+    HFONT font = font_for_text(text, pt, bold);
     HFONT old = (HFONT)SelectObject(dc, font);
     /* BOTH numbers below must come from the same space. DT_CALCRECT reports
      * DEVICE pixels, so the line height has to be a device height too --
@@ -857,6 +912,19 @@ static LRESULT CALLBACK hover_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_MOUSEMOVE: hover_enter(e); break;
     case WM_MOUSELEAVE: hover_leave(e); break;
+    /* Every class is registered with IDC_ARROW, so the pointer stayed an
+     * arrow over the buttons that do something and an I-beam bar over the
+     * text fields. Say what the control is. */
+    case WM_SETCURSOR:
+        if (e->kind == HPUI_BUTTON || e->kind == HPUI_CHECKBOX) {
+            SetCursor(LoadCursorW(NULL, IDC_HAND));
+            return TRUE;
+        }
+        if (e->kind == HPUI_INPUT) {
+            SetCursor(LoadCursorW(NULL, IDC_ARROW));
+            return TRUE;
+        }
+        break;
     case WM_LBUTTONDOWN:
         e->pressed = true;
         /* An edit MUST still see the click: swallowing it left the control
