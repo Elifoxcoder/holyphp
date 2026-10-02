@@ -259,6 +259,10 @@ struct Wv2 {
     int     top;                 /* top inset, logical px */
     int     dpi;
     int     last_cw, last_ch;
+    /* the rect we last handed the controller, and where we want it: they
+     * only agree once the fit correction below has converged */
+    RECT    ask;
+    bool    asked;
     bool    ready;
     bool    com_init;
     /* keyboard shortcuts: the Chromium widget owns the focus once a page is
@@ -829,8 +833,12 @@ int64_t hpwv2_fit(int64_t id, int top_logical) {
     Wv2 *e = wv2_find(id);
     if (!e || !e->ctl) return -1;
     e->top = top_logical;
-    /* the widget window appears a moment after the controller does */
-    if (!e->wvwnd) subclass_widget(e, find_widget(e->parent));
+    /* the widget window appears a moment after the controller does, and
+       Chromium replaces it with a fresh one as the view settles */
+    if (!e->wvwnd || !IsWindow(e->wvwnd)) {
+        e->wvwnd = NULL;
+        subclass_widget(e, find_widget(e->parent));
+    }
     RECT rc;
     GetClientRect(e->parent, &rc);
     int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
@@ -841,19 +849,54 @@ int64_t hpwv2_fit(int64_t id, int top_logical) {
     BOOL vis = (e->shown && !IsIconic(e->parent)) ? TRUE : FALSE;
     ctl_visible(e->ctl, vis);
     if (!vis) return 0;
-    if (cw == e->last_cw && ch == e->last_ch) return 0;
-    e->last_cw = cw;
-    e->last_ch = ch;
+
     POINT pt;
     pt.x = 0;
     pt.y = top;
     ClientToScreen(e->parent, &pt);
-    RECT b;
-    b.left = pt.x;
-    b.top = pt.y;
-    b.right = pt.x + cw;
-    b.bottom = pt.y + (ch - top);
-    ctl_bounds(e->ctl, b);
+    RECT want;
+    want.left   = pt.x;
+    want.top    = pt.y;
+    want.right  = pt.x + cw;
+    want.bottom = pt.y + (ch - top);
+
+    int resized = (cw != e->last_cw || ch != e->last_ch);
+    e->last_cw = cw;
+    e->last_ch = ch;
+
+    /* Chromium maps the controller rect through its own DPI space, which is
+     * not always the space GetClientRect reports. On a 150% display we asked
+     * for 1748 physical pixels and the widget turned up 1165 wide and well
+     * down and to the right of where it belonged, so assuming the two agree
+     * puts the page in the wrong corner.
+     *
+     * Rather than guess the conversion, ask, look at where the widget
+     * actually landed, and close the gap: the fixed point of that correction
+     * is the rect we wanted. It settles in a few timer ticks and costs one
+     * GetWindowRect, so there is no pumping and no re-entrancy. */
+    if (!resized && e->asked && e->wvwnd && IsWindow(e->wvwnd)) {
+        RECT got;
+        GetWindowRect(e->wvwnd, &got);
+        int gw = got.right - got.left, gh = got.bottom - got.top;
+        if (gw > 0 && gh > 0) {
+            RECT next = e->ask;
+            next.left   += (want.left   - got.left);
+            next.top    += (want.top    - got.top);
+            next.right  += (want.right  - got.right);
+            next.bottom += (want.bottom - got.bottom);
+            if (next.left != e->ask.left || next.top != e->ask.top ||
+                next.right != e->ask.right || next.bottom != e->ask.bottom) {
+                e->ask = next;
+                ctl_bounds(e->ctl, next);
+                ctl_notify(e->ctl);
+            }
+            return 0;
+        }
+    }
+
+    e->ask = want;
+    e->asked = true;
+    ctl_bounds(e->ctl, want);
     ctl_notify(e->ctl);
     return 0;
 }
