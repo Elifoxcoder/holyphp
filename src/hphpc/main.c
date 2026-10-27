@@ -29,10 +29,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#define HPHP_VERSION "1.0.1"
+#define HPHP_VERSION "1.0.2"
 
 /* Used by install/search/publish when the user has not configured a registry
  * (no registry_url file, no $HPHP_REGISTRY). Hosted alongside the project;
@@ -48,6 +49,7 @@
 static void nap_ms(int ms) { Sleep((DWORD)ms); }
 #else
 #include <unistd.h>
+#include <sys/wait.h>
 static void nap_ms(int ms) { usleep((useconds_t)ms * 1000); }
 #endif
 
@@ -158,7 +160,18 @@ static char *path_join(const char *a, const char *b) {
 /* hphp private directory (runtime extraction + build cache)           */
 /* ------------------------------------------------------------------ */
 
+#ifndef _WIN32
 static int system_sh(const char *cmd); /* fwd */
+#endif
+
+/* Make a directory, quietly, whatever it takes: the build dirs are scratch
+ * space that may or may not exist yet. No cmd.exe involved - every cmd
+ * spawn used to cost a process per call. */
+#ifdef _WIN32
+static void ensure_dir(const char *dir) { CreateDirectoryA(dir, NULL); }
+#else
+static void ensure_dir(const char *dir) { mkdir(dir, 0755); }
+#endif
 
 static char *hphp_dir(void) {
     static char *dir = NULL;
@@ -176,7 +189,7 @@ static char *hphp_dir(void) {
     else
         dir = xstrdup(".hphp");
 #ifdef _WIN32
-    system_sh(fmt("if not exist \"%s\" mkdir \"%s\"", dir, dir));
+    ensure_dir(dir);
 #else
     system_sh(fmt("mkdir -p \"%s\"", dir));
 #endif
@@ -200,21 +213,148 @@ static const char *work_dir(void) {
 /* command execution                                                   */
 /* ------------------------------------------------------------------ */
 
+/* Run one backend command (gcc, ld, ...) directly - no cmd.exe in the
+ * middle.
+ *
+ * cmd.exe used to wrap every call: a process per gcc/ld invocation, quote
+ * mangling of the -L"..." paths, and - worst of all - ld crashed with
+ * 0xC0000005 (and wrote zero-filled exes) when spawned through cmd from
+ * hphp, while the identical command ran fine when started directly.
+ * CreateProcess runs the program exactly as given. Returns the exit code,
+ * or -1 when the program could not even start. */
+static int run_direct(const char *cmdline, bool quiet) {
+    int verbose = getenv("HPHP_VERBOSE") != NULL;
+    if (verbose) fprintf(stderr, "[hphp backend] %s\n", cmdline);
+#ifdef _WIN32
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    HANDLE nul = INVALID_HANDLE_VALUE;
+    BOOL inherit = FALSE;
+    if (quiet) {
+        nul = CreateFileA("NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                          NULL, OPEN_EXISTING, 0, NULL);
+        if (nul != INVALID_HANDLE_VALUE) {
+            si.dwFlags = STARTF_USESTDHANDLES;
+            si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+            si.hStdOutput = nul;
+            si.hStdError = nul;
+            inherit = TRUE;
+        }
+    }
+    char *line = xstrdup(cmdline);   /* CreateProcess may write to it */
+    if (!CreateProcessA(NULL, line, NULL, NULL, inherit, 0, NULL, NULL, &si, &pi)) {
+        free(line);
+        if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+        if (verbose) fprintf(stderr, "[hphp backend] cannot start (error %lu)\n",
+                             (unsigned long)GetLastError());
+        return -1;
+    }
+    free(line);
+    CloseHandle(pi.hThread);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+    return (int)code;
+#else
+    char *q = quiet ? fmt("%s >/dev/null 2>&1", cmdline) : fmt("%s 2>&1", cmdline);
+    int rc = system(q);
+    free(q);
+    return rc;
+#endif
+}
+
+#ifndef _WIN32
 /* Run cmd quietly; output discarded. */
 static int system_sh(const char *cmd) {
     int verbose = getenv("HPHP_VERBOSE") != NULL;
-#ifdef _WIN32
-    /* Parenthesize so cmd.exe cannot strip the outer quotes of the command
-     * word (it mangles quoted paths otherwise). */
-    char *q = verbose ? fmt("(%s) 2>&1", cmd) : fmt("(%s) > nul 2>&1", cmd);
-#else
     char *q = verbose ? fmt("(%s) 2>&1", cmd) : fmt("(%s) >/dev/null 2>&1", cmd);
-#endif
     if (verbose) fprintf(stderr, "[hphp backend] %s\n", cmd);
     int rc = system(q);
     free(q);
     return rc;
 }
+#endif
+
+/* Run several independent commands concurrently and wait for them all.
+ * The object compiles are the only multi-second step of a cold build and
+ * they share nothing but CPU cores, so running them at once is the single
+ * biggest win. Returns 1 only when every command exited 0. */
+#ifdef _WIN32
+static int run_parallel(char **cmds, int n) {
+    int verbose = getenv("HPHP_VERBOSE") != NULL;
+    HANDLE procs[16];
+    if (n > 16) n = 16;
+    for (int i = 0; i < n; i++) {
+        procs[i] = NULL;
+        char *cmd = cmds[i];
+        if (verbose) fprintf(stderr, "[hphp backend] %s\n", cmd);
+        /* straight to gcc - no cmd.exe wrapper to pay for or to mangle
+         * the paths; output goes to NUL like it always did */
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        memset(&si, 0, sizeof si);
+        si.cb = sizeof si;
+        HANDLE nul = CreateFileA("NUL", GENERIC_WRITE,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                  NULL, OPEN_EXISTING, 0, NULL);
+        BOOL inherit = FALSE;
+        if (nul != INVALID_HANDLE_VALUE) {
+            si.dwFlags = STARTF_USESTDHANDLES;
+            si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+            si.hStdOutput = nul;
+            si.hStdError = nul;
+            inherit = TRUE;
+        }
+        char *line = xstrdup(cmd);
+        if (!CreateProcessA(NULL, line, NULL, NULL, inherit, 0, NULL, NULL, &si, &pi)) {
+            free(line);
+            if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+            continue;
+        }
+        free(line);
+        CloseHandle(pi.hThread);
+        if (nul != INVALID_HANDLE_VALUE) CloseHandle(nul);
+        procs[i] = pi.hProcess;
+    }
+    int ok = 1;
+    for (int i = 0; i < n; i++) {
+        if (!procs[i]) { ok = 0; continue; }
+        WaitForSingleObject(procs[i], INFINITE);
+        DWORD code = 1;
+        GetExitCodeProcess(procs[i], &code);
+        CloseHandle(procs[i]);
+        if (code != 0) ok = 0;
+    }
+    return ok;
+}
+#else
+static int run_parallel(char **cmds, int n) {
+    int verbose = getenv("HPHP_VERBOSE") != NULL;
+    pid_t pids[16];
+    if (n > 16) n = 16;
+    for (int i = 0; i < n; i++) {
+        if (verbose) fprintf(stderr, "[hphp backend] %s\n", cmds[i]);
+        pid_t pid = fork();
+        if (pid == 0) {
+            execl("/bin/sh", "sh", "-c", cmds[i], (char *)NULL);
+            _exit(127);
+        }
+        pids[i] = pid;
+    }
+    int ok = 1;
+    for (int i = 0; i < n; i++) {
+        if (pids[i] <= 0) { ok = 0; continue; }
+        int status = 0;
+        while (waitpid(pids[i], &status, 0) < 0) { /* retry on EINTR */ }
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) ok = 0;
+    }
+    return ok;
+}
+#endif
 
 static int file_nonempty(const char *path) {
     FILE *f = fopen(path, "rb");
@@ -246,11 +386,28 @@ static int file_looks_like_exe(const char *path) {
 
 static void remove_quiet(const char *path) { remove(path); }
 
-/* Move src onto dst with C stdio rename; remove dst first if needed. */
+/* Move src onto dst. On Windows this goes through MoveFileEx with
+ * REPLACE_EXISTING: a freshly linked image is prime scanner bait and
+ * plain rename() fails outright when a scanner still holds the old file
+ * open. The retry loop gives the scanner a moment to let go. */
 static int move_file(const char *src, const char *dst) {
+#ifdef _WIN32
+    for (int attempt = 0; attempt < 5; attempt++) {
+        if (MoveFileExA(src, dst,
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            return 0;
+        DWORD err = GetLastError();
+        if (err != ERROR_SHARING_VIOLATION && err != ERROR_ACCESS_DENIED)
+            break;
+        nap_ms(100 * (attempt + 1));   /* the scanner is still looking */
+    }
+    /* fall through to the copy path below */
+#else
     remove_quiet(dst);
     if (rename(src, dst) == 0) return 0;
+#endif
     /* cross-device fallback: copy */
+    remove_quiet(dst);
     FILE *a = fopen(src, "rb"), *b = fopen(dst, "wb");
     if (!a || !b) { if (a) fclose(a); if (b) fclose(b); return -1; }
     char buf[65536];
@@ -271,10 +428,48 @@ static int move_file(const char *src, const char *dst) {
 /* First line of `gcc -print-file-name=...` (or -print-libgcc-file-name etc). */
 static char *gcc_query(const char *args) {
 #ifdef _WIN32
-    char *cmd = fmt("(gcc %s) 2>nul", args);
+    /* straight to gcc with a captured pipe - popen would spawn cmd.exe,
+     * which costs a process per query and was the flaky middle layer */
+    SECURITY_ATTRIBUTES sa;
+    memset(&sa, 0, sizeof sa);
+    sa.nLength = sizeof sa;
+    sa.bInheritHandle = TRUE;
+    HANDLE rd = NULL, wr = NULL;
+    if (!CreatePipe(&rd, &wr, &sa, 0)) return xstrdup("");
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);  /* keep the read end */
+    STARTUPINFOA si;
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = wr;
+    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    PROCESS_INFORMATION pi;
+    char *line = fmt("gcc %s", args);
+    if (!CreateProcessA(NULL, line, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+        free(line);
+        CloseHandle(rd);
+        CloseHandle(wr);
+        return xstrdup("");
+    }
+    free(line);
+    CloseHandle(wr);
+    char buf[1024] = {0};
+    DWORD got = 0, have = 0;
+    while (have < sizeof buf - 1 &&
+           ReadFile(rd, buf + have, (DWORD)(sizeof buf - 1 - have), &got, NULL) && got)
+        have += got;
+    CloseHandle(rd);
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    buf[have] = 0;
+    for (DWORD i = 0; i < have; i++)
+        if (buf[i] == '\n' || buf[i] == '\r') { buf[i] = 0; break; }
+    return xstrdup(buf);
 #else
     char *cmd = fmt("(gcc %s) 2>/dev/null", args);
-#endif
     FILE *p = popen(cmd, "r");
     free(cmd);
     if (!p) return xstrdup("");
@@ -284,18 +479,17 @@ static char *gcc_query(const char *args) {
     size_t n = strlen(buf);
     while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = 0;
     return xstrdup(buf);
+#endif
 }
 
-static const char *path_dir_of(const char *p) {
-    static char dir[1024];
+/* Directory part of a path. Returns a heap copy so two calls can be alive
+ * at the same time — a shared static buffer silently made the second call
+ * clobber the first. */
+static char *path_dir_of(const char *p) {
     const char *slash = strrchr(p, '/'), *bslash = strrchr(p, '\\');
     const char *cut = slash > bslash ? slash : bslash;
-    if (!cut) return ".";
-    size_t n = (size_t)(cut - p);
-    if (n >= sizeof dir) n = sizeof dir - 1;
-    memcpy(dir, p, n);
-    dir[n] = 0;
-    return dir;
+    if (!cut) return xstrdup(".");
+    return xstrndup(p, (size_t)(cut - p));
 }
 
 /* ------------------------------------------------------------------ */
@@ -330,7 +524,9 @@ static char *find_compiler(const char *argv0) {
 
 /* runtime/<file> next to the compiler binary, or the embedded copy */
 static char *runtime_path(const char *self, const char *file) {
-    char *p = fmt("%s/runtime/%s", path_dir_of(self), file);
+    char *dir = path_dir_of(self);
+    char *p = fmt("%s/runtime/%s", dir, file);
+    free(dir);
     FILE *f = fopen(p, "rb");
     if (f) { fclose(f); return p; }
     return NULL; /* fall back to the embedded copy */
@@ -349,13 +545,13 @@ static char *embed_read(const char *self, const char *file) {
     return NULL;
 }
 
-#ifdef _WIN32
 static void mkdir_p(const char *dir) {
-    system_sh(fmt("if not exist \"%s\" mkdir \"%s\"", dir, dir));
-}
+#ifdef _WIN32
+    ensure_dir(dir);
 #else
-static void mkdir_p(const char *dir) { system_sh(fmt("mkdir -p \"%s\"", dir)); }
+    system_sh(fmt("mkdir -p \"%s\"", dir));
 #endif
+}
 
 /* Write the three runtime files into <wd>/rt. Overwrite unconditionally so
  * the runtime always matches the compiler version. */
@@ -365,11 +561,6 @@ static void extract_runtime(const char *wd, const char *self) {
     mkdir_p(wd);
     char *rtdir = path_join(wd, "rt");
     mkdir_p(rtdir);
-#ifdef _WIN32
-    system_sh(fmt("if not exist \"%s\" mkdir \"%s\"", rtdir, rtdir));
-#else
-    system_sh(fmt("mkdir -p \"%s\"", rtdir));
-#endif
     for (int i = 0; i < 6; i++) {
         char *data = embed_read(self, files[i]);
         char *dest = fmt("%s/%s", rtdir, files[i]);
@@ -386,19 +577,143 @@ static void extract_runtime(const char *wd, const char *self) {
 /* backend: compile + link inside the work dir                         */
 /* ------------------------------------------------------------------ */
 
-/* Compile the three C inputs in wd (relative paths only) and link them to
- * <wd>/prog.out, then move the finished image to exepath. Never links
+/* A per-run tag for the temporary build files. The build dir is shared by
+ * every hphp on the machine, so two runs at the same time (a script that
+ * compiles two programs, an editor running a build task) must not write
+ * over each other's objects. */
+static void build_tag(char *buf, size_t n) {
+#ifdef _WIN32
+    unsigned long pid = (unsigned long)GetCurrentProcessId();
+#else
+    unsigned long pid = (unsigned long)getpid();
+#endif
+    unsigned long r = (unsigned long)clock() ^ (pid * 2654435761UL);
+    r = (r * 1103515245UL + 12345UL) & 0xFFFFFF;
+    snprintf(buf, n, "%lx%lx", pid, r);
+}
+
+/* Remove this run's temporary build files. They all carry the per-run tag,
+ * so nothing else can be using them. HPHP_KEEP_C=1 keeps the generated C
+ * (prog_<tag>.c) so it can be read after the build. */
+static void cleanup_build_files(const char *wd, const char *tag) {
+    static const char *base[6] = {"prog", "hp_rt", "hp_std", "hp_thr", "hp_ui", "hp_wv2"};
+    char path[1024];
+    for (int i = 0; i < 6; i++) {
+        snprintf(path, sizeof path, "%s/%s_%s.o", wd, base[i], tag);
+        remove_quiet(path);
+    }
+    snprintf(path, sizeof path, "%s/prog_%s.c", wd, tag);
+    if (!getenv("HPHP_KEEP_C")) remove_quiet(path);
+    snprintf(path, sizeof path, "%s/prog_%s.out", wd, tag);
+    remove_quiet(path);
+}
+
+/* Compile the C inputs in wd (relative paths only) and link them to
+ * <wd>/prog-<tag>.out, then move the finished image to exepath. Never links
  * directly onto exepath — freshly-written exes are scanner bait; the final
  * rename is atomic-ish and safe. */
+/* The whole file as a NUL-terminated string, or NULL when it cannot be
+ * read. Used to see which runtime modules the generated code mentions. */
+static char *read_file_string(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long len = ftell(f);
+    if (len < 0) { fclose(f); return NULL; }
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc((size_t)len + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t n = fread(buf, 1, (size_t)len, f);
+    buf[n] = 0;
+    fclose(f);
+    return buf;
+}
+
 static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
-                           const char *exepath) {
-    /* all paths below are relative to wd */
-    const char *po = "prog.o", *ro = "hp_rt.o", *so = "hp_std.o",
-                 *to = "hp_thr.o", *uo = "hp_ui.o", *vo = "hp_wv2.o";
-    const char *out = "prog.out";
+                           const char *exepath, bool gui, const char *cache_key,
+                           const char *rt_key, bool dev, const char *tag) {
+#ifdef _WIN32
+    /* A desktop program that opens a console window is a bug the user sees
+     * every single launch. -mwindows links against the GUI subsystem, so the
+     * process has no console to leave behind. */
+    const char *subsys = gui ? "-mwindows " : "";
+#else
+    const char *subsys = "";
+    (void)gui;
+#endif
+    /* Cache slots keep stable names (the cache is keyed by source hash, not
+     * by run), while the files on disk carry the per-run tag so parallel
+     * hphp processes never collide. */
+    const char *objbase[6] = {"prog", "hp_rt", "hp_std", "hp_thr", "hp_ui", "hp_wv2"};
+    char objnames[6][64];   /* cache names:  prog.o, hp_rt.o, ... */
+    char objs[6][64];       /* on-disk names: prog_<tag>.o, ... */
+    for (int i = 0; i < 6; i++) {
+        snprintf(objnames[i], sizeof objnames[i], "%s.o", objbase[i]);
+        snprintf(objs[i], sizeof objs[i], "%s_%s.o", objbase[i], tag);
+    }
+    char csrc[64];
+    snprintf(csrc, sizeof csrc, "prog_%s.c", tag);
+    char out[64];
+    snprintf(out, sizeof out, "prog_%s.out", tag);
     char *out_abs = path_join(wd, out);
     int verbose = getenv("HPHP_VERBOSE") != NULL;
-    (void)rt; (void)cpath;
+    (void)rt;
+    const char *opt = dev ? "-O0" : "-O2";
+
+    /* ---- which runtime modules this program actually uses ----
+     * hp_rt and hp_std are the base and always come along. Thread, UI and
+     * WebView are their own TUs, so a symbol prefix in the generated code is
+     * what pulls them in - and so is a prefix in hphp_std.c itself, which
+     * carries the UI and WebView builtins as thin wrappers over hpui_* and
+     * hpwv2_*. The base is linked into every program, so those references are
+     * there whatever the program does: scanning only the generated code left
+     * every hello world with an undefined hpui_dispatch at link time. */
+    bool needed[6] = {true, true, true, false, false, false};
+    {
+        char *genc = read_file_string(cpath);
+        const char *stdc = hp_embed_std_c ? hp_embed_std_c : "";
+        if (!genc) {
+            needed[3] = needed[4] = needed[5] = true;   /* cannot tell: all */
+        } else {
+            needed[3] = strstr(genc, "hp_thr_") != NULL || strstr(stdc, "hp_thr_") != NULL;
+            needed[4] = strstr(genc, "hp_ui_") != NULL || strstr(genc, "hpui_") != NULL ||
+                        strstr(stdc, "hp_ui_") != NULL || strstr(stdc, "hpui_") != NULL;
+            needed[5] = strstr(genc, "hp_wv2_") != NULL || strstr(genc, "hpwv2_") != NULL ||
+                        strstr(stdc, "hp_wv2_") != NULL || strstr(stdc, "hpwv2_") != NULL;
+            free(genc);
+        }
+    }
+
+    /* ---- incremental cache: two levels ----
+     * The runtime objects are the same for every program, so they live in
+     * their own slot keyed by the runtime sources and the toolchain alone -
+     * a new program does not pay for compiling them again. Only this
+     * program's own object and its linked image are under the program key. */
+    bool use_cache = cache_key && cache_key[0];
+    bool have[6] = {false};
+    if (use_cache) {
+        if (rt_key && rt_key[0]) {
+            for (int i = 1; i < 6; i++) {
+                if (!needed[i]) continue;
+                if (!cache_has_object(rt_key, objnames[i])) continue;
+                char *dest = path_join(wd, objs[i]);
+                have[i] = cache_get_object(rt_key, objnames[i], dest);
+                free(dest);
+            }
+        }
+        if (cache_has_object(cache_key, objnames[0])) {
+            char *dest = path_join(wd, objs[0]);
+            have[0] = cache_get_object(cache_key, objnames[0], dest);
+            free(dest);
+        }
+        if (verbose) fprintf(stderr, "[hphp backend] cache: prog.o=%d rt=[%d%d%d%d%d]\n",
+                             (int)have[0], (int)have[1], (int)have[2],
+                             (int)have[3], (int)have[4], (int)have[5]);
+    }
+    bool all_cached = use_cache;
+    for (int i = 0; i < 6; i++)
+        if (needed[i] && !have[i]) all_cached = false;
+    if (all_cached && verbose) fprintf(stderr, "[hphp backend] cache hit: all objects restored, skipping compile\n");
 
     /* work from inside wd so command lines stay short and quote-free */
 #ifdef _WIN32
@@ -417,68 +732,138 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
 #endif
 
     for (int attempt = 1; attempt <= 3; attempt++) {
-        /* --- compile the three objects (gcc -c is rock solid) --- */
+        /* --- compile the objects (skip if fully cached) --- */
         bool compiled = true;
-        const char *ccs[6] = {"prog.c:prog.o", "rt/hphp_rt.c:hp_rt.o",
-                              "rt/hphp_std.c:hp_std.o", "rt/hphp_thr.c:hp_thr.o",
-                              "rt/hphp_ui.c:hp_ui.o", "rt/hphp_wv2.c:hp_wv2.o"};
+        const char *srcs[6] = {csrc, "rt/hphp_rt.c", "rt/hphp_std.c",
+                               "rt/hphp_thr.c", "rt/hphp_ui.c", "rt/hphp_wv2.c"};
+        if (!all_cached) {
+        /* compile only the objects that are missing (and wanted at all) */
+        char *ccmds[6];
+        int cidx[6];
+        int ncmd = 0;
         for (int i = 0; i < 6; i++) {
-            char src[128], obj[64];
-            const char *colon = strchr(ccs[i], ':');
-            snprintf(src, sizeof src, "%.*s", (int)(colon - ccs[i]), ccs[i]);
-            snprintf(obj, sizeof obj, "%s", colon + 1);
-            char *cmd = fmt("gcc -O2 -std=c11 -I rt -c %s -o %s", src, obj);
-            int rc = system_sh(cmd);
-            free(cmd);
-            char *objp = path_join(wd, obj);
-            if (rc != 0 || !file_nonempty(objp)) {
+            if (!needed[i] || have[i]) continue;
+            ccmds[ncmd] = fmt("gcc %s -std=c11 -I rt -c %s -o %s", opt, srcs[i], objs[i]);
+            cidx[ncmd] = i;
+            ncmd++;
+        }
+        if (!run_parallel(ccmds, ncmd)) {
+            /* a concurrent compiler failure is often a transient exe-lock;
+             * the outer retry loop sleeps and tries again */
+            compiled = false;
+        }
+        for (int j = 0; j < ncmd; j++) {
+            int i = cidx[j];
+            free(ccmds[j]);
+            if (!compiled) continue;
+            char *objp = path_join(wd, objs[i]);
+            if (!file_nonempty(objp)) {
                 fprintf(stderr,
                         "hphp: internal error: cannot compile %s "
-                        "(set HPHP_VERBOSE=1 for details)\n", src);
+                        "(set HPHP_VERBOSE=1 for details)\n", srcs[i]);
                 compiled = false;
-                break;
             }
+            free(objp);
+        }
+        /* freshly compiled objects: runtime ones go in the shared slot,
+         * this program's own object in the program slot */
+        if (compiled && use_cache) {
+            for (int j = 0; j < ncmd; j++) {
+                int i = cidx[j];
+                const char *slot = (i == 0) ? cache_key : rt_key;
+                if (!slot || !slot[0]) continue;
+                char *srcp = path_join(wd, objs[i]);
+                cache_put_object(slot, objnames[i], srcp);
+                free(srcp);
+            }
+        }
         }
         if (!compiled) { nap_ms(300 * attempt); continue; }
 
+        /* --- linked-image cache: skip the link when we already have it --- */
+        if (use_cache && cache_has_exe(cache_key)) {
+            char *cached = path_join(wd, out);
+            if (cache_get_exe(cache_key, cached) && file_looks_like_exe(cached)) {
+                if (verbose) fprintf(stderr, "[hphp backend] cache hit: linked image restored, skipping link\n");
+#ifdef _WIN32
+                SetCurrentDirectoryA(prev);
+#else
+                chdir(prev);
+#endif
+                remove_quiet(exepath);
+                if (move_file(cached, exepath) == 0 && file_looks_like_exe(exepath)) {
+                    free(cached);
+                    cleanup_build_files(wd, tag);
+                    return 0;
+                }
+            }
+            free(cached);
+        }
+
         /* --- link: mingw ld directly, plain gcc as fallback --- */
+        /* only the modules that were actually built go to the linker */
+        char objlist[512] = "";
+        for (int i = 0; i < 6; i++) {
+            if (!needed[i]) continue;
+            if (objlist[0]) strcat(objlist, " ");
+            strcat(objlist, objs[i]);
+        }
         char *crt2 = gcc_query("-print-file-name=crt2.o");
         bool have_ld = crt2[0] && strchr(crt2, '/') != NULL;
         int rc = -1;
-        if (have_ld) {
+        /* The direct-ld path cannot honour -mwindows: that is a gcc driver
+           switch which also picks the GUI start-up object, and bare ld has no
+           idea which of main/WinMain the program actually defines. So a GUI
+           build goes through the gcc driver instead. */
+        if (have_ld && !gui) {
             char *libgcc = gcc_query("-print-libgcc-file-name");
             char *crtbegin = gcc_query("-print-file-name=crtbegin.o");
             char *crtend = gcc_query("-print-file-name=crtend.o");
             char *manifest = gcc_query("-print-file-name=default-manifest.o");
             char *ld = gcc_query("-print-prog-name=ld");
-            const char *gccdir = path_dir_of(libgcc);
-            const char *crtdir = path_dir_of(crt2);
+            /* HPHP_LD points at a different linker (e.g. ld.bfd) - an escape
+             * hatch when security software interferes with the default one */
+            const char *ldenv = getenv("HPHP_LD");
+            if (ldenv && *ldenv) { free(ld); ld = xstrdup(ldenv); }
+            char *gccdir = path_dir_of(libgcc);
+            char *crtdir = path_dir_of(crt2);
             char *link = fmt(
                 "\"%s\" -m i386pep -Bdynamic -o %s %s %s "
-                "-L\"%s\" -L\"%s\" %s %s %s %s %s %s "
+                "-L\"%s\" -L\"%s\" %s "
                 "-lmingw32 -lgcc -lgcc_eh -lmingwex -lmsvcrt -lkernel32 "
                 "-lws2_32 -lpthread -ladvapi32 -lshell32 -luser32 "
-                "-lgdi32 -lcomctl32 -lcomdlg32 -lole32 -loleaut32 -luuid "
+                "-lgdi32 -lgdiplus -lcomctl32 -lcomdlg32 -lole32 -loleaut32 -luuid "
                 "-lversion -lshlwapi -lwinmm \"%s\" \"%s\"",
-                ld, out, crt2, crtbegin, gccdir, crtdir,
-                po, ro, so, to, uo, vo, manifest, crtend);
-            rc = system_sh(link);
+                ld, out, crt2, crtbegin, gccdir, crtdir, objlist,
+                manifest, crtend);
+            rc = run_direct(link, !verbose);
+            if (verbose) fprintf(stderr, "[hphp backend] direct-ld rc=%d nonempty=%d exe=%d\n",
+                                  rc, (int)file_nonempty(out_abs),
+                                  (int)file_looks_like_exe(out_abs));
             free(link);
+            free(gccdir);
+            free(crtdir);
         }
         if (rc != 0 || !file_nonempty(out_abs)) {
 #ifdef _WIN32
-            char *link = fmt("gcc -O2 %s %s %s %s %s %s -o %s -lm -lws2_32 "
-                             "-lgdi32 -lcomctl32 -lcomdlg32 -lole32 -loleaut32 "
+            char *link = fmt("gcc %s %s %s -o %s -lm -lws2_32 "
+                             "-lgdi32 -lgdiplus -lcomctl32 -lcomdlg32 -lole32 -loleaut32 "
                              "-luuid -lversion -lshlwapi -lwinmm",
-                             po, ro, so, to, uo, vo, out);
+                             opt, subsys, objlist, out);
 #else
             /* POSIX: sockets live in libc, the UI layer is inert stubs */
-            char *link = fmt("gcc -O2 %s %s %s %s %s -o %s -lm -lpthread",
-                             po, ro, so, to, uo, out);
+            char *link = fmt("gcc %s %s -o %s -lm -lpthread",
+                             opt, objlist, out);
 #endif
-            rc = system_sh(link);
+            rc = run_direct(link, !verbose);
+            if (verbose) fprintf(stderr, "[hphp backend] gcc-fallback rc=%d nonempty=%d exe=%d\n",
+                                  rc, (int)file_nonempty(out_abs),
+                                  (int)file_looks_like_exe(out_abs));
+            free(link);
         }
         if (rc == 0 && file_looks_like_exe(out_abs)) {
+            /* keep the linked image so the next run can skip the link too */
+            if (use_cache) cache_put_exe(cache_key, out_abs);
 #ifdef _WIN32
             SetCurrentDirectoryA(prev);
 #else
@@ -487,9 +872,12 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
             /* link finished in wd; place the finished image at exepath */
             if (verbose) fprintf(stderr, "[hphp backend] moving %s -> %s\n", out, exepath);
             remove_quiet(exepath);
-            if (move_file(out_abs, exepath) == 0 && file_looks_like_exe(exepath))
+            if (move_file(out_abs, exepath) == 0 && file_looks_like_exe(exepath)) {
+                cleanup_build_files(wd, tag);
                 return 0;
+            }
             fprintf(stderr, "hphp: cannot place executable at %s\n", exepath);
+            cleanup_build_files(wd, tag);
             return -1;
         }
         fprintf(stderr, "hphp: backend link attempt %d failed (output %s)\n",
@@ -502,6 +890,7 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
 #else
     chdir(prev);
 #endif
+    cleanup_build_files(wd, tag);
     return -1;
 }
 
@@ -550,18 +939,100 @@ typedef struct LoadCtx {
  * importing file's own directory, $HPHP_PATH, then libraries compiled into
  * the hphp binary (so an installed compiler still has its stdlib). */
 static Program *load_source_recursive(LoadCtx *ctx, const char *path, const char *src);
+static bool load_once(LoadCtx *ctx, const char *path, const char *src);
 
-static bool lib_name_matches(const char *spec, const char *name) {
+/* The name a spec has inside lib/. A library is a package folder, so a bare
+ * "ui" names that package's entry ("ui/ui.hphp"), while a spec that already
+ * names a part ("html/dom.hphp") is used as it is. */
+static char *lib_rel_spec(const char *spec) {
     const char *slash = strrchr(spec, '/');
     const char *bslash = strrchr(spec, '\\');
     const char *cut = slash > bslash ? slash : bslash;
-    const char *base = cut ? cut + 1 : spec;
-    return strcmp(base, name) == 0;
+    if (cut) return xstrdup(spec);
+    size_t n = strlen(spec);
+    if (n > 5 && !strcmp(spec + n - 5, ".hphp")) n -= 5;
+    char *stem = xstrndup(spec, n);
+    char *rel = fmt("%s/%s", stem, spec);
+    free(stem);
+    return rel;
 }
 
-static Program *load_import(LoadCtx *ctx, const char *importer, const char *spec) {
+/* Bundled libraries are named by their path inside lib/ (see genembed.c). */
+static bool lib_name_matches(const char *spec, const char *name) {
+    char *rel = lib_rel_spec(spec);
+    bool hit = strcmp(rel, name) == 0;
+    free(rel);
+    return hit;
+}
+
+/* A script run from a subdirectory (say `examples/foo.hphp`) must still find
+ * its own project's lib/. The plain `lib/<name>` candidate is relative to the
+ * CURRENT directory, so from anywhere but the project root that lookup misses,
+ * the search falls through to an installed package of the same name, and a
+ * stale copy silently outranks the bundled library. Walk up from the importing
+ * file toward the filesystem root and take the first lib/<name> found. */
+static char *abs_dir_of(const char *dir) {
+    if (dir && (dir[0] == '/' || dir[0] == '\\' ||
+                (dir[0] && dir[1] == ':'))) return xstrdup(dir);
+    char cwd[1024];
+#ifdef _WIN32
+    if (!_getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
+#else
+    if (!getcwd(cwd, sizeof cwd)) snprintf(cwd, sizeof cwd, ".");
+#endif
+    if (!dir || !dir[0] || strcmp(dir, ".") == 0) return xstrdup(cwd);
+    return fmt("%s/%s", cwd, dir);
+}
+
+/* Load a file once, or nothing when it is already in the program.
+ *
+ * Two libraries that both import a third is the normal shape of a
+ * dependency graph, not an error: the second import has nothing left to
+ * do, and reporting "cannot import" for it was what made `import "ide"`
+ * fail as soon as anything else had pulled in the editor. */
+static bool load_once(LoadCtx *ctx, const char *path, const char *src) {
+    const char *ipath = intern(path);
+    for (size_t i = 0; i < ctx->visited.len; i++)
+        if (ctx->visited.items[i] == ipath) return true;
+    load_source_recursive(ctx, path, src);
+    return true;
+}
+
+/* Try one candidate path: true when the file is there and (now) loaded. */
+static bool load_candidate(LoadCtx *ctx, const char *path) {
+    char *src = read_file_soft(path);
+    if (!src) return false;
+    return load_once(ctx, path, src);
+}
+
+static bool upwards_lib(LoadCtx *ctx, const char *start_dir, const char *spec) {
+    char *full = abs_dir_of(start_dir);
+    char *dir = xstrdup(full);
+    free(full);
+    size_t n = strlen(dir);
+    while (n > 1 && (dir[n - 1] == '/' || dir[n - 1] == '\\')) dir[--n] = 0;
+    bool hit = false;
+    for (int depth = 0; depth < 12; depth++) {
+        char *cand = fmt("%s/lib/%s", dir, spec);
+        if (load_candidate(ctx, cand)) { hit = true; break; }
+        /* a library is a package folder: lib/ui/ui.hphp, lib/html/dom.hphp */
+        char *rel = lib_rel_spec(spec);
+        char *pkg = fmt("%s/lib/%s", dir, rel);
+        free(rel);
+        if (load_candidate(ctx, pkg)) { hit = true; break; }
+        char *slash = strrchr(dir, '/');
+        char *bslash = strrchr(dir, '\\');
+        char *cut = slash > bslash ? slash : bslash;
+        if (!cut || cut == dir) break;
+        *cut = 0;
+    }
+    free(dir);
+    return hit;
+}
+
+static bool load_import(LoadCtx *ctx, const char *importer, const char *spec) {
     /* convention: an import spec without an extension names a library or
-     * package ("websocket"), not a source file — resolve it to "<spec>.hphp"
+     * package ("websocket"), not a source file - resolve it to "<spec>.hphp"
      * everywhere (lib/, std/, installed packages, importer's directory, and
      * $HPHP_PATH). Explicit "websocket.hphp" keeps meaning "this exact file". */
     char *norm = NULL;
@@ -577,19 +1048,29 @@ static Program *load_import(LoadCtx *ctx, const char *importer, const char *spec
     }
     bool relative = spec[0] == '.' || spec[0] == '/' || spec[0] == '\\';
     if (relative) {
-        char *cand = fmt("%s/%s", path_dir_of(importer), spec);
-        char *src = read_file_soft(cand);
-        if (src) return load_source_recursive(ctx, cand, src);
+        char *idir = path_dir_of(importer);
+        char *cand = fmt("%s/%s", idir, spec);
+        free(idir);
+        if (load_candidate(ctx, cand)) return true;
     } else {
-        /* 1. lib/<name>   2. src/hphpc/std/<name>   3. next to the importer */
-        char *cands[4];
-        cands[0] = fmt("lib/%s", spec);
-        cands[1] = fmt("src/hphpc/std/%s", spec);
-        cands[2] = fmt("%s/%s", path_dir_of(importer), spec);
-        cands[3] = pkg_import_candidate(spec);   /* installed packages */
-        for (int i = 0; i < 4; i++) {
-            char *src = read_file_soft(cands[i]);
-            if (src) return load_source_recursive(ctx, cands[i], src);
+        /* 1. lib/<name> relative to the cwd   2. the importing file's own
+         * project, searched upward   3. src/hphpc/std/<name>
+         * 4. next to the importer   5. installed packages */
+        char *cwd_lib = fmt("lib/%s", spec);
+        if (load_candidate(ctx, cwd_lib)) return true;
+        char *rel = lib_rel_spec(spec);
+        char *cwd_pkg = fmt("lib/%s", rel);
+        free(rel);
+        if (load_candidate(ctx, cwd_pkg)) return true;
+        char *idir = path_dir_of(importer);
+        if (upwards_lib(ctx, idir, spec)) { free(idir); return true; }
+        char *cands[3];
+        cands[0] = fmt("src/hphpc/std/%s", spec);
+        cands[1] = fmt("%s/%s", idir, spec);
+        cands[2] = pkg_import_candidate(spec);   /* installed packages */
+        free(idir);
+        for (int i = 0; i < 3; i++) {
+            if (load_candidate(ctx, cands[i])) return true;
         }
         /* 4. $HPHP_PATH (; or : separated), like PHP's include_path */
         const char *path = getenv("HPHP_PATH");
@@ -600,8 +1081,7 @@ static Program *load_import(LoadCtx *ctx, const char *importer, const char *spec
                 if (nxt) *nxt++ = 0;
                 if (!*p) continue;
                 char *cand = fmt("%s/%s", p, spec);
-                char *src = read_file_soft(cand);
-                if (src) return load_source_recursive(ctx, cand, src);
+                if (load_candidate(ctx, cand)) return true;
             }
         }
     }
@@ -609,26 +1089,29 @@ static Program *load_import(LoadCtx *ctx, const char *importer, const char *spec
     for (size_t i = 0; i < hp_embed_libs_len; i++) {
         if (lib_name_matches(spec, hp_embed_libs[i].name)) {
             char *disp = fmt("<hphp-lib>/%s", hp_embed_libs[i].name);
-            return load_source_recursive(ctx, disp, hp_embed_libs[i].src);
+            return load_once(ctx, disp, hp_embed_libs[i].src);
         }
     }
-    return NULL;
+    return false;
 }
 
 static Program *load_source_recursive(LoadCtx *ctx, const char *path, const char *src) {
     const char *ipath = intern(path);
     for (size_t i = 0; i < ctx->visited.len; i++)
-        if (ctx->visited.items[i] == ipath) return NULL;
+        if (ctx->visited.items[i] == ipath) return NULL;   /* see load_once */
 
     Program *prog = parse_program(src, path);
     ptrvec_push(&ctx->visited, (void *)ipath);
 
     /* imports first (depth-first, deps before user code) */
     for (size_t i = 0; i < prog->imports.len; i++) {
-        Import *im = prog->imports.items[i];            if (!load_import(ctx, path, im->path))
+        Import *im = prog->imports.items[i];
+        if (!load_import(ctx, path, im->path)) {
+            char *dir = path_dir_of(path);
             fatal("%s: cannot import \"%s\"\n"
                   "  searched: lib/, src/hphpc/std/, %s/, installed packages, $HPHP_PATH, built-in libraries",
-                  path, im->path, path_dir_of(path));
+                  path, im->path, dir);
+        }
     }
     ptrvec_push(&ctx->programs, prog);
     return prog;
@@ -637,6 +1120,8 @@ static Program *load_source_recursive(LoadCtx *ctx, const char *path, const char
 static Program *load_file_recursive(LoadCtx *ctx, const char *path) {
     return load_source_recursive(ctx, path, read_file_or_die(path));
 }
+
+static void collect_source_files(PtrVec *out, LoadCtx *ctx, const char *root_file){ ptrvec_push(out,(void*)root_file); for(size_t i=0;i<ctx->programs.len;i++){ Program *p=ctx->programs.items[i]; if(p->file) ptrvec_push(out,(void*)p->file); } }
 
 static void merge_programs(Program *out, PtrVec progs) {
     for (size_t i = 0; i < progs.len; i++) {
@@ -743,32 +1228,51 @@ static int pkg_install_registry(const char *name) {
     return pkg_install_file(out);
 }
 
-/* Install a library that ships inside the hphp binary itself (lib/*.hphp is
- * compiled into the compiler at build time). Used as an offline fallback when
- * the registry is unreachable — the toolchain is self-contained like `go`.
- * Returns 0 on success, 1 when the name is not a bundled library. */
+/* Install a library that ships inside the hphp binary itself (the package
+ * folders under lib/ are compiled into the compiler at build time). Used as
+ * an offline fallback when the registry is unreachable — the toolchain is
+ * self-contained like `go`. A library is a folder, so every embedded part of
+ * it is staged, not just the entry file. Returns 0 on success, 1 when the
+ * name is not a bundled library. */
 static int pkg_install_embedded(const char *name) {
     /* normalize "websocket.hphp" -> "websocket" */
     char stem[128];
     snprintf(stem, sizeof stem, "%s", name);
     size_t sl = strlen(stem);
     if (sl > 5 && !strcmp(stem + sl - 5, ".hphp")) stem[sl - 5] = 0;
+    size_t plen = strlen(stem);
+
+    /* embedded names are lib-relative: the entry of `ui` is ui/ui.hphp */
+    char *entry = fmt("%s/%s.hphp", stem, stem);
+    bool known = false;
     for (size_t i = 0; i < hp_embed_libs_len; i++) {
-        /* embedded lib names are file names, e.g. "websocket.hphp" */
-        const char *lname = hp_embed_libs[i].name;
-        size_t ll = strlen(lname);
-        if (ll > 5 && !strcmp(lname + ll - 5, ".hphp")) ll -= 5;
-        if (strlen(stem) != ll || strncmp(stem, lname, ll) != 0) continue;
-        /* stage the source into a temp dir, then pack it into a real .hpx so
-         * the installed layout is identical to a registry install */
+        if (strcmp(hp_embed_libs[i].name, entry) == 0) { known = true; break; }
+    }
+    free(entry);
+    if (!known) return 1;
+
+    /* stage the sources into a temp dir, then pack it into a real .hpx so
+     * the installed layout is identical to a registry install */
+    {
         char *stage = pkg_home_file("cache/.embedded");
+        FILE *f;
         rm_rf(stage);
         mkdir_p(stage);
-        char *src = fmt("%s/%s.hphp", stage, stem);
-        FILE *f = fopen(src, "wb");
-        if (!f) fatal("cannot write %s", src);
-        fputs(hp_embed_libs[i].src, f);
-        fclose(f);
+        for (size_t i = 0; i < hp_embed_libs_len; i++) {
+            const char *ln = hp_embed_libs[i].name;
+            if (strncmp(ln, stem, plen) != 0 || ln[plen] != '/') continue;
+            const char *rest = ln + plen + 1;
+            char *dst = fmt("%s/%s", stage, rest);
+            char *dir = xstrdup(dst);
+            char *cut = strrchr(dir, '/');
+            if (cut) { *cut = 0; mkdir_p(dir); }
+            free(dir);
+            f = fopen(dst, "wb");
+            if (!f) fatal("cannot write %s", dst);
+            fputs(hp_embed_libs[i].src, f);
+            fclose(f);
+            free(dst);
+        }
         char *mf = fmt("%s/" PKG_MANIFEST, stage);
         f = fopen(mf, "wb");
         if (!f) fatal("cannot write %s", mf);
@@ -787,7 +1291,6 @@ static int pkg_install_embedded(const char *name) {
         rm_rf(stage);
         return rc;
     }
-    return 1;
 }
 
 static int pkg_cmd_install(int argc, char **argv) {
@@ -1028,9 +1531,10 @@ int main(int argc, char **argv) {
         fprintf(stderr,
                 "HolyPHP %s — a low-level, PHP-flavored compiled language\n"
                 "\n"
-                "usage: hphp <file.hphp>               run a HolyPHP program\n"
-                "       hphp run <file.hphp>           run a HolyPHP program\n"
-                "       hphp build <file.hphp> [-o app]  build a native executable\n"
+        "usage: hphp <file.hphp>               run a HolyPHP program\n"
+        "       hphp run <file.hphp>           run a HolyPHP program\n"
+        "       hphp dev <file.hphp>           run in dev mode (faster builds, -O0)\n"
+        "       hphp build <file.hphp> [-o app]  build a native executable\n"
                 "       hphp check <file.hphp>         type- & borrow-check only\n"
                 "       hphp emit <file.hphp>          inspect the internal representation\n"
                 "       hphp pkg <command> [args]      package manager (hphp pkg help)\n"
@@ -1042,6 +1546,7 @@ int main(int argc, char **argv) {
     const char *cmd = argv[1];
     const char *file = NULL;
     const char *outname = NULL;
+    bool gui = false;
     if (strcmp(cmd, "version") == 0 || strcmp(cmd, "--version") == 0 ||
         strcmp(cmd, "-v") == 0) {
         printf("HolyPHP %s\n", HPHP_VERSION);
@@ -1056,13 +1561,15 @@ int main(int argc, char **argv) {
     }
     /* default command is "run" — hphp file.hphp just works */
     if (strcmp(cmd, "run") != 0 && strcmp(cmd, "build") != 0 &&
-        strcmp(cmd, "emit") != 0 && strcmp(cmd, "check") != 0) {
+        strcmp(cmd, "emit") != 0 && strcmp(cmd, "check") != 0 &&
+        strcmp(cmd, "dev") != 0) {
         file = cmd;
         cmd = "run";
     }
     PtrVec prog_args = {0};
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) outname = argv[++i];
+        else if (strcmp(argv[i], "--gui") == 0) gui = true;
         else if (!file) file = argv[i];
         else ptrvec_push(&prog_args, argv[i]);
     }
@@ -1101,13 +1608,54 @@ int main(int argc, char **argv) {
     }
 
     /* ---- backend: everything happens in hphp's private build dir ---- */
+    /* incremental cache: try to reuse generated C + objects */
+    bool dev = strcmp(cmd, "dev") == 0;
+    PtrVec cache_files = {0};
+    collect_source_files(&cache_files, &ctx, file);
+
     char *self = find_compiler(argv[0]);
     const char *wd = work_dir();
     extract_runtime(wd, self);
     char *rt = path_join(wd, "rt");
 
-    /* generated C goes into the private dir — never the user's project */
-    char *cpath = path_join(wd, "prog.c");
+    /* The cache key covers everything the build reads: the program sources,
+     * the compiler binary and the runtime sources. The last two are what
+     * made a stale binary look like a compiler bug - the program was fine,
+     * the cache just did not know the tools had changed. */
+    PtrVec tool_files = {0};
+    ptrvec_push(&tool_files, (void *)self);
+    static const char *rt_names[] = {"hphp_rt.c", "hphp_std.c", "hphp_thr.c",
+                                     "hphp_ui.c", "hphp_wv2.c", "hphp_rt.h"};
+    for (size_t i = 0; i < sizeof rt_names / sizeof rt_names[0]; i++) {
+        char *p = path_join(rt, rt_names[i]);
+        ptrvec_push(&tool_files, p);
+    }
+    char *cache_key = cache_key_for_files(&cache_files, &tool_files);
+    /* Level-1 key: the runtime objects are identical for every program, so
+     * they get their own slot keyed by the toolchain (compiler binary +
+     * runtime sources) alone - a new program starts fast. */
+    PtrVec rt_only = {0};
+    char *rt_key = cache_key_for_files(&rt_only, &tool_files);
+    for (size_t i = 1; i < tool_files.len; i++) free(tool_files.items[i]);
+    /* dev (-O0) and release (-O2) objects are not interchangeable: keep
+     * them in separate cache slots or a dev build would poison a release
+     * build (and vice versa). */
+    if (dev) {
+        char *tagged = fmt("%s_dev", cache_key);
+        free(cache_key);
+        cache_key = tagged;
+        char *rt_tagged = fmt("%s_dev", rt_key);
+        free(rt_key);
+        rt_key = rt_tagged;
+    }
+    bool no_cache = getenv("HPHP_NO_CACHE") != NULL;
+    (void)no_cache;
+
+    /* generated C goes into the private dir — never the user's project.
+     * The per-run tag keeps two concurrent builds from colliding. */
+    char tag[32];
+    build_tag(tag, sizeof tag);
+    char *cpath = path_join(wd, fmt("prog_%s.c", tag));
     FILE *cf = fopen(cpath, "wb");
     if (!cf) fatal("hphp: cannot write build file %s", cpath);
     fwrite(out.data, 1, out.len, cf);
@@ -1157,7 +1705,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (cc_build_in_dir(wd, rt, cpath, exepath) != 0) {
+    if (cc_build_in_dir(wd, rt, cpath, exepath, gui, no_cache ? NULL : cache_key,
+                        no_cache ? NULL : rt_key, dev, tag) != 0) {
         fprintf(stderr, "hphp: backend failed to produce an executable\n");
         return 1;
     }
