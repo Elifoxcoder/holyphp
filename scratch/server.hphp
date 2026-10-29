@@ -1,0 +1,57 @@
+<?php
+// server.hphp — HolyPHP High-Throughput Twitter-like API Server (hphp.ch)
+//
+// The request loop (io_uring accept/recv/send, SQLite WAL, group commit and
+// zero-copy JSON rendering) is supplied by the HolyPHP runtime builtin
+// holy_maxout_start(): native C compiled into the program, driven from this
+// HolyPHP entry point.  Configuration comes from the environment so the same
+// binary can serve any port / database without recompiling.
+//
+//   PORT=8080 DB_PATH=/var/bench/benchmark.db ./server
+//
+// Engine switches (all default to the configuration measured in
+// benchmarks/maxout/RESULTS.md):
+//   HPHP_MR=1     multishot recv + provided buffers instead of single-shot
+//   HPHP_DEFER=0  COOP_TASKRUN instead of DEFER_TASKRUN
+//   HPHP_CACHE=0  rebuild the feed JSON on every request
+
+class TwitterServer {
+    pub int $port;
+    pub string $dbPath;
+
+    pub function __construct(int $port = 8080, string $dbPath = "benchmark.db") {
+        $this->port = $port;
+        $this->dbPath = $dbPath;
+    }
+
+    pub function serve(): void {
+        echo "==========================================================\n";
+        echo " HolyPHP (hphp.ch) High-Throughput MaxOut API Server\n";
+        echo "==========================================================\n";
+        echo " Port:       " . $this->port . "\n";
+        echo " Database:   " . $this->dbPath . "\n";
+        echo " Engine:     Linux io_uring (multi-shot accept, batched recv)\n";
+        echo " DB Engine:  SQLite WAL (group commits, range scan)\n";
+        echo "==========================================================\n";
+
+        $rc = holy_maxout_start($this->port, $this->dbPath);
+        if ($rc !== 0) {
+            echo "engine stopped with code " . $rc . "\n";
+        }
+    }
+}
+
+function env_int(string $key, int $fallback): int {
+    $v = getenv($key);
+    if ($v === false || $v === "") { return $fallback; }
+    return intval($v);
+}
+
+function env_str(string $key, string $fallback): string {
+    $v = getenv($key);
+    if ($v === false || $v === "") { return $fallback; }
+    return $v;
+}
+
+$server = new TwitterServer(env_int("PORT", 8080), env_str("DB_PATH", "benchmark.db"));
+$server->serve();

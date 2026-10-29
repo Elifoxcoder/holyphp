@@ -1,5 +1,6 @@
 # build artifacts
 build/
+/hphp
 hphp.exe
 *.o
 *.exe
@@ -12,8 +13,21 @@ hp_demo*
 *.gen.c
 build_log.txt
 
-# bench-vs-rust rust target
+# cargo build output (the Rust baseline lives in scratch/)
+target/
 bench-vs-rust/target/
+
+# HolyBrowser: the CEF profile is runtime state (thousands of files), and the
+# shim is built output
+holybrowser/cefdata/
+holybrowser/native/*.dll
+holybrowser/native/*.lib
+holybrowser/native/build/
+
+# registry runtime state
+registry/server.log
 
 # editor / OS
 .freebuff/
+Thumbs.db
+.DS_Store
