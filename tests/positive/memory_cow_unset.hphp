@@ -1,0 +1,12 @@
+$a = ["keep" => 1, "drop" => 2];
+$b = $a;
+unset($b["drop"]);
+if (count($a) != 2 || count($b) != 1 || isset($b["drop"])) {
+    exit(1);
+}
+$c = [];
+$c["made"]["deep"] = 3;
+if ($c["made"]["deep"] != 3) {
+    exit(2);
+}
+echo "array unset COW ok", PHP_EOL;

@@ -1,0 +1,43 @@
+class MemoryRcNode {
+    pub string $text = "";
+}
+
+function churn_strings(int $n): void {
+    $value = "";
+    for ($i = 0; $i < $n; $i++) {
+        $value = "string payload " . $i;
+    }
+}
+
+function churn_arrays(int $n): void {
+    $value = [];
+    for ($i = 0; $i < $n; $i++) {
+        $value = [$i, "array payload " . $i, $i + 1];
+    }
+}
+
+function churn_objects(int $n): void {
+    $value = new MemoryRcNode();
+    for ($i = 0; $i < $n; $i++) {
+        $value = new MemoryRcNode();
+        $value->text = "object payload " . $i;
+    }
+}
+
+function churn_closures(int $n): void {
+    $value = function(): string { return ""; };
+    for ($i = 0; $i < $n; $i++) {
+        $payload = "closure payload " . $i;
+        $value = function() use ($payload): string { return $payload; };
+        $last = $value();
+    }
+}
+
+churn_strings(20000);
+churn_arrays(20000);
+churn_objects(20000);
+churn_closures(20000);
+echo "memory rc loops ok";
+
+
+
