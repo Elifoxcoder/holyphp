@@ -148,10 +148,10 @@ class HNode {
     }
 
     /** All descendants matching a tag (used for tab strips, list items). */
-    pub function allByClass(string $c, [HNode] $into): [HNode] {
+    pub function allByClass(string $c, mut [HNode] $into): [HNode] {
         if ($this->hasClass($c)) { $into[] = $this; }
         for ($i = 0; $i < count($this->kids); $i++) {
-            $this->kids[$i]->allByClass($c, $into);
+            $into = $this->kids[$i]->allByClass($c, $into);
         }
         return $into;
     }

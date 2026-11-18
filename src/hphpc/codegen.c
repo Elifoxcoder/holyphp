@@ -33,6 +33,10 @@ struct Codegen {
     bool in_try_helper;   /* emitting a try-body/catch helper: honor returns */
     PtrVec *cur_helper_vars; /* vars aliased by the helper being emitted */
     PtrVec loop_labels;   /* continue targets: stack of hp_cont_<n> ids */
+    PtrVec loop_cleanup_marks; /* runtime marks for continue/break cleanup */
+    PtrVec break_cleanup_marks; /* nearest loop/switch cleanup mark */
+    bool pending_loop_cleanup_mark;
+    bool pending_break_cleanup_mark;
     int helper_depth;     /* try-helper nesting level (0 = normal code) */
     Buf try_bufs[8];      /* file-scope try-helper defs, per nesting level */
     int loop_depth;       /* loop/switch nesting (break/continue legality) */
@@ -41,6 +45,11 @@ struct Codegen {
 
 static void emit_stmt(Codegen *g, Stmt *s);
 static void emit_expr(Codegen *g, Expr *e, Buf *dst);
+static bool expr_is_borrowed_heap(Expr *e);
+static const char *managed_tag_for_type(const Type *t);
+static bool type_can_own_heap(const Type *t);
+static void emit_register_owner(Codegen *g, const char *slot, const Type *t,
+                                bool box, bool hval_slot);
 
 /* ---------------- concatenation chains ----------------
  *
@@ -928,9 +937,8 @@ static void emit_builtin_call_body(Codegen *g, const char *name, PtrVec args,
         project_hval(dst, ret);
         return;
     }
-    /* unset($arr[$k]): needs the raw harr*, not a copy.
-     * Sema types the whole $arr[$k] expression as the builtin call, so we
-     * re-derive the container/index from the expression tree here. */
+    /* unset($arr[$k]): route mutation through the owning variable slot so a
+     * shared array can detach and install its COW copy. */
     if (strcmp(name, "unset") == 0 && args.len == 1 &&
         ((Expr *)args.items[0])->kind == EX_INDEX) {
         Expr *ix = (Expr *)args.items[0];
@@ -939,10 +947,22 @@ static void emit_builtin_call_body(Codegen *g, const char *name, PtrVec args,
             Buf k;
             buf_init(&k);
             emit_expr(g, ix->u.index.idx, &k);
-            buf_printf(dst, "hpbi_unset(%s, hv(%s))", var_name(obj->u.var.sym),
-                       buf_take(&k));
+            VarSym *sym = (VarSym *)obj->u.var.sym;
+            const char *name = var_name(sym);
+            bool boxed = type_is_hval_slot(sym->type) || sym->is_program_global ||
+                         sym->captured_byref || sym->is_param_ref;
+            const char *slot = (sym->captured_byref || sym->is_param_ref)
+                ? fmt("(*%s)", name) : name;
+            if (boxed)
+                buf_printf(dst, "hp_arr_unset_hval_owner(&(%s), hv(%s))", slot,
+                           buf_take(&k));
+            else
+                buf_printf(dst, "hp_arr_unset_owner(&(%s), hv(%s))", slot,
+                           buf_take(&k));
             project_hval(dst, ret);
             free(k.data);
+            if (slot != name) free((void *)slot);
+            free((void *)name);
             return;
         }
         if (obj->kind == EX_FIELD && obj->u.field.obj && obj->u.field.sf) {
@@ -1257,6 +1277,22 @@ static void emit_arg(Codegen *g, Expr *arg, const Type *pt, Buf *dst) {
     else emit_to_type(g, arg, pt, dst);
 }
 
+static void emit_owned_call_arg(Codegen *g, Expr *arg, const Type *pt, Buf *dst) {
+    const char *tag = managed_tag_for_type(pt);
+    bool keep = expr_is_borrowed_heap(arg);
+    if (type_can_own_heap(pt) && (!pt || type_is_hval_slot(pt))) {
+        buf_puts(dst, "hp_arg_keep_hval(");
+        emit_arg(g, arg, pt, dst);
+        buf_printf(dst, ", %s)", keep ? "true" : "false");
+    } else if (tag) {
+        buf_printf(dst, "((%s)hp_arg_keep_ptr((void*)", ctype_of(pt));
+        emit_to_type(g, arg, pt, dst);
+        buf_printf(dst, ", %s, %s))", tag, keep ? "true" : "false");
+    } else {
+        emit_arg(g, arg, pt, dst);
+    }
+}
+
 /* emit a parameter's default value at a call site (PHP default arguments) */
 static void emit_param_default(Codegen *g, Param *pm, Buf *dst) {
     if (pm && pm->dflt) emit_arg(g, pm->dflt, pm->resolved, dst);
@@ -1365,7 +1401,6 @@ static void emit_call(Codegen *g, Expr *e, Buf *dst) {
         for (size_t i = 0; i < e->u.call.args.len; i++) {
             if (i) buf_puts(dst, ", ");
             Expr *arg = e->u.call.args.items[i];
-            const Type *at = arg->type;
             Param *pm = (i < fn->params.len) ? fn->params.items[i] : NULL;
             if (pm && pm->by_ref) {
                 /* PHP by-ref call: pass a pointer to the caller's slot so the
@@ -1373,23 +1408,7 @@ static void emit_call(Codegen *g, Expr *e, Buf *dst) {
                 emit_byref_arg(g, arg, pm, dst);
                 continue;
             }
-            if (pm && at && !sema_type_is_linear(at) && (at->kind == TY_ARRAY || at->kind == TY_VEC ||
-                             at->kind == TY_MAP || at->kind == TY_SET) &&
-                pm->resolved && pm->resolved->kind != TY_MIXED) {
-                /* COW: clone array-typed args into value-param slots. A
-                 * by-ref capture box emits an hval, so it has to be unboxed
-                 * before the clone sees it. */
-                const char *as = emit_expr_str(g, arg);
-                if (emits_hval_lvalue(arg))
-                    buf_printf(dst, "hp_arr_clone(hp_val_to_arr(%s))", as);
-                else
-                    buf_printf(dst, "hp_arr_clone(%s)", as);
-                free((void *)as);
-            } else {
-                /* converts boxed/mixed args into the param's type and boxes
-                 * into hval params — PHP runtime conversions */
-                emit_arg(g, arg, pm ? pm->resolved : NULL, dst);
-            }
+            emit_owned_call_arg(g, arg, pm ? pm->resolved : NULL, dst);
         }
         emit_missing_defaults(g, fn, e->u.call.args.len, dst);
         buf_puts(dst, ")");
@@ -1412,7 +1431,10 @@ static void emit_call(Codegen *g, Expr *e, Buf *dst) {
     }
     for (size_t i = 0; i < e->u.call.args.len; i++) {
         if (i) buf_puts(dst, ", ");
-        to_hval(g, e->u.call.args.items[i], dst);
+        Expr *arg = e->u.call.args.items[i];
+        buf_puts(dst, "hp_arg_keep_hval(");
+        to_hval(g, arg, dst);
+        buf_printf(dst, ", %s)", expr_is_borrowed_heap(arg) ? "true" : "false");
     }
     buf_puts(dst, "})");
     project_hval(dst, e->type);
@@ -1447,7 +1469,8 @@ static void emit_method(Codegen *g, Expr *e, Buf *dst) {
                 if (pm && pm->by_ref)
                     emit_byref_arg(g, (Expr *)e->u.method.args.items[i], pm, dst);
                 else
-                    emit_arg(g, e->u.method.args.items[i], pm ? pm->resolved : NULL, dst);
+                    emit_owned_call_arg(g, e->u.method.args.items[i],
+                                        pm ? pm->resolved : NULL, dst);
             }
             emit_missing_defaults(g, m, e->u.method.args.len, dst);
             buf_puts(dst, ")");
@@ -1479,7 +1502,8 @@ static void emit_method(Codegen *g, Expr *e, Buf *dst) {
             if (pm && pm->by_ref)
                 emit_byref_arg(g, (Expr *)e->u.method.args.items[i], pm, dst);
             else
-                emit_arg(g, e->u.method.args.items[i], pm ? pm->resolved : NULL, dst);
+                emit_owned_call_arg(g, e->u.method.args.items[i],
+                                    pm ? pm->resolved : NULL, dst);
         }
         emit_missing_defaults(g, m, e->u.method.args.len, dst);
         buf_puts(dst, ")");
@@ -1609,20 +1633,29 @@ static void emit_index(Codegen *g, Expr *e, Buf *dst) {
 static void emit_array_lit(Codegen *g, Expr *e, Buf *dst) {
     if (e->u.map.vals.len) {
         size_t n = e->u.map.vals.len * 2;
-        buf_printf(dst, "hp_map_of(%zu, (const hval[]){", n);
+        buf_printf(dst, "hp_map_of_take(%zu, (const hval[]){", n);
         for (size_t i = 0; i < e->u.map.vals.len; i++) {
             if (i) buf_puts(dst, ", ");
-            to_hval(g, e->u.map.keys.items[i], dst);
+            Expr *key = e->u.map.keys.items[i];
+            buf_puts(dst, "hp_arg_keep_hval(");
+            to_hval(g, key, dst);
+            buf_printf(dst, ", %s)", expr_is_borrowed_heap(key) ? "true" : "false");
             buf_puts(dst, ", ");
-            to_hval(g, e->u.map.vals.items[i], dst);
+            Expr *val = e->u.map.vals.items[i];
+            buf_puts(dst, "hp_arg_keep_hval(");
+            to_hval(g, val, dst);
+            buf_printf(dst, ", %s)", expr_is_borrowed_heap(val) ? "true" : "false");
         }
         buf_puts(dst, "})");
         return;
     }
-    buf_printf(dst, "hp_arr_of(%zu, (const hval[]){", e->u.arr.elems.len);
+    buf_printf(dst, "hp_arr_of_take(%zu, (const hval[]){", e->u.arr.elems.len);
     for (size_t i = 0; i < e->u.arr.elems.len; i++) {
         if (i) buf_puts(dst, ", ");
-        to_hval(g, e->u.arr.elems.items[i], dst);
+        Expr *val = e->u.arr.elems.items[i];
+        buf_puts(dst, "hp_arg_keep_hval(");
+        to_hval(g, val, dst);
+        buf_printf(dst, ", %s)", expr_is_borrowed_heap(val) ? "true" : "false");
     }
     buf_puts(dst, "})");
 }
@@ -1700,6 +1733,7 @@ static void emit_match_expr(Codegen *g, Expr *e, Buf *dst) {
 /* ---------------- closures ---------------- */
 static void emit_stmt(Codegen *g, Stmt *s);
 static void emit_block(Codegen *g, PtrVec stmts);
+static void emit_cleanup_setup(Codegen *g, AstFn *fn);
 static const char *zero_init_of(const Type *t);
 static const char *zero_init_decl_of(const Type *t);
 
@@ -1800,7 +1834,7 @@ static void emit_closure(Codegen *g, AstFn *fn) {
             /* by-ref param capture: param lives in a box so the closure's
              * env can alias it and writes escape to the caller */
             line(g, "hval *%s = hp_box_new();", var_name(ps));
-            line(g, "*%s = _args[%zu];", var_name(ps), ai++);
+            line(g, "hp_assign_hval(%s, _args[%zu], true);", var_name(ps), ai++);
             continue;
         }
         const Type *pt = pm->resolved;
@@ -1927,8 +1961,10 @@ static void emit_closure(Codegen *g, AstFn *fn) {
         }
         free(syms.items);
     }
+    emit_cleanup_setup(g, fn);
     emit_block(g, fn->body);
     g->in_closure = false;
+    line(g, "hp_cleanup_pop_to(_hp_mark);");
     /* fallback returns */
     const Type *ret = fn->ftype ? fn->ftype->fn.ret : ty_void;
     if (!ret || ret->kind == TY_VOID || ret->kind == TY_MIXED)
@@ -1952,9 +1988,29 @@ static void emit_closure(Codegen *g, AstFn *fn) {
     line(g, "");
 
     /* constructor used at the EX_CLOSURE site: pack the env here */
+    line(g, "static void %s_env_drop(void *raw) {", cname);
+    g->depth++;
+    line(g, "%s_env *_env = (%s_env*)raw;", cname, cname);
+    for (size_t i = 0; i < fn->captures.len; i++) {
+        VarSym *v = fn->captures.items[i];
+        if (v->captured_byref)
+            line(g, "hp_box_free(_env->%s);", var_name(v));
+        else
+            line(g, "hp_val_rc_dec(_env->%s);", var_name(v));
+    }
+    if (fn->uses_this) line(g, "hp_val_rc_dec(hp_of_ptr(_env->hp_this));");
+    g->depth--;
+    line(g, "}");
     line(g, "static hclosure *%s_closure_new(%s_env _src) {", cname, cname);
     g->depth++;
-    line(g, "return hpclosure_new(&_src, sizeof(%s_env), (void*)%s_impl);", cname, cname);
+    for (size_t i = 0; i < fn->captures.len; i++) {
+        VarSym *v = fn->captures.items[i];
+        if (v->captured_byref) line(g, "hp_box_retain(_src.%s);", var_name(v));
+        else line(g, "hp_val_rc_inc(_src.%s);", var_name(v));
+    }
+    if (fn->uses_this) line(g, "hp_val_rc_inc(hp_of_ptr(_src.hp_this));");
+    line(g, "return hpclosure_new(&_src, sizeof(%s_env), (void*)%s_impl, %s_env_drop);",
+         cname, cname, cname);
     g->depth--;
     line(g, "}");
     line(g, "");
@@ -1962,6 +2018,82 @@ static void emit_closure(Codegen *g, AstFn *fn) {
 }
 
 static void emit_assign(Codegen *g, Expr *e, Buf *dst);
+
+static bool expr_is_borrowed_heap(Expr *e) {
+    if (!e) return false;
+    return e->kind == EX_VAR || e->kind == EX_FIELD || e->kind == EX_INDEX ||
+           e->kind == EX_ASSIGN;
+}
+
+static const char *managed_tag_for_type(const Type *t) {
+    if (!t) return NULL;
+    if (t->kind == TY_OWN || t->kind == TY_RC) return managed_tag_for_type(t->elem);
+    switch (t->kind) {
+    case TY_STRING: return "HV_STR";
+    case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET: return "HV_ARR";
+    case TY_FN: return "HV_CLO";
+    case TY_CLASS: case TY_STRUCT: case TY_INTERFACE: return "HV_OBJ";
+    default: return NULL;
+    }
+}
+
+static bool type_can_own_heap(const Type *t) {
+    return managed_tag_for_type(t) != NULL || !t || type_is_hval_slot(t);
+}
+
+static bool expr_returns_void(Expr *e) {
+    if (!e) return false;
+    const Type *ret = NULL;
+    if (e->type && e->type->kind == TY_VOID) return true;
+    switch (e->kind) {
+    case EX_CALL:
+        if (e->u.call.target) ret = e->u.call.target->ret;
+        else if (e->u.call.fn && e->u.call.fn->type && e->u.call.fn->type->kind == TY_FN)
+            ret = e->u.call.fn->type->fn.ret;
+        break;
+    case EX_METHOD:
+        if (e->u.method.target) ret = e->u.method.target->ret;
+        else if (e->builtin) { const Builtin *b = builtin_lookup(e->builtin); if (b) ret = b->ret; }
+        break;
+    case EX_STATIC:
+        if (e->u.staticcall.target) ret = e->u.staticcall.target->ret;
+        else if (e->builtin) { const Builtin *b = builtin_lookup(e->builtin); if (b) ret = b->ret; }
+        break;
+    default: break;
+    }
+    /* The C emitter uses `void` when AstFn::ret is still NULL. Do not use
+     * ftype here: it can represent a dynamic/inferred type without changing
+     * that emitted signature. */
+    if (e->kind == EX_CALL && e->u.call.target && !e->u.call.target->ret) return true;
+    if (e->kind == EX_METHOD && e->u.method.target && !e->u.method.target->ret) return true;
+    if (e->kind == EX_STATIC && e->u.staticcall.target && !e->u.staticcall.target->ret) return true;
+    return ret && ret->kind == TY_VOID;
+}
+
+static void emit_managed_store(Codegen *g, const char *slot, const Type *tt,
+                               Expr *value, Buf *dst, bool hval_slot) {
+    Buf rhs;
+    buf_init(&rhs);
+    if (hval_slot && tt && (tt->kind == TY_NULLABLE || tt->kind == TY_UNION))
+        emit_to_type(g, value, tt, &rhs);
+    else if (hval_slot) to_hval(g, value, &rhs);
+    else emit_to_type(g, value, tt, &rhs);
+    const char *rv = buf_take(&rhs);
+    bool keep = expr_is_borrowed_heap(value);
+    if (tt && (tt->kind == TY_OWN || tt->kind == TY_RC) && sema_type_is_linear(tt))
+        keep = false;
+    const char *tag = hval_slot ? NULL : managed_tag_for_type(tt);
+    if (hval_slot)
+        buf_printf(dst, "hp_assign_hval(&(%s), hv(%s), %s)", slot, rv,
+                   keep ? "true" : "false");
+    else if (tag)
+        buf_printf(dst, "((%s)hp_assign_ptr((void**)&(%s), (void*)(%s), %s, %s))",
+                   ctype_of(tt), slot, rv, tag, keep ? "true" : "false");
+    else
+        buf_printf(dst, "(%s = %s)", slot, rv);
+    free((void *)rv);
+    free(rhs.data);
+}
 
 /* PHP list destructuring: [$a, , $c] = expr;  /  ["k" => $v] = expr;
  * The source is evaluated once into a hidden hval temp, each pattern slot
@@ -2072,33 +2204,9 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             Buf v;
             buf_init(&v);
             emit_expr(g, e->u.assign.value, &v);
-            const Type *vt = e->u.assign.value->type;
-            bool is_arr_v = vt && (vt->kind == TY_ARRAY || vt->kind == TY_VEC ||
-                                   vt->kind == TY_MAP || vt->kind == TY_SET);
-            if (tgt_is_box && is_arr_v && !sema_type_is_linear(vt)) {
-                /* the slot is an hval but the value is a bare harr*: box it */
-                buf_printf(dst, "(%s = hp_of_arr(hp_arr_clone(%s)))",
-                           name, buf_take(&v));
-            }
-            else if (!tgt_is_box && is_arr_v && !sema_type_is_linear(vt)) {
-                buf_printf(dst, "(%s = hp_arr_clone(%s))", name, buf_take(&v));
-            }
-            else {
-                free(v.data);
-                buf_init(&v);
-                const Type *tt = tgt->u.var.sym ? ((VarSym *)tgt->u.var.sym)->type : NULL;
-                /* The C slot is an hval whenever the target is a box - a
-                 * `use (&$x)` capture or file-scope storage - and that is
-                 * true of the *symbol*, not of the type sema inferred for
-                 * it. `$pulse = ($pulse + 4) % 100;` inside a closure is the
-                 * case that exposed it: the value is an int64_t, the slot is
-                 * an hval, and the raw value cannot be assigned to it. Box
-                 * it (to_hval) instead of projecting it to its own type. */
-                if (tgt_is_box) to_hval(g, e->u.assign.value, &v);
-                else emit_to_type(g, e->u.assign.value, tt, &v);
-                buf_printf(dst, "(%s = %s)", name, buf_take(&v));
-            }
-            free(v.data);
+            const Type *tt = tgt->u.var.sym ? ((VarSym *)tgt->u.var.sym)->type : NULL;
+            emit_managed_store(g, name, tt, e->u.assign.value, dst,
+                               tgt_is_box || (tt && type_is_hval_slot(tt)));
         } else if (op == T_DOTASSIGN) {
             Buf v;
             buf_init(&v);
@@ -2107,10 +2215,11 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             bool dboxed = tgt_is_box || !tgt->u.var.sym || !dt ||
                           dt->kind == TY_MIXED;
             if (dboxed) /* concat yields hstr*: box it for the hval slot */
-                buf_printf(dst, "((%s) = hp_of_str(hp_str_append_v(hv(%s), hv(%s))))",
+                buf_printf(dst, "hp_assign_hval(&(%s), hp_of_str(hp_str_append_v(hv(%s), hv(%s))), false)",
                            name, name, buf_take(&v));
             else
-                buf_printf(dst, "(%s = hp_str_append_v(hv(%s), hv(%s)))", name, name, buf_take(&v));
+                buf_printf(dst, "((hstr*)hp_assign_ptr((void**)&(%s), hp_str_append_v(hv(%s), hv(%s)), HV_STR, false))",
+                           name, name, buf_take(&v));
             free(v.data);
         } else if (op == T_POWASSIGN) {
             Buf v;
@@ -2221,6 +2330,34 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
         return;
     }
     if (tgt->kind == EX_INDEX) {
+        /* Nested writes need to detach every array on the path. A plain
+         * hp_arr_set on the leaf would mutate the shared child array. */
+        if (e->u.assign.op.kind == T_ASSIGN && tgt->u.index.idx &&
+            tgt->u.index.obj && tgt->u.index.obj->kind == EX_INDEX) {
+            PtrVec path = {0};
+            Expr *root = tgt;
+            while (root && root->kind == EX_INDEX && root->u.index.idx) {
+                ptrvec_push(&path, root->u.index.idx);
+                root = root->u.index.obj;
+            }
+            if (root && root->kind == EX_VAR && path.len > 1) {
+                VarSym *sym = (VarSym *)root->u.var.sym;
+                Buf value; buf_init(&value); emit_expr(g, e->u.assign.value, &value);
+                const char *vs = buf_take(&value);
+                const char *owner = var_name(sym);
+                const char *owned = fmt("hp_arg_keep_hval(hv(%s), %s)", vs,
+                    expr_is_borrowed_heap(e->u.assign.value) ? "true" : "false");
+                buf_printf(dst, "hp_arr_path_set_owner_take(&(%s), (hval[]){", owner);
+                for (size_t i = path.len; i > 0; --i) {
+                    if (i != path.len) buf_puts(dst, ", ");
+                    Buf ix; buf_init(&ix); emit_expr(g, (Expr *)path.items[i - 1], &ix);
+                    buf_printf(dst, "hv(%s)", buf_take(&ix)); free(ix.data);
+                }
+                buf_printf(dst, "}, %zu, %s)", path.len, owned);
+                free((void *)owned); free((void *)owner); free((void *)vs);
+                return;
+            }
+        }
         Buf o, ix, v;
         buf_init(&o); buf_init(&ix); buf_init(&v);
         emit_expr(g, tgt->u.index.obj, &o);
@@ -2235,29 +2372,100 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             const Type *it = tgt->u.index.idx->type;
             const Type *ot = tgt->u.index.obj->type;
             bool dynamic = (ot && ot->kind == TY_MIXED) || (it && it->kind == TY_MIXED);
+            VarSym *owner_sym = tgt->u.index.obj->kind == EX_VAR
+                ? (VarSym *)tgt->u.index.obj->u.var.sym : NULL;
+            bool owner_field = tgt->u.index.obj->kind == EX_FIELD &&
+                               tgt->u.index.obj->u.field.sf != NULL;
+            const char *field_owner = owner_field
+                ? emit_expr_str(g, tgt->u.index.obj) : NULL;
+            bool owner_box = owner_sym && (owner_sym->captured_byref ||
+                                           owner_sym->is_program_global);
+            bool owner_param_ref = owner_sym && owner_sym->is_param_ref;
+            const char *owner_name = owner_sym ? var_name(owner_sym) : NULL;
+            if (owner_box && owner_sym->captured_byref)
+                owner_name = fmt("(*%s)", owner_name);
+            const char *owned_vs = fmt("hp_arg_keep_hval(hv(%s), %s)", vs,
+                expr_is_borrowed_heap(e->u.assign.value) ? "true" : "false");
             if (aop == T_ASSIGN) {
-                if (dynamic)
-                    buf_printf(dst, "hp_arr_set_v(hv(%s), hv(%s), hv(%s))", os, xs, vs);
+                if (owner_param_ref && owner_sym->type && owner_sym->type->kind == TY_MIXED)
+                    buf_printf(dst, "hp_arr_set_hval_owner_take(%s, hv(%s), %s)",
+                               owner_name, xs, owned_vs);
+                else if (owner_param_ref)
+                    buf_printf(dst, "hp_arr_set_owner_take(%s, hv(%s), %s)",
+                               owner_name, xs, owned_vs);
+                else if (owner_field && type_is_hval_slot(tgt->u.index.obj->type))
+                    buf_printf(dst, "hp_arr_set_hval_owner_take(&(%s), hv(%s), %s)",
+                               field_owner, xs, owned_vs);
+                else if (owner_field)
+                    buf_printf(dst, "hp_arr_set_owner_take(&(%s), hv(%s), %s)",
+                               field_owner, xs, owned_vs);
+                else if (owner_sym && owner_box)
+                    buf_printf(dst, "hp_arr_set_hval_owner_take(&(%s), hv(%s), %s)",
+                               owner_name, xs, owned_vs);
+                else if (owner_sym && !dynamic)
+                    buf_printf(dst, "hp_arr_set_owner_take(&(%s), hv(%s), %s)",
+                               owner_name, xs, owned_vs);
+                else if (dynamic)
+                    buf_printf(dst, "hp_arr_set_v_take(hv(%s), hv(%s), %s)", os, xs, owned_vs);
                 else
-                    buf_printf(dst, "hp_arr_set(%s, hv(%s), hv(%s))", os, xs, vs);
+                    buf_printf(dst, "hp_arr_set_take(%s, hv(%s), %s)", os, xs, owned_vs);
             } else {
                 /* read-modify-write through the generic value path */
                 const char *rt = aop == T_PLUSASSIGN ? "hp_add" :
                                  aop == T_MINUSASSIGN ? "hpbi_scalar_sub" :
                                  aop == T_STARASSIGN ? "hpbi_scalar_mul" : "hp_add";
-                buf_printf(dst, "hp_arr_set_v(hv(%s), hv(%s), %s(hp_arr_get_v(hv(%s), hv(%s)), hv(%s)))",
-                           os, xs, rt, os, xs, vs);
+                if (owner_field && !type_is_hval_slot(tgt->u.index.obj->type))
+                    buf_printf(dst, "hp_arr_set_owner(&(%s), hv(%s), %s(hp_arr_get_v(hv(%s), hv(%s)), hv(%s)))",
+                               field_owner, xs, rt, os, xs, vs);
+                else if (owner_field)
+                    buf_printf(dst, "hp_arr_set_hval_owner(&(%s), hv(%s), %s(hp_arr_get_v(hv(%s), hv(%s)), hv(%s)))",
+                               field_owner, xs, rt, os, xs, vs);
+                else
+                    buf_printf(dst, "hp_arr_set_v(hv(%s), hv(%s), %s(hp_arr_get_v(hv(%s), hv(%s)), hv(%s)))",
+                               os, xs, rt, os, xs, vs);
             }
+            free((void *)owned_vs);
+            if (owner_sym) free((void *)owner_name);
+            free((void *)field_owner);
             free((void *)xs);
         } else {
             /* $a[] = v  (PHP append) */
             const Type *pot = tgt->u.index.obj->type;
-            if (pot && pot->kind == TY_MIXED)
+            VarSym *owner_sym = tgt->u.index.obj->kind == EX_VAR
+                ? (VarSym *)tgt->u.index.obj->u.var.sym : NULL;
+            bool owner_field = tgt->u.index.obj->kind == EX_FIELD &&
+                               tgt->u.index.obj->u.field.sf != NULL;
+            const char *field_owner = owner_field
+                ? emit_expr_str(g, tgt->u.index.obj) : NULL;
+            bool owner_box = owner_sym && (owner_sym->captured_byref ||
+                                           owner_sym->is_program_global);
+            bool owner_param_ref = owner_sym && owner_sym->is_param_ref;
+            const char *owner_name = owner_sym ? var_name(owner_sym) : NULL;
+            if (owner_box && owner_sym->captured_byref)
+                owner_name = fmt("(*%s)", owner_name);
+            const char *owned_vs = fmt("hp_arg_keep_hval(hv(%s), %s)", vs,
+                expr_is_borrowed_heap(e->u.assign.value) ? "true" : "false");
+            if (owner_param_ref && owner_sym->type && owner_sym->type->kind == TY_MIXED)
+                buf_printf(dst, "hp_arr_push_hval_owner_take(%s, %s)", owner_name, owned_vs);
+            else if (owner_param_ref)
+                buf_printf(dst, "hp_arr_push_owner_take(%s, %s)", owner_name, owned_vs);
+            else if (owner_field && type_is_hval_slot(tgt->u.index.obj->type))
+                buf_printf(dst, "hp_arr_push_hval_owner_take(&(%s), %s)", field_owner, owned_vs);
+            else if (owner_field)
+                buf_printf(dst, "hp_arr_push_owner_take(&(%s), %s)", field_owner, owned_vs);
+            else if (owner_sym && owner_box)
+                buf_printf(dst, "hp_arr_push_hval_owner_take(&(%s), %s)", owner_name, owned_vs);
+            else if (owner_sym && !(pot && pot->kind == TY_MIXED))
+                buf_printf(dst, "hp_arr_push_owner_take(&(%s), %s)", owner_name, owned_vs);
+            else if (pot && pot->kind == TY_MIXED)
                 /* boxed container (by-ref capture / untyped slot): the
                  * container is an hval — push in value space, store back */
-                buf_printf(dst, "((%s) = hp_arr_push_vv(%s, hv(%s)))", os, os, vs);
+                buf_printf(dst, "((%s) = hp_arr_push_vv_take(%s, %s))", os, os, owned_vs);
             else
-                buf_printf(dst, "hp_arr_push_v(%s, hv(%s))", os, vs);
+                buf_printf(dst, "hp_arr_push_v_take(%s, %s)", os, owned_vs);
+            free((void *)owned_vs);
+            if (owner_sym) free((void *)owner_name);
+            free((void *)field_owner);
         }
         free((void *)os); free((void *)vs);
         free(ix.data); free(o.data); free(v.data);
@@ -2352,14 +2560,9 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             free((void *)lval); free(v.data);
             return;
         }
-        if (sf && sf->type) {
-            if (sf->type->kind == TY_MIXED)
-                to_hval(g, e->u.assign.value, &v); /* dynamic slot: box */
-            else
-                emit_to_type(g, e->u.assign.value, sf->type, &v);
-        }
-        else emit_expr(g, e->u.assign.value, &v);
-        buf_printf(dst, "(%s = %s)", lval, buf_take(&v));
+        const Type *field_type = sf ? sf->type : NULL;
+        emit_managed_store(g, lval, field_type, e->u.assign.value, dst,
+                           !field_type || type_is_hval_slot(field_type));
         free((void *)lval); free(v.data);
         return;
     }
@@ -2553,17 +2756,8 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
         for (size_t i = 0; i < e->u.newexpr.args.len; i++) {
             buf_puts(dst, ", ");
             Param *pm = (ctor && i < ctor->params.len) ? ctor->params.items[i] : NULL;
-            const Type *pt = pm ? pm->resolved : NULL;
-            if (pt && (pt->kind == TY_CLASS || pt->kind == TY_STRUCT))
-                emit_expr(g, e->u.newexpr.args.items[i], dst);  /* raw struct ptr */
-            else if (pt && (pt->kind == TY_OWN || pt->kind == TY_RC) && pt->elem &&
-                     (pt->elem->kind == TY_CLASS || pt->elem->kind == TY_STRUCT))
-                buf_printf(dst, "(struct %s*)%s", pt->elem->name,
-                           emit_expr_str(g, e->u.newexpr.args.items[i]));
-            else if (pm && (!pt || pt->kind == TY_MIXED))
-                to_hval(g, e->u.newexpr.args.items[i], dst);
-            else
-                emit_expr(g, e->u.newexpr.args.items[i], dst);
+            if (pm) emit_owned_call_arg(g, e->u.newexpr.args.items[i], pm->resolved, dst);
+            else emit_expr(g, e->u.newexpr.args.items[i], dst);
         }
         if (ctor) emit_missing_defaults(g, ctor, e->u.newexpr.args.len, dst);
         buf_puts(dst, ")");
@@ -2642,8 +2836,33 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
             box_b = false;
         }
         const char *as = buf_take(&a), *bs = buf_take(&b);
-        if (box_a) as = fmt("hv(%s)", as);
-        if (box_b) bs = fmt("hv(%s)", bs);
+        /* A selected branch can be a borrowed variable/field/index while the
+         * other branch is a fresh allocation. Give only the selected heap
+         * branch an owned reference; callers can then safely transfer or
+         * release the ternary result without guessing which branch ran. */
+        bool keep_result = type_can_own_heap(rest3);
+        bool kept_a_as_hval = keep_result && (box_a || (rest3 && type_is_hval_slot(rest3)));
+        bool kept_b_as_hval = keep_result && (box_b || (rest3 && type_is_hval_slot(rest3)));
+        if (kept_a_as_hval)
+            as = fmt("hp_arg_keep_hval(hv(%s), %s)", as,
+                     expr_is_borrowed_heap(e->u.tern.then) ? "true" : "false");
+        else if (keep_result) {
+            const char *tag = managed_tag_for_type(tt3);
+            if (tag) as = fmt("((%s)hp_arg_keep_ptr((void*)(%s), %s, %s))",
+                              ctype_of(tt3), as, tag,
+                              expr_is_borrowed_heap(e->u.tern.then) ? "true" : "false");
+        }
+        if (kept_b_as_hval)
+            bs = fmt("hp_arg_keep_hval(hv(%s), %s)", bs,
+                     expr_is_borrowed_heap(e->u.tern.els) ? "true" : "false");
+        else if (keep_result) {
+            const char *tag = managed_tag_for_type(et3);
+            if (tag) bs = fmt("((%s)hp_arg_keep_ptr((void*)(%s), %s, %s))",
+                              ctype_of(et3), bs, tag,
+                              expr_is_borrowed_heap(e->u.tern.els) ? "true" : "false");
+        }
+        if (box_a && !kept_a_as_hval) as = fmt("hv(%s)", as);
+        if (box_b && !kept_b_as_hval) bs = fmt("hv(%s)", bs);
         if ((box_a || box_b) && rest3) {
             /* projections consume hvals on BOTH sides — an unboxed native
              * branch (e.g. string ?: mixed) must be boxed here too */
@@ -2674,8 +2893,8 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
             /* result stays mixed: both branches must be hval for C's ?: —
              * box the unboxed side when the other side is a value */
             const char *a2 = as, *b2 = bs;
-            if ((box_a || box_b) && !box_a) a2 = fmt("hv(%s)", as);
-            if ((box_a || box_b) && !box_b) b2 = fmt("hv(%s)", bs);
+            if ((box_a || box_b) && !box_a && !kept_a_as_hval) a2 = fmt("hv(%s)", as);
+            if ((box_a || box_b) && !box_b && !kept_b_as_hval) b2 = fmt("hv(%s)", bs);
             buf_printf(dst, "(%s ? %s : %s)", buf_take(&c), a2, b2);
         }
         free(c.data); free(a.data); free(b.data);
@@ -2752,10 +2971,13 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
     }
     case EX_ARRAY_LIT: case EX_MAP_LIT: emit_array_lit(g, e, dst); break;
     case EX_TUPLE_LIT: {
-        buf_printf(dst, "hp_arr_of(%zu, (const hval[]){", e->u.tuple.elems.len);
+        buf_printf(dst, "hp_arr_of_take(%zu, (const hval[]){", e->u.tuple.elems.len);
         for (size_t i = 0; i < e->u.tuple.elems.len; i++) {
             if (i) buf_puts(dst, ", ");
-            to_hval(g, e->u.tuple.elems.items[i], dst);
+            Expr *val = e->u.tuple.elems.items[i];
+            buf_puts(dst, "hp_arg_keep_hval(");
+            to_hval(g, val, dst);
+            buf_printf(dst, ", %s)", expr_is_borrowed_heap(val) ? "true" : "false");
         }
         buf_puts(dst, "})");
         break;
@@ -2802,8 +3024,29 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
 
 /* ---------------- statements ---------------- */
 static void emit_block(Codegen *g, PtrVec stmts) {
+    int sid = g->tmp_id++;
+    const char *mark = fmt("_hp_scope_%d", sid);
+    line(g, "{");
+    g->depth++;
+    line(g, "void *%s = hp_cleanup_mark();", mark);
+    if (g->pending_loop_cleanup_mark) {
+        ptrvec_push(&g->loop_cleanup_marks, (void *)mark);
+        ptrvec_push(&g->break_cleanup_marks, (void *)mark);
+        g->pending_loop_cleanup_mark = false;
+    } else if (g->pending_break_cleanup_mark) {
+        ptrvec_push(&g->break_cleanup_marks, (void *)mark);
+        g->pending_break_cleanup_mark = false;
+    }
     for (size_t i = 0; i < stmts.len; i++)
         emit_stmt(g, stmts.items[i]);
+    line(g, "hp_cleanup_pop_to(%s);", mark);
+    g->depth--;
+    line(g, "}");
+    if (g->break_cleanup_marks.len && g->break_cleanup_marks.items[g->break_cleanup_marks.len - 1] == mark)
+        g->break_cleanup_marks.len--;
+    if (g->loop_cleanup_marks.len && g->loop_cleanup_marks.items[g->loop_cleanup_marks.len - 1] == mark)
+        g->loop_cleanup_marks.len--;
+    free((void *)mark);
 }
 
 static void emit_foreach(Codegen *g, Stmt *s) {
@@ -2879,6 +3122,7 @@ static void emit_foreach(Codegen *g, Stmt *s) {
     {
         int lid = g->label_id++;
         ptrvec_push(&g->loop_labels, (void *)(intptr_t)lid);
+        g->pending_loop_cleanup_mark = true;
         emit_block(g, s->u.foreach.body);
         line(g, "hp_cont_%d: ;", lid);
         g->loop_labels.len--;
@@ -3025,6 +3269,25 @@ static void emit_stmt(Codegen *g, Stmt *s) {
             if (v && !v->is_auto && t) line(g, "%s %s;", ctype_of(t), var_name(v));
             break;
         }
+        bool boxed = v && (v->captured_byref || v->is_program_global);
+        bool managed = boxed || type_can_own_heap(t);
+        const char *slot = v ? var_name(v) : "hp_missing_var";
+        if (v && v->captured_byref) slot = fmt("(*%s)", slot);
+        if (managed) {
+            if (!v->is_auto) line(g, "%s %s = %s;", ctype_of(t), var_name(v),
+                                  zero_init_decl_of(t));
+            Buf value;
+            buf_init(&value);
+            emit_managed_store(g, slot, boxed ? NULL : t, s->u.let.init,
+                               &value, boxed || (t && type_is_hval_slot(t)));
+            line(g, "%s;", buf_take(&value));
+            free(value.data);
+            if (v && !v->is_auto && !v->is_program_global)
+                emit_register_owner(g, slot, boxed ? NULL : t,
+                                    v->captured_byref,
+                                    boxed || (t && type_is_hval_slot(t)));
+            break;
+        }
         Buf init;
         buf_init(&init);
         if (v && v->is_auto) {
@@ -3065,7 +3328,16 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         Buf e;
         buf_init(&e);
         emit_expr(g, s->u.expr.expr, &e);
-        line(g, "%s;", buf_take(&e));
+        /* Unknown call results include void methods whose return type was not
+         * resolved on the expression node. A `void` C call cannot be wrapped
+         * in hv(); only emit a discard owner when sema provided a value type. */
+        if (!expr_returns_void(s->u.expr.expr) && s->u.expr.expr->type &&
+            type_can_own_heap(s->u.expr.expr->type)) {
+            int id = g->tmp_id++;
+            line(g, "hval _hp_discard_%d = hp_arg_keep_hval(hv(%s), %s);", id,
+                 buf_take(&e), expr_is_borrowed_heap(s->u.expr.expr) ? "true" : "false");
+            line(g, "hp_val_rc_dec(_hp_discard_%d);", id);
+        } else line(g, "%s;", buf_take(&e));
         free(e.data);
         break;
     }
@@ -3077,8 +3349,12 @@ static void emit_stmt(Codegen *g, Stmt *s) {
                 Buf v;
                 buf_init(&v);
                 emit_expr(g, s->u.ret.value, &v);
-                line(g, "_env->ret = hv(%s); _env->act = 1; return hp_null;",
-                     buf_take(&v));
+                int rid = g->tmp_id++;
+                line(g, "hval _hp_try_ret_%d = hv(%s);", rid, buf_take(&v));
+                if (type_can_own_heap(s->u.ret.value->type) &&
+                    expr_is_borrowed_heap(s->u.ret.value))
+                    line(g, "hp_val_rc_inc(_hp_try_ret_%d);", rid);
+                line(g, "_env->ret = _hp_try_ret_%d; _env->act = 1; return hp_null;", rid);
                 free(v.data);
             } else {
                 line(g, "_env->act = 1; return hp_null;");
@@ -3088,18 +3364,31 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         if (s->u.ret.value) {
             Buf v;
             buf_init(&v);
+            const Type *rt = g->in_closure
+                ? (g->cur_fn && g->cur_fn->ftype ? g->cur_fn->ftype->fn.ret : ty_mixed)
+                : (g->cur_fn ? g->cur_fn->ret : s->u.ret.value->type);
+            bool hval_ret = g->in_closure || !rt || type_is_hval_slot(rt);
             if (g->in_closure)
                 to_hval(g, s->u.ret.value, &v); /* closure impls return hval */
             else {
-                const Type *rt = g->cur_fn ? g->cur_fn->ret : NULL;
                 if (rt && rt->kind == TY_MIXED)
                     to_hval(g, s->u.ret.value, &v); /* inferred fns return hval */
                 else
                     emit_to_type(g, s->u.ret.value, rt, &v);
             }
-            line(g, "return %s;", buf_take(&v));
+            int rid = g->tmp_id++;
+            const char *rty = hval_ret ? "hval" : ctype_of(rt);
+            line(g, "%s _hp_ret_%d = %s;", rty, rid, buf_take(&v));
+            if (type_can_own_heap(s->u.ret.value->type) &&
+                expr_is_borrowed_heap(s->u.ret.value)) {
+                if (hval_ret) line(g, "hp_val_rc_inc(_hp_ret_%d);", rid);
+                else line(g, "hp_val_rc_inc(hv(_hp_ret_%d));", rid);
+            }
+            if (g->cur_fn) line(g, "hp_cleanup_pop_to(_hp_mark);");
+            line(g, "return _hp_ret_%d;", rid);
             free(v.data);
         } else {
+            if (g->cur_fn) line(g, "hp_cleanup_pop_to(_hp_mark);");
             line(g, "%s;", g->in_closure ? "return hp_null" : "return");
         }
         break;
@@ -3109,7 +3398,11 @@ static void emit_stmt(Codegen *g, Stmt *s) {
             Buf v;
             buf_init(&v);
             to_hval(g, s->u.echo.exprs.items[i], &v);
-            line(g, "hp_echo(%s);", buf_take(&v));
+            int id = g->tmp_id++;
+            Expr *expr = s->u.echo.exprs.items[i];
+            line(g, "hval _hp_echo_%d = hp_arg_keep_hval(%s, %s);", id,
+                 buf_take(&v), expr_is_borrowed_heap(expr) ? "true" : "false");
+            line(g, "hp_echo(_hp_echo_%d); hp_val_rc_dec(_hp_echo_%d);", id, id);
             free(v.data);
         }
         line(g, "hp_echo_newline();");
@@ -3119,7 +3412,10 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         Buf v;
         buf_init(&v);
         to_hval(g, s->u.print.expr, &v);
-        line(g, "hp_echo(%s);", buf_take(&v));
+        int id = g->tmp_id++;
+        line(g, "hval _hp_print_%d = hp_arg_keep_hval(%s, %s);", id,
+             buf_take(&v), expr_is_borrowed_heap(s->u.print.expr) ? "true" : "false");
+        line(g, "hp_echo(_hp_print_%d); hp_val_rc_dec(_hp_print_%d);", id, id);
         free(v.data);
         break;
     }
@@ -3156,6 +3452,7 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         g->loop_depth++;
         int lid = g->label_id++;
         ptrvec_push(&g->loop_labels, (void *)(intptr_t)lid);
+        g->pending_loop_cleanup_mark = true;
         emit_block(g, s->u.while_.body);
         line(g, "hp_cont_%d: ;", lid);
         g->loop_labels.len--;
@@ -3170,6 +3467,7 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         g->loop_depth++;
         int lid = g->label_id++;
         ptrvec_push(&g->loop_labels, (void *)(intptr_t)lid);
+        g->pending_loop_cleanup_mark = true;
         emit_block(g, s->u.do_.body);
         line(g, "hp_cont_%d: ;", lid);
         g->loop_labels.len--;
@@ -3209,6 +3507,7 @@ static void emit_stmt(Codegen *g, Stmt *s) {
                     free(p.data);
                 }
                 g->depth++;
+                g->pending_break_cleanup_mark = true;
                 emit_block(g, cse->body);
                 g->depth--;
                 line(g, "break;");
@@ -3220,6 +3519,7 @@ static void emit_stmt(Codegen *g, Stmt *s) {
                 for (size_t i = 0; i < s->u.switch_.cases.len; i++) {
                     SwitchCase *cse = s->u.switch_.cases.items[i];
                     if (!cse->is_default) continue;
+                    g->pending_break_cleanup_mark = true;
                     emit_block(g, cse->body);
                 }
             }
@@ -3253,6 +3553,7 @@ static void emit_stmt(Codegen *g, Stmt *s) {
                     free(p.data);
                 }
                 g->depth++;
+                g->pending_break_cleanup_mark = true;
                 emit_block(g, cse->body);
                 g->depth--;
                 line(g, "break;");
@@ -3263,6 +3564,7 @@ static void emit_stmt(Codegen *g, Stmt *s) {
                 for (size_t i = 0; i < s->u.switch_.cases.len; i++) {
                     SwitchCase *cse = s->u.switch_.cases.items[i];
                     if (!cse->is_default) continue;
+                    g->pending_break_cleanup_mark = true;
                     emit_block(g, cse->body);
                 }
             }
@@ -3287,6 +3589,7 @@ static void emit_stmt(Codegen *g, Stmt *s) {
             }
             if (cse->is_default) line(g, "default:");
             g->depth++;
+            g->pending_break_cleanup_mark = true;
             emit_block(g, cse->body);
             g->depth--;
         }
@@ -3316,6 +3619,7 @@ static void emit_stmt(Codegen *g, Stmt *s) {
          * loop forever) */
         int lid = g->label_id++;
         ptrvec_push(&g->loop_labels, (void *)(intptr_t)lid);
+        g->pending_loop_cleanup_mark = true;
         emit_block(g, s->u.for_.body);
         line(g, "hp_cont_%d: ;", lid);
         g->loop_labels.len--;
@@ -3334,14 +3638,21 @@ static void emit_stmt(Codegen *g, Stmt *s) {
     case ST_BREAK:
         if (g->in_try_helper && g->loop_depth == 0)
             line(g, "_env->act = 2; return hp_null;");
-        else
+        else {
+            if (g->break_cleanup_marks.len)
+                line(g, "hp_cleanup_pop_to(%s);",
+                     (const char *)g->break_cleanup_marks.items[g->break_cleanup_marks.len - 1]);
             line(g, "break;");
+        }
         break;
     case ST_CONTINUE:
         if (g->in_try_helper && g->loop_depth == 0) {
             /* leaves the helper: the loop lives in the caller */
             line(g, "_env->act = 3; return hp_null;");
         } else if (g->loop_labels.len > 0) {
+            if (g->loop_cleanup_marks.len)
+                line(g, "hp_cleanup_pop_to(%s);",
+                     (const char *)g->loop_cleanup_marks.items[g->loop_cleanup_marks.len - 1]);
             line(g, "goto hp_cont_%d;",
                  (int)(intptr_t)g->loop_labels.items[g->loop_labels.len - 1]);
         } else {
@@ -3477,15 +3788,21 @@ static void emit_stmt(Codegen *g, Stmt *s) {
             line(g, "if (e%d.act != 0) { _env->ret = e%d.ret; _env->act = e%d.act; return hp_null; }",
                  id, id, id);
         } else if (g->in_closure) {
-            line(g, "if (e%d.act == 1) return e%d.ret;", id, id);
+            line(g, "if (e%d.act == 1) { hp_cleanup_pop_to(_hp_mark); return e%d.ret; }", id, id);
         } else if (g->cur_fn == NULL) {
             line(g, "if (e%d.act == 1) return 0;", id);
         } else if (!rt || rt->kind == TY_VOID) {
-            line(g, "if (e%d.act == 1) return;", id);
+            line(g, "if (e%d.act == 1) { hp_cleanup_pop_to(_hp_mark); return; }", id);
         } else {
-            line(g, "if (e%d.act == 1) return %s;", id, proj_hval_expr(rt, fmt("e%d.ret", id)));
+            const char *projected = proj_hval_expr(rt, fmt("e%d.ret", id));
+            line(g, "if (e%d.act == 1) { hp_cleanup_pop_to(_hp_mark); return %s; }", id, projected);
         }
         if (!in_helper && g->loop_depth > 0) {
+            const char *loop_mark = g->loop_cleanup_marks.len
+                ? (const char *)g->loop_cleanup_marks.items[g->loop_cleanup_marks.len - 1]
+                : NULL;
+            if (loop_mark) line(g, "if (e%d.act == 2 || e%d.act == 3) hp_cleanup_pop_to(%s);",
+                                id, id, loop_mark);
             line(g, "if (e%d.act == 2) break;", id);
             if (g->loop_labels.len > 0)
                 line(g, "if (e%d.act == 3) goto hp_cont_%d;", id,
@@ -3502,7 +3819,8 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         Buf v;
         buf_init(&v);
         emit_expr(g, s->u.throw.expr, &v);
-        line(g, "hp_throw(hv(%s));", buf_take(&v));
+        line(g, "hp_throw(hp_arg_keep_hval(hv(%s), %s));", buf_take(&v),
+             expr_is_borrowed_heap(s->u.throw.expr) ? "true" : "false");
         free(v.data);
         break;
     }
@@ -3961,8 +4279,56 @@ static void emit_auto_decls(Codegen *g, AstFn *fn) {
         VarSym *ps = (VarSym *)pm->sym;
         if (!ps || !ps->captured_byref || pm->by_ref) continue;
         line(g, "hval *%s = hp_box_new();", var_name(ps));
-        line(g, "*%s = %s;", var_name(ps), box_param_value(pm->resolved, param_slot_name(pm)));
+        line(g, "hp_assign_hval(%s, hv(%s), true);", var_name(ps),
+             box_param_value(pm->resolved, param_slot_name(pm)));
     }
+}
+
+static void emit_register_owner(Codegen *g, const char *slot, const Type *t,
+                                bool box, bool hval_slot) {
+    if (box) {
+        line(g, "hp_cleanup_register_box(&%s);", slot);
+    } else if (hval_slot || !t || type_is_hval_slot(t)) {
+        line(g, "hp_cleanup_register_hval(&(%s));", slot);
+    } else {
+        const char *tag = managed_tag_for_type(t);
+        if (tag) line(g, "hp_cleanup_register_ptr((void**)&(%s), %s);", slot, tag);
+    }
+}
+
+static void emit_cleanup_setup(Codegen *g, AstFn *fn) {
+    line(g, "void *_hp_mark = hp_cleanup_mark();");
+    for (size_t i = 0; i < fn->params.len; i++) {
+        Param *pm = fn->params.items[i];
+        VarSym *v = (VarSym *)pm->sym;
+        if (!v || pm->by_ref) continue;
+        if (v->captured_byref) {
+            emit_register_owner(g, var_name(v), NULL, true, false);
+            continue;
+        }
+        if (!type_can_own_heap(pm->resolved))
+            continue;
+        const char *slot = param_slot_name(pm);
+        if (g->in_closure) line(g, "hp_val_rc_inc(hv(%s));", slot);
+        emit_register_owner(g, slot, pm->resolved, false,
+                            type_is_hval_slot(pm->resolved));
+    }
+    PtrVec syms = {0};
+    for (size_t i = 0; i < fn->body.len; i++) collect_syms_stmt(&syms, fn->body.items[i]);
+    for (size_t i = 0; i < syms.len; i++) {
+        VarSym *v = syms.items[i];
+        if (!v || v->is_param || is_global_alias(v) || v->is_program_global) continue;
+        bool seen = false, capture = false;
+        for (size_t j = 0; j < i; j++) if (syms.items[j] == v) seen = true;
+        for (size_t j = 0; j < fn->captures.len; j++)
+            if (fn->captures.items[j] == v) capture = true;
+        if (seen || capture || !v->is_auto) continue;
+        const char *slot = var_name(v);
+        if (v->captured_byref) emit_register_owner(g, slot, NULL, true, false);
+        else if (type_can_own_heap(v->type))
+            emit_register_owner(g, slot, v->type, false, type_is_hval_slot(v->type));
+    }
+    free(syms.items);
 }
 
 static const char *zero_init_of(const Type *t);
@@ -3971,9 +4337,11 @@ static const char *zero_init_decl_of(const Type *t);
 static void emit_fn_body(Codegen *g, AstFn *fn, const Type *self_type) {
     (void)self_type;
     emit_auto_decls(g, fn);
+    emit_cleanup_setup(g, fn);
     emit_block(g, fn->body);
     const Type *ret = fn->ret ? fn->ret : type_new(TY_VOID);
     if (ret->kind != TY_VOID) {
+        line(g, "hp_cleanup_pop_to(_hp_mark);");
         /* zero value of return type (unreachable fallback) */
         if (type_is_integral(ret->kind)) line(g, "return (int64_t)0;");
         else if (type_is_numeric(ret->kind)) line(g, "return (double)0;");
@@ -3990,7 +4358,7 @@ static void emit_fn_body(Codegen *g, AstFn *fn, const Type *self_type) {
                  (ret->elem->kind == TY_CLASS || ret->elem->kind == TY_STRUCT))
             line(g, "return 0;");
         else line(g, "return hp_null;");
-    }
+    } else line(g, "hp_cleanup_pop_to(_hp_mark);");
 }
 
 static void emit_struct(Codegen *g, AstClass *c) {
@@ -3998,6 +4366,7 @@ static void emit_struct(Codegen *g, AstClass *c) {
     g->depth++;
     /* embed the base struct FIRST so derived pointers convert implicitly */
     if (c->base) line(g, "struct %s __base;", c->base->name);
+    else line(g, "hobj __hp; /* common strong-count/drop header */");
     /* runtime class id for virtual dispatch (per-level, read via top ptr) */
     line(g, "int __cls;");
     for (size_t i = 0; i < c->fields.len; i++) {
@@ -4026,14 +4395,65 @@ static const char *class_field_lval_depth(int depth, const char *name) {
     return fmt("%s.%s", path, name ? name : "hp_missing_field");
 }
 
+/* Convert a generated field slot to the runtime's tagged ownership handle.
+ * Scalar fields carry no ownership and return NULL. */
+static const char *managed_field_value(const Type *t, const char *slot) {
+    if (!t) return fmt("hv(%s)", slot);
+    switch (t->kind) {
+    case TY_MIXED: case TY_NULLABLE: case TY_UNION: case TY_NULL:
+        return fmt("hv(%s)", slot);
+    case TY_STRING: return fmt("hp_of_str(%s)", slot);
+    case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET:
+        return fmt("hp_of_arr(%s)", slot);
+    case TY_FN: return fmt("hp_of_clo(%s)", slot);
+    case TY_CLASS: case TY_STRUCT: case TY_INTERFACE:
+        return fmt("hp_of_ptr(%s)", slot);
+    case TY_OWN: case TY_RC:
+        if (!t->elem) return NULL;
+        switch (t->elem->kind) {
+        case TY_STRING: return fmt("hp_of_str(%s)", slot);
+        case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET:
+            return fmt("hp_of_arr(%s)", slot);
+        case TY_FN: return fmt("hp_of_clo(%s)", slot);
+        case TY_CLASS: case TY_STRUCT: case TY_INTERFACE:
+            return fmt("hp_of_ptr(%s)", slot);
+        default: return NULL;
+        }
+    default: return NULL;
+    }
+}
+
+static void emit_class_drop(Codegen *g, AstClass *c) {
+    line(g, "static void %s_drop(void *raw) {", c->name);
+    g->depth++;
+    line(g, "struct %s *self = (struct %s*)raw;", c->name, c->name);
+    for (AstClass *k = c; k; k = k->base) {
+        int depth = 0;
+        for (AstClass *p = c; p && p != k; p = p->base) depth++;
+        for (size_t i = 0; i < k->fields.len; i++) {
+            StructField *f = k->fields.items[i];
+            if (f->is_static || (f->cls && f->cls != k)) continue;
+            const char *lv = class_field_lval_depth(depth, f->name);
+            const char *owned = managed_field_value(f->type, lv);
+            if (owned) line(g, "hp_val_rc_dec(%s);", owned);
+        }
+    }
+    line(g, "free(self);");
+    g->depth--;
+    line(g, "}");
+}
+
 static void emit_class(Codegen *g, AstClass *c) {
     if (!g_structs_emitted) emit_struct(g, c);
+    line(g, "static void %s_drop(void *raw);", c->name);
+    emit_class_drop(g, c);
     /* generic constructor: Class_new_args("Class", field-init values...) */
     line(g, "static struct %s* %s_new_args(const char* cls, ...);", c->name, c->name);
     line(g, "static struct %s* %s_new_args(const char* cls, ...) {", c->name, c->name);
     g->depth++;
     line(g, "(void)cls;");
     line(g, "struct %s* self = hp_alloc(sizeof(struct %s));", c->name, c->name);
+    line(g, "((hobj*)self)->rc = 1; ((hobj*)self)->drop = %s_drop;", c->name);
     line(g, "self->__cls = hp_cls_%s;", c->name);
     /* keep ancestor-level ids in sync so base-typed receivers dispatch right */
     {
