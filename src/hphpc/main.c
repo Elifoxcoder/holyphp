@@ -873,11 +873,16 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
                              "-luuid -lversion -lshlwapi -lwinmm",
                              opt, subsys, objlist, out);
 #else
-            /* POSIX: sockets live in libc, the UI layer is inert stubs */
+            /* POSIX: sockets live in libc, the UI layer is inert stubs, and
+             * the io_uring module talks to the kernel through raw syscalls
+             * (no liburing). SQLite is an optional module: a program links it
+             * only when it calls one of its builtins. */
             const char *slib = getenv("HPHP_SQLITE_LIB");
-            char *link = (slib && *slib)
-                ? fmt("gcc %s %s -o %s -lm -lpthread -luring %s", opt, objlist, out, slib)
-                : fmt("gcc %s %s -o %s -lm -lpthread -lsqlite3 -luring", opt, objlist, out);
+            char libs[1024];
+            snprintf(libs, sizeof libs, "-lm -lpthread%s%s",
+                     needed[7] ? " " : "",
+                     needed[7] ? (slib && *slib ? slib : "-lsqlite3") : "");
+            char *link = fmt("gcc %s %s -o %s %s", opt, objlist, out, libs);
 #endif
             rc = run_direct(link, !verbose);
             if (verbose) fprintf(stderr, "[hphp backend] gcc-fallback rc=%d nonempty=%d exe=%d\n",

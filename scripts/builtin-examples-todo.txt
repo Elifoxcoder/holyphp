@@ -118,8 +118,6 @@ atomic_get
 atomic_set
 atomic_add
 atomic_cas
-holy_maxout_start
-holy_challenge_start
 
 accept_emfile
 bt_close

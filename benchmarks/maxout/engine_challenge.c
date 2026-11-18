@@ -32,6 +32,8 @@
  *
  *   hpbi_holy_challenge_start(port, db_path)   JWT_SECRET from the environment
  * ===================================================================== */
+#include "engine_standalone.h"
+
 #ifdef __linux__
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE

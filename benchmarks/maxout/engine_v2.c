@@ -23,6 +23,8 @@
  *                          instead of dropping the SQE (a dropped SQE stalls
  *                          its connection for seconds)
  * ===================================================================== */
+#include "engine_standalone.h"
+
 #ifdef __linux__
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE

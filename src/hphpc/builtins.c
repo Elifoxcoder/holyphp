@@ -506,8 +506,6 @@ void builtins_init(void) {
     add("ffi_load",      B_STR1,    ty_mixed,  true,  false);
     add("ffi_call",      B_MISC,    ty_mixed,  true,  true);
     add("heap_dump",     B_MISC,    ty_string, true,  false);
-    add("holy_maxout_start", B_MISC, ty_int, false, false);
-    add("holy_challenge_start", B_MISC, ty_int, false, false);
 
     /* ported with the challenge runtime: generic transport, SQLite,
      * string builders and typed int arrays (hphp_uring.c,

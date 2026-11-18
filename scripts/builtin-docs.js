@@ -619,10 +619,6 @@ module.exports = {
   atomic_add: "atomic_add($a, $delta) — adds and returns the previous value.",
   atomic_cas: "atomic_cas($a, $expect, $set) — compare-and-set; true when the value was $expect and became $set.",
 
-  /* ============ Built-in benchmark servers ============ */
-  holy_maxout_start: "holy_maxout_start($port, $dbPath) — starts the bundled io_uring HTTP benchmark server (Linux only); returns the bound port or -1.",
-  holy_challenge_start: "holy_challenge_start($port, $dbPath) — starts the bundled challenge HTTP server (Linux only); returns the bound port or -1.",
-
   /* ============ misc / legacy ============ */
   phpversion: "Version of the HolyPHP runtime (duplicate entry kept for lookup stability).",
   php_sapi: "Alias of php_sapi_name().",
