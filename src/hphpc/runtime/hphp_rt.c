@@ -1,10 +1,9 @@
 /* hphp_rt.c — HolyPHP runtime: values, strings, arrays (COW), exceptions.
  *
  * Memory model:
- *   - strings and arrays are refcounted immutable-ish structures
- *   - arrays use copy-on-write: assignment shares; first write clones
- *   - own<T>/Rc<T> ownership is checked by the compiler; runtime Rc release
- *     and dynamic-value free hooks are currently no-ops
+ *   - strings, arrays, closures and generated objects use reference counts
+ *   - arrays use copy-on-write through owner-aware mutation helpers
+ *   - generated code and runtime containers release their owned values
  *   - raw pointers only exist inside unsafe blocks; runtime helpers used
  *     there map directly onto C (malloc/free/memcpy/memset)
  *
@@ -25,6 +24,7 @@
 #include <math.h>
 #include <ctype.h>
 #include <time.h>
+#include <stdatomic.h>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -39,9 +39,7 @@ void *hp_alloc(size_t n) {
     return p;
 }
 
-/* Generic Rc<T> pointers use this hook. All runtime heap headers keep their
- * reference count at the same offset; generated class objects are wired into
- * this protocol by the object-layout work. */
+/* Generic strong object handles use the common generated-object header. */
 typedef struct { uint32_t rc; } hp_rc_header;
 
 void hp_rc_inc(void *p) {
@@ -52,9 +50,12 @@ void hp_rc_inc(void *p) {
 
 void hp_rc_dec(void *p) {
     if (!p) return;
-    hp_rc_header *h = (hp_rc_header *)p;
+    hobj *h = (hobj *)p;
     if (h->rc == 0 || h->rc == UINT32_MAX) return;
-    if (--h->rc == 0) free(p);
+    if (--h->rc == 0) {
+        if (h->drop) h->drop(p);
+        else free(p);
+    }
 }
 
 void hp_echo(hval v) {
@@ -125,8 +126,26 @@ hstr *hp_str_new(const char *bytes, size_t len) {
     return s;
 }
 
+typedef struct hp_literal { struct hp_literal *next; hstr *value; } hp_literal;
+static hp_literal *hp_literals;
+static atomic_flag hp_literals_lock = ATOMIC_FLAG_INIT;
+
 hstr *hp_str_lit(const char *cstr) {
-    return hp_str_new(cstr, strlen(cstr));
+    if (!cstr) cstr = "";
+    while (atomic_flag_test_and_set_explicit(&hp_literals_lock, memory_order_acquire)) { }
+    for (hp_literal *it = hp_literals; it; it = it->next) {
+        if (strcmp(it->value->data, cstr) == 0) {
+            atomic_flag_clear_explicit(&hp_literals_lock, memory_order_release);
+            return it->value;
+        }
+    }
+    hp_literal *it = (hp_literal *)hp_alloc(sizeof(*it));
+    it->value = hp_str_new(cstr, strlen(cstr));
+    it->value->rc = UINT32_MAX; /* literal pool owns these for process lifetime */
+    it->next = hp_literals;
+    hp_literals = it;
+    atomic_flag_clear_explicit(&hp_literals_lock, memory_order_release);
+    return it->value;
 }
 
 hstr *hp_str_copy(hstr *s) {
@@ -592,9 +611,14 @@ harr *hp_arr_clone(harr *a) {
         /* deep clone: nested arrays get value semantics too */
         if (a->vals[i].tag == HV_ARR && a->vals[i].u.a)
             r->vals[i] = hp_of_arr(hp_arr_clone(a->vals[i].u.a));
-        else
+        else {
             r->vals[i] = a->vals[i];
-        if (r->is_map) r->keys[i] = a->keys[i];
+            hp_val_rc_inc(r->vals[i]);
+        }
+        if (r->is_map) {
+            r->keys[i] = a->keys[i];
+            hp_val_rc_inc(r->keys[i]);
+        }
     }
     r->len = a->len;
     return r;
@@ -614,6 +638,12 @@ harr *hp_arr_of(int n, const hval *vals) {
     return a;
 }
 
+harr *hp_arr_of_take(int n, const hval *vals) {
+    harr *a = hp_arr_new();
+    for (int i = 0; i < n; i++) hp_arr_push_take(a, vals[i]);
+    return a;
+}
+
 harr *hp_map_of(int n, const hval *kvs) {
     harr *a = hp_arr_new();
     a->is_map = true;
@@ -622,8 +652,32 @@ harr *hp_map_of(int n, const hval *kvs) {
     return a;
 }
 
+harr *hp_map_of_take(int n, const hval *kvs) {
+    harr *a = hp_arr_new();
+    a->is_map = true;
+    for (int i = 0; i < n / 2; i++) {
+        hp_arr_set(a, kvs[2 * i], kvs[2 * i + 1]);
+        hp_val_rc_dec(kvs[2 * i]);
+        hp_val_rc_dec(kvs[2 * i + 1]);
+    }
+    return a;
+}
+
 void hp_arr_push(harr *a, hval v) {
-    a = hp_arr_cow(a);
+    /* Low-level mutation: callers without an owner slot must pass writable
+     * storage. COW belongs in hp_arr_push_v/owner helpers, which can return
+     * or install the detached pointer. */
+    if (!a) return;
+    hp_arr_grow(a, a->len + 1);
+    hp_val_rc_inc(v);
+    a->vals[a->len] = v;
+    if (a->is_map) a->keys[a->len] = hp_of_int(a->next_index);
+    a->len++;
+    a->next_index++;
+}
+
+void hp_arr_push_take(harr *a, hval v) {
+    if (!a) return;
     hp_arr_grow(a, a->len + 1);
     a->vals[a->len] = v;
     if (a->is_map) a->keys[a->len] = hp_of_int(a->next_index);
@@ -638,6 +692,12 @@ hval hp_arr_push_v(harr *a, hval v) {
     a = hp_arr_cow(a);      /* COW: mutate the writable copy, not a shared one */
     hp_arr_push(a, v);
     return hp_of_arr(a);
+}
+
+hval hp_arr_push_v_take(harr *a, hval v) {
+    hval result = hp_arr_push_v(a, v);
+    hp_val_rc_dec(v);
+    return result;
 }
 
 /* PHP `$a[] = v` where the container is a runtime hval (boxed by-ref
@@ -663,10 +723,18 @@ hval hp_arr_push_vv(hval container, hval v) {
     return hp_of_arr(a);
 }
 
+hval hp_arr_push_vv_take(hval container, hval v) {
+    hval result = hp_arr_push_vv(container, v);
+    hp_val_rc_dec(v);
+    return result;
+}
+
 hval hp_arr_pop(harr *a) {
     if (!a || a->len == 0) return hp_null;
     a = hp_arr_cow(a);
     hval v = a->vals[--a->len];
+    a->vals[a->len] = hp_null; /* transfer the entry owner to the result */
+    if (a->is_map) hp_val_rc_dec(a->keys[a->len]);
     return v;
 }
 
@@ -674,6 +742,8 @@ hval hp_arr_shift(harr *a) {
     if (!a || a->len == 0) return hp_null;
     a = hp_arr_cow(a);
     hval v = a->vals[0];
+    a->vals[0] = hp_null; /* transfer; shifted owners are not duplicated */
+    if (a->is_map) hp_val_rc_dec(a->keys[0]);
     memmove(a->vals, a->vals + 1, (a->len - 1) * sizeof(hval));
     if (a->is_map) memmove(a->keys, a->keys + 1, (a->len - 1) * sizeof(hval));
     a->len--;
@@ -685,6 +755,7 @@ void hp_arr_unshift(harr *a, hval v) {
     hp_arr_grow(a, a->len + 1);
     memmove(a->vals + 1, a->vals, a->len * sizeof(hval));
     if (a->is_map) memmove(a->keys + 1, a->keys, a->len * sizeof(hval));
+    hp_val_rc_inc(v);
     a->vals[0] = v;
     if (a->is_map) a->keys[0] = hp_of_int(a->next_index++);
     a->len++;
@@ -823,10 +894,13 @@ static void hp_arr_index_del(harr *a, size_t valslot) {
  * hash index without slot shifting (iteration order for maps is therefore
  * not insertion-ordered after unset — documented tradeoff). */
 void hp_arr_unset(harr *a, hval key) {
-    a = hp_arr_cow(a);
+    /* Raw mutator; callers with a variable slot must use an owner helper. */
+    if (!a) return;
     int64_t i = hp_key_index(a, key);
     if (i < 0) return;
     size_t last = a->len - 1;
+    hp_val_rc_dec(a->vals[i]);
+    if (a->is_map) hp_val_rc_dec(a->keys[i]);
     if ((size_t)i != last) {
         if (a->is_map && a->keys) {
             hp_arr_index_del(a, (size_t)i);
@@ -834,11 +908,29 @@ void hp_arr_unset(harr *a, hval key) {
             a->keys[i] = a->keys[last];
         }
         a->vals[i] = a->vals[last];
+        a->vals[last] = hp_null; /* move the last entry into the removed slot */
+        if (a->is_map) a->keys[last] = hp_null;
         if (a->is_map && a->index) hp_arr_index_add(a, (size_t)i);
     } else if (a->is_map) {
         hp_arr_index_del(a, (size_t)i);
     }
     a->len = last;
+}
+
+hval hp_arr_unset_owner(harr **owner, hval key) {
+    if (owner && *owner) {
+        *owner = hp_arr_cow(*owner);
+        hp_arr_unset(*owner, key);
+    }
+    return hp_null;
+}
+
+hval hp_arr_unset_hval_owner(hval *owner, hval key) {
+    if (owner && owner->tag == HV_ARR && owner->u.a) {
+        owner->u.a = hp_arr_cow(owner->u.a);
+        hp_arr_unset(owner->u.a, key);
+    }
+    return hp_null;
 }
 
 hval hp_arr_get(harr *a, hval idx) {
@@ -879,11 +971,14 @@ hval hp_arr_take(harr *a, hval idx) {
     if (a->is_map) {
         hp_arr_index_del(a, (size_t)i);
         if ((size_t)i != last) hp_arr_index_del(a, last);
+        hp_val_rc_dec(a->keys[i]);
     }
     if ((size_t)i != last) {
         a->vals[i] = a->vals[last];
         if (a->is_map) a->keys[i] = a->keys[last];
     }
+    a->vals[last] = hp_null;
+    if (a->is_map) a->keys[last] = hp_null;
     a->len = last;
     if (a->is_map && (size_t)i != last) hp_arr_index_add(a, (size_t)i);
     return value;
@@ -904,19 +999,131 @@ hval hp_arr_get_v(hval container, hval idx) {
 
 /* element write on a value container: only arrays are mutable in place;
  * the compiler only emits this for array-typed hvals. */
-void hp_arr_set_v(hval container, hval idx, hval v) {
-    if (container.tag != HV_ARR || !container.u.a) return;
+hval hp_arr_set_v(hval container, hval idx, hval v) {
+    if (container.tag != HV_ARR || !container.u.a) return v;
     hp_arr_set(container.u.a, idx, v);
+    return v;
+}
+
+hval hp_arr_set_take(harr *a, hval idx, hval v) {
+    hp_arr_set(a, idx, v);
+    hp_val_rc_dec(v);
+    return v;
+}
+
+hval hp_arr_set_v_take(hval container, hval idx, hval v) {
+    hp_arr_set_v(container, idx, v);
+    hp_val_rc_dec(v);
+    return v;
+}
+
+hval hp_arr_set_owner(harr **owner, hval idx, hval v) {
+    if (!owner) return v;
+    harr *a = hp_arr_cow(*owner);
+    *owner = a;
+    hp_arr_set(a, idx, v);
+    return v;
+}
+
+hval hp_arr_set_hval_owner(hval *owner, hval idx, hval v) {
+    if (!owner) return v;
+    if (owner->tag != HV_ARR || !owner->u.a) {
+        if (owner->tag != HV_NULL) return v;
+        *owner = hp_of_arr(hp_arr_new());
+    }
+    harr *a = hp_arr_cow(owner->u.a);
+    owner->u.a = a;
+    hp_arr_set(a, idx, v);
+    return v;
+}
+
+hval hp_arr_set_owner_take(harr **owner, hval idx, hval v) {
+    hp_arr_set_owner(owner, idx, v);
+    hp_val_rc_dec(v);
+    return v;
+}
+
+hval hp_arr_set_hval_owner_take(hval *owner, hval idx, hval v) {
+    hp_arr_set_hval_owner(owner, idx, v);
+    hp_val_rc_dec(v);
+    return v;
+}
+
+/* Update a nested array path while preserving value semantics at every
+ * level. Each array on the path is detached before mutation. */
+static void hp_arr_path_set(harr *a, const hval *path, size_t n, hval v) {
+    if (!a || !n) return;
+    if (n == 1) { hp_arr_set(a, path[0], v); return; }
+    int64_t i = hp_key_index(a, path[0]);
+    if (i < 0) {
+        harr *created = hp_arr_new();
+        hp_arr_set(a, path[0], hp_of_arr(created));
+        hp_rc_dec(created); /* hp_arr_set retained the value for the entry */
+        i = hp_key_index(a, path[0]);
+    }
+    hval childv = a->vals[i];
+    if (childv.tag != HV_ARR || !childv.u.a) {
+        hp_val_rc_dec(childv);
+        childv = hp_of_arr(hp_arr_new());
+    }
+    harr *child = hp_arr_cow(childv.u.a);
+    childv.u.a = child;
+    /* hp_arr_cow consumes the parent slot's old reference if it clones; the
+     * returned reference is transferred directly into that slot. */
+    a->vals[i] = childv;
+    hp_arr_path_set(child, path + 1, n - 1, v);
+}
+
+hval hp_arr_path_set_owner_take(harr **owner, const hval *path, size_t n, hval v) {
+    if (owner && n) {
+        *owner = hp_arr_cow(*owner);
+        hp_arr_path_set(*owner, path, n, v);
+    }
+    hp_val_rc_dec(v);
+    return v;
+}
+
+void hp_arr_push_owner(harr **owner, hval v) {
+    if (!owner) return;
+    harr *a = hp_arr_cow(*owner);
+    *owner = a;
+    hp_arr_push(a, v);
+}
+
+void hp_arr_push_hval_owner(hval *owner, hval v) {
+    if (!owner) return;
+    if (owner->tag != HV_ARR || !owner->u.a) {
+        if (owner->tag != HV_NULL) return;
+        *owner = hp_of_arr(hp_arr_new());
+    }
+    harr *a = hp_arr_cow(owner->u.a);
+    owner->u.a = a;
+    hp_arr_push(a, v);
+}
+
+hval hp_arr_push_owner_take(harr **owner, hval v) {
+    hp_arr_push_owner(owner, v);
+    hp_val_rc_dec(v);
+    return v;
+}
+
+hval hp_arr_push_hval_owner_take(hval *owner, hval v) {
+    hp_arr_push_hval_owner(owner, v);
+    hp_val_rc_dec(v);
+    return v;
 }
 
 void hp_arr_set(harr *a, hval idx, hval v) {
-    a = hp_arr_cow(a);
+    /* Raw mutator. Owner-aware code must detach before calling this. */
+    if (!a) return;
     if (idx.tag == HV_NULL) {
         hp_arr_push(a, v);
         return;
     }
     int64_t i = hp_key_index(a, idx);
     if (i >= 0) {
+        hp_val_rc_inc(v);
+        hp_val_rc_dec(a->vals[i]);
         a->vals[i] = v;
         return;
     }
@@ -932,9 +1139,11 @@ void hp_arr_set(harr *a, hval idx, hval v) {
     hp_arr_grow(a, a->len + 1);
     if (a->is_map) {
         a->keys = realloc(a->keys, a->cap * sizeof(hval));
+        hp_val_rc_inc(idx);
         a->keys[a->len] = idx;
     }
     size_t newslot = a->len;
+    hp_val_rc_inc(v);
     a->vals[a->len] = v;
     a->len++;
     if (a->is_map) hp_arr_index_add(a, newslot);
@@ -1069,6 +1278,10 @@ harr *hp_range(int64_t lo, int64_t hi) {
 
 void hp_arr_free(harr *a) {
     if (!a) return;
+    for (size_t i = 0; i < a->len; i++) {
+        hp_val_rc_dec(a->vals[i]);
+        if (a->is_map && a->keys) hp_val_rc_dec(a->keys[i]);
+    }
     free(a->vals);
     free(a->keys);
     free(a->index);
@@ -1083,7 +1296,7 @@ void hp_arr_free(harr *a) {
 harr *hp_arr_cow(harr *a) {
     if (!a) return hp_arr_new();
     if (a->rc > 1) {
-        a->rc--;
+        if (a->rc != UINT32_MAX) a->rc--;
         harr *r = hp_arr_clone(a);
         r->rc = 1;
         return r;
@@ -1284,16 +1497,76 @@ hval hp_match_no_default(void) {
 HP_THREAD_QUAL hp_try_frame *hp_cur_try = NULL;
 HP_THREAD_QUAL hval hp_exception = { HV_NULL, { 0 } };
 
+typedef struct hp_cleanup_node {
+    struct hp_cleanup_node *prev;
+    void *slot;
+    HKind kind;
+    unsigned mode; /* 0=hval, 1=pointer, 2=by-reference box */
+} hp_cleanup_node;
+static HP_THREAD_QUAL hp_cleanup_node *hp_cleanups;
+
+void *hp_cleanup_mark(void) { return hp_cleanups; }
+
+static void hp_cleanup_register(void *slot, HKind kind, unsigned mode) {
+    hp_cleanup_node *n = (hp_cleanup_node *)malloc(sizeof(*n));
+    if (!n) { fprintf(stderr, "Fatal error: out of memory\n"); exit(255); }
+    n->prev = hp_cleanups;
+    n->slot = slot;
+    n->kind = kind;
+    n->mode = mode;
+    hp_cleanups = n;
+}
+
+void hp_cleanup_register_hval(hval *slot) { hp_cleanup_register(slot, HV_NULL, 0); }
+void hp_cleanup_register_ptr(void **slot, HKind kind) { hp_cleanup_register(slot, kind, 1); }
+void hp_cleanup_register_box(hval **slot) { hp_cleanup_register(slot, HV_NULL, 2); }
+
+void hp_cleanup_pop_to(void *mark) {
+    while (hp_cleanups != (hp_cleanup_node *)mark) {
+        hp_cleanup_node *n = hp_cleanups;
+        if (!n) break;
+        hp_cleanups = n->prev;
+        if (n->mode == 0) {
+            hval *slot = (hval *)n->slot;
+            hval value = *slot;
+            *slot = hp_null;
+            hp_val_rc_dec(value);
+        } else {
+            void *value = NULL;
+            memcpy(&value, n->slot, sizeof(value));
+            memset(n->slot, 0, sizeof(value));
+            if (n->mode == 2) {
+                hp_box_free((hval *)value);
+            } else {
+                hval hvv = hp_null;
+                switch (n->kind) {
+                case HV_STR: hvv = hp_of_str((hstr *)value); break;
+                case HV_ARR: hvv = hp_of_arr((harr *)value); break;
+                case HV_CLO: hvv = hp_of_clo((hclosure *)value); break;
+                case HV_OBJ: hvv = hp_of_ptr(value); break;
+                default: break;
+                }
+                hp_val_rc_dec(hvv);
+            }
+        }
+        free(n);
+    }
+}
+
 void hp_throw(hval v) {
+    /* Takes one owned value; generated throws retain borrowed expressions. */
+    hp_val_rc_dec(hp_exception);
+    hp_exception = v;
     if (!hp_cur_try) {
-        hstr *m = hp_val_to_str(v);
+        hstr *m = hp_val_to_str(hp_exception);
         fprintf(stderr, "PHP Fatal error: Uncaught exception: %.*s\n",
                 (int)m->len, m->data);
+        hp_cleanup_pop_to(NULL);
         exit(255);
     }
-    hp_exception = v;
     hp_cur_try->caught = false;
     hp_try_frame *f = hp_cur_try;
+    hp_cleanup_pop_to(f->cleanup_mark);
     longjmp(f->jmp, 1);
 }
 
@@ -1308,6 +1581,7 @@ hstr *hp_exception_msg(void) {
 void hp_try_push(hp_try_frame *f) {
     f->caught = false;
     f->prev = hp_cur_try;
+    f->cleanup_mark = hp_cleanup_mark();
     hp_cur_try = f;
 }
 
@@ -1337,6 +1611,13 @@ hval hp_try_run(hp_try_fn body_fn, hp_try_fn catch_fn, void *env) {
     if (setjmp(hfr.jmp) == 0) {
         hval r = catch_fn(env, hp_exception);
         hp_try_pop(&hfr);
+        if (r.tag == HV_NULL) {
+            hp_val_rc_dec(hp_exception);
+            hp_exception = hp_null;
+        } else if (r.tag == hp_exception.tag && r.u.p == hp_exception.u.p) {
+            /* Unhandled exception result takes over the TLS owner's ref. */
+            hp_exception = hp_null;
+        }
         return r; /* hp_null = handled; else rethrow */
     }
     hp_try_pop(&hfr);
@@ -1348,16 +1629,21 @@ HP_THREAD_QUAL void *hp_cur_env = NULL;
 
 void *hp_closure_env(void) { return hp_cur_env; }
 
-hclosure *hpclosure_new(void *env, size_t envsz, void *fn) {
+hclosure *hpclosure_new(void *env, size_t envsz, void *fn, void (*drop_env)(void *)) {
     hclosure *c = hp_alloc(sizeof(hclosure) + envsz);
     c->fn = (hfn_t)fn;
     c->rc = 1;
     c->envsz = envsz;
+    c->drop_env = drop_env;
     if (env && envsz) memcpy((char *)c + sizeof(hclosure), env, envsz);
     return c;
 }
 
-void hpclosure_free(hclosure *c) { free(c); }
+void hpclosure_free(hclosure *c) {
+    if (!c) return;
+    if (c->drop_env) c->drop_env((char *)c + sizeof(hclosure));
+    free(c);
+}
 
 hval hp_of_clo(hclosure *c) {
     hval v = { HV_CLO, { .p = c } };
@@ -1373,12 +1659,15 @@ typedef hval (*hclo_impl_t)(void *);
 hval hp_closure_call_arr(hclosure *c, hval *args, int nargs) {
     if (!c) return hp_null;
     harr *aa = hp_arr_new();
-    for (int i = 0; i < nargs; i++) hp_arr_push(aa, args[i]);
+    void *mark = hp_cleanup_mark();
+    hp_cleanup_register_ptr((void **)&aa, HV_ARR);
+    for (int i = 0; i < nargs; i++) hp_arr_push_take(aa, args[i]);
     void *saved = hp_cur_env;
     hp_cur_env = (char *)c + sizeof(hclosure);
     hclo_impl_t fn = (hclo_impl_t)c->fn;
     hval r = fn(aa->vals);   /* hval* data of the packed args */
     hp_cur_env = saved;
+    hp_cleanup_pop_to(mark);
     return r;
 }
 
@@ -1397,8 +1686,7 @@ void hp_val_rc_inc(hval v) {
     case HV_STR: if (v.u.s && v.u.s->rc != UINT32_MAX) v.u.s->rc++; break;
     case HV_ARR: if (v.u.a && v.u.a->rc != UINT32_MAX) v.u.a->rc++; break;
     case HV_CLO: if (v.u.c && v.u.c->rc != UINT32_MAX) v.u.c->rc++; break;
-    /* Generated class layouts do not yet have a common drop header. */
-    case HV_OBJ: break;
+    case HV_OBJ: hp_rc_inc(v.u.p); break;
     default: break;
     }
 }
@@ -1417,21 +1705,82 @@ void hp_val_rc_dec(hval v) {
         if (v.u.c && v.u.c->rc != UINT32_MAX && v.u.c->rc && --v.u.c->rc == 0)
             hpclosure_free(v.u.c);
         break;
-    /* Generated class layouts do not yet have a common drop header. */
-    case HV_OBJ: break;
+    case HV_OBJ: hp_rc_dec(v.u.p); break;
     default: break;
     }
 }
 
-/* ---------------- lifecycle ---------------- */
-static bool hp_inited = false;
-hval *hp_box_new(void) {
-    hval *b = (hval *)malloc(sizeof(hval));
-    if (b) *b = hp_null;
-    return b;
+hval hp_assign_hval(hval *slot, hval value, bool retain_value) {
+    if (!slot) return value;
+    if (retain_value) hp_val_rc_inc(value);
+    hval old = *slot;
+    *slot = value;
+    hp_val_rc_dec(old);
+    return value;
 }
 
-void hp_box_free(hval *b) { free(b); }
+void *hp_assign_ptr(void **slot, void *value, HKind kind, bool retain_value) {
+    if (!slot) return value;
+    hval next = hp_null, old = hp_null;
+    switch (kind) {
+    case HV_STR: next = hp_of_str((hstr *)value); old = hp_of_str((hstr *)*slot); break;
+    case HV_ARR: next = hp_of_arr((harr *)value); old = hp_of_arr((harr *)*slot); break;
+    case HV_CLO: next = hp_of_clo((hclosure *)value); old = hp_of_clo((hclosure *)*slot); break;
+    case HV_OBJ: next = hp_of_ptr(value); old = hp_of_ptr(*slot); break;
+    default: *slot = value; return value;
+    }
+    if (retain_value) hp_val_rc_inc(next);
+    *slot = value;
+    hp_val_rc_dec(old);
+    return value;
+}
+
+hval hp_arg_keep_hval(hval value, bool retain_value) {
+    if (retain_value) hp_val_rc_inc(value);
+    return value;
+}
+
+void *hp_arg_keep_ptr(void *value, HKind kind, bool retain_value) {
+    if (retain_value) {
+        hval v = hp_null;
+        switch (kind) {
+        case HV_STR: v = hp_of_str((hstr *)value); break;
+        case HV_ARR: v = hp_of_arr((harr *)value); break;
+        case HV_CLO: v = hp_of_clo((hclosure *)value); break;
+        case HV_OBJ: v = hp_of_ptr(value); break;
+        default: break;
+        }
+        hp_val_rc_inc(v);
+    }
+    return value;
+}
+
+/* ---------------- lifecycle ---------------- */
+static bool hp_inited = false;
+typedef struct { uint32_t rc; hval value; } hp_box_layout;
+hval *hp_box_new(void) {
+    hp_box_layout *box = (hp_box_layout *)malloc(sizeof(hp_box_layout));
+    if (!box) return NULL;
+    box->rc = 1;
+    box->value = hp_null;
+    return &box->value;
+}
+
+void hp_box_retain(hval *b) {
+    if (!b) return;
+    hp_box_layout *box = (hp_box_layout *)((char *)b - offsetof(hp_box_layout, value));
+    if (box->rc != UINT32_MAX) ++box->rc;
+}
+
+void hp_box_free(hval *b) {
+    if (!b) return;
+    hp_box_layout *box = (hp_box_layout *)((char *)b - offsetof(hp_box_layout, value));
+    if (!box->rc || box->rc == UINT32_MAX) return;
+    if (--box->rc == 0) {
+        hp_val_rc_dec(box->value);
+        free(box);
+    }
+}
 
 #ifdef _WIN32
 static UINT hp_old_out_cp, hp_old_in_cp;

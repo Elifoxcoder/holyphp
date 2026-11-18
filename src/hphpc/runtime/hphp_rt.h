@@ -131,6 +131,10 @@ harr *hp_null_arr(void);
 void hp_val_free(hval v);
 void hp_val_rc_inc(hval v);
 void hp_val_rc_dec(hval v);
+hval hp_assign_hval(hval *slot, hval value, bool retain_value);
+void *hp_assign_ptr(void **slot, void *value, HKind kind, bool retain_value);
+hval hp_arg_keep_hval(hval value, bool retain_value);
+void *hp_arg_keep_ptr(void *value, HKind kind, bool retain_value);
 const char *hp_kind_name(HKind k);
 hstr *hp_val_to_str(hval v);       /* PHP-style cast to string */
 int64_t hp_val_to_int(hval v);
@@ -158,13 +162,18 @@ struct harr {
 
 harr *hp_arr_new(void);
 harr *hp_arr_of(int n, const hval *vals);      /* counted hval array */
+harr *hp_arr_of_take(int n, const hval *vals); /* consumes one owner per element */
 harr *hp_map_of(int n, const hval *kvs);       /* k,v,k,v... counted */
+harr *hp_map_of_take(int n, const hval *kvs);  /* consumes k,v owners */
 harr *hp_arr_clone(harr *a);   /* deep copy */
 harr *hp_arr_cow(harr *a);     /* returns a writable version (COW) */
 void hp_arr_push(harr *a, hval v);
+void hp_arr_push_take(harr *a, hval v);
 hval hp_arr_push_v(harr *a, hval v);   /* PHP $a[] = v; returns the array ptr as hval */
+hval hp_arr_push_v_take(harr *a, hval v);
 harr *hp_val_to_arr(hval v);               /* PHP (array) cast */
 hval hp_arr_push_vv(hval container, hval v); /* append through a boxed (hval) container */
+hval hp_arr_push_vv_take(hval container, hval v);
 hval hp_val_clone_v(hval v);           /* value-semantics copy: deep-clones arrays */
 int64_t hp_pow_i(int64_t a, int64_t b); /* integer pow for ** on ints */
 hval hp_arr_pop(harr *a);
@@ -173,10 +182,23 @@ void hp_arr_unshift(harr *a, hval v);
 hval hp_arr_get(harr *a, hval idx);
 hval hp_arr_take(harr *a, hval idx); /* remove and transfer one uniquely-owned element */
 hval hp_arr_get_v(hval container, hval idx); /* PHP-style: index any value */
-void hp_arr_set_v(hval container, hval idx, hval v); /* set on hval container */
+hval hp_arr_set_v(hval container, hval idx, hval v); /* set on hval container */
+hval hp_arr_set_take(harr *a, hval idx, hval v);
+hval hp_arr_set_v_take(hval container, hval idx, hval v);
 void hp_arr_set(harr *a, hval idx, hval v);
+hval hp_arr_set_owner(harr **owner, hval idx, hval v);
+hval hp_arr_set_hval_owner(hval *owner, hval idx, hval v);
+hval hp_arr_set_owner_take(harr **owner, hval idx, hval v);
+hval hp_arr_set_hval_owner_take(hval *owner, hval idx, hval v);
+hval hp_arr_path_set_owner_take(harr **owner, const hval *path, size_t path_len, hval v);
+void hp_arr_push_owner(harr **owner, hval v);
+void hp_arr_push_hval_owner(hval *owner, hval v);
+hval hp_arr_push_owner_take(harr **owner, hval v);
+hval hp_arr_push_hval_owner_take(hval *owner, hval v);
 bool hp_arr_has(harr *a, hval key);
 void hp_arr_unset(harr *a, hval key);
+hval hp_arr_unset_owner(harr **owner, hval key);
+hval hp_arr_unset_hval_owner(hval *owner, hval key);
 void *hp_move_ptr(void *slot); /* take a pointer-valued slot and clear it */
 hval hp_move_hval(hval *slot); /* take a boxed value and clear its slot */
 int64_t hp_arr_len(harr *a);
@@ -259,6 +281,7 @@ typedef struct hp_try_frame {
     jmp_buf jmp;
     struct hp_try_frame *prev;
     bool caught;
+    void *cleanup_mark;
 } hp_try_frame;
 /* thread-local interpreter state: worker threads (hphp_thr.c) get their own
  * try-stack and exception slot, so throw/catch works inside workers */
@@ -267,6 +290,11 @@ extern HP_THREAD_QUAL hp_try_frame *hp_cur_try;
 extern HP_THREAD_QUAL hval hp_exception;
 void hp_try_push(hp_try_frame *f);
 void hp_try_pop(hp_try_frame *f);
+void *hp_cleanup_mark(void);
+void hp_cleanup_register_hval(hval *slot);
+void hp_cleanup_register_ptr(void **slot, HKind kind);
+void hp_cleanup_register_box(hval **slot);
+void hp_cleanup_pop_to(void *mark);
 void hp_throw(hval v);
 void hp_throw_str(const char *msg);
 hstr *hp_exception_msg(void);
@@ -286,9 +314,10 @@ struct hclosure {
     hfn_t fn;
     uint32_t rc;
     size_t envsz;
+    void (*drop_env)(void *);
     /* environment bytes follow */
 };
-hclosure *hpclosure_new(void *env, size_t envsz, void *fn);
+hclosure *hpclosure_new(void *env, size_t envsz, void *fn, void (*drop_env)(void *));
 void hpclosure_free(hclosure *c);
 void *hp_closure_env(void);                       /* env of the running closure */
 hval hp_closure_call_arr(hclosure *c, hval *args, int nargs);
@@ -300,8 +329,10 @@ void hp_rc_inc(void *p);
 void hp_rc_dec(void *p);
 
 /* ---------- objects ---------- */
+typedef void (*hp_drop_fn)(void *);
 struct hobj {
     uint32_t rc;
+    hp_drop_fn drop; /* invoked exactly once when the strong count reaches 0 */
 };
 
 void *hp_alloc(size_t n);
@@ -877,6 +908,7 @@ hval hpbi_ui_theme(hval win, hval bg, hval surface, hval elevated, hval text,
 
 /* heap boxes for by-ref captures (use (&$x)) */
 hval *hp_box_new(void);
+void hp_box_retain(hval *b);
 void hp_box_free(hval *b);
 
 /* ---------- PHP 8 parity additions ---------- */
