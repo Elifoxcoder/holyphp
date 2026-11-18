@@ -1701,7 +1701,7 @@ static const char hp_embed_std_c[] =
 "}\n"
 "\n"
 "#ifndef HPHP_VERSION\n"
-"#define HPHP_VERSION \"1.0.0\"\n"
+"#define HPHP_VERSION \"1.0.2\"\n"
 "#endif\n"
 "\n"
 "static void hbuf_json_r(hval v, Buf *b);\n"

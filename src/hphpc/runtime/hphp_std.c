@@ -24,7 +24,7 @@ static void *hp_addr_arg(hval v) {
 }
 
 #ifndef HPHP_VERSION
-#define HPHP_VERSION "1.0.0"
+#define HPHP_VERSION "1.0.2"
 #endif
 
 static void hbuf_json_r(hval v, Buf *b);
