@@ -24,7 +24,7 @@ static void *hp_addr_arg(hval v) {
 }
 
 #ifndef HPHP_VERSION
-#define HPHP_VERSION "1.0.0"
+#define HPHP_VERSION "1.0.2"
 #endif
 
 static void hbuf_json_r(hval v, Buf *b);
@@ -4009,7 +4009,9 @@ hval hpbi_password_hash(hval pw) {
     int rounds = 4096;
     unsigned char dk[32];
     hp_pbkdf2_sha256((const unsigned char *)p->data, p->len, salt, 16, rounds, dk);
-    char b64salt[24], b64dk[48];
+    /* 16 bytes -> 24 base64 chars, 32 bytes -> 44, plus the NUL that
+     * hp_b64_encode_raw() writes (F3: b64salt used to be one byte too small) */
+    char b64salt[25], b64dk[45];
     hp_b64_encode_raw(salt, 16, b64salt);
     hp_b64_encode_raw(dk, 32, b64dk);
     char out[128];
@@ -4051,7 +4053,7 @@ hval hpbi_password_verify(hval pw, hval hash) {
     }
     unsigned char dk[32];
     hp_pbkdf2_sha256((const unsigned char *)p->data, p->len, salt, 16, rounds, dk);
-    char b64dk2[48];
+    char b64dk2[45];
     hp_b64_encode_raw(dk, 32, b64dk2);
     /* compare the computed digest against the parsed digest segment */
     size_t dl = strlen(b64dk);
