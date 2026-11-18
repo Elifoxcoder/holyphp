@@ -103,8 +103,16 @@ int main(int argc, char **argv) {
     emit(o, "hp_embed_ui_c", p);
     snprintf(p, sizeof p, "%s/hphp_wv2.c", argv[2]);
     emit(o, "hp_embed_wv2_c", p);
+    snprintf(p, sizeof p, "%s/hphp_uring.c", argv[2]);
+    emit(o, "hp_embed_uring_c", p);
+    snprintf(p, sizeof p, "%s/hphp_sqlite.c", argv[2]);
+    emit(o, "hp_embed_sqlite_c", p);
     snprintf(p, sizeof p, "%s/hphp_rt.h", argv[2]);
     emit(o, "hp_embed_rt_h", p);
+    snprintf(p, sizeof p, "%s/hphp_modules.h", argv[2]);
+    emit(o, "hp_embed_modules_h", p);
+    snprintf(p, sizeof p, "%s/hphp_ext.h", argv[2]);
+    emit(o, "hp_embed_ext_h", p);
 
     /* bundled libraries: lib-relative name -> source */
     fprintf(o, "/* bundled libraries (lib/<name>/...), by path inside lib/ */\n"

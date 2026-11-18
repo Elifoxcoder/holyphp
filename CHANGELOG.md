@@ -18,6 +18,15 @@ behaves differently, what they have to change.
   UndefinedBehaviorSanitizer and LeakSanitizer (Linux/WSL); the build side is
   `scripts/build-asan.sh`. The findings at the start of the memory-safety work
   are listed in `STATUS.md`.
+- The io_uring/epoll transport and the SQLite binding are optional runtime
+  modules now (`hphp_uring.c`, `hphp_sqlite.c`); the compiler links them only
+  when a program calls one of their builtins. On Linux the backend links a
+  static SQLite with the B-tree driver when `HPHP_SQLITE_LIB` is set, and the
+  system library otherwise.
+- New builtins: string builders (`sb_*`), typed integer arrays (`iarr_*`),
+  request-scope compatibility (`scope_begin`/`scope_end`/`str_persist`),
+  byte/word memory accessors (`u8_at`, `i64_at`, …), HTTP/JWT/JSON helpers,
+  and the full `sqlite_*`/`bt_*`/`epoll_*`/`stream_*` transport set.
 
 ## 1.0.2
 

@@ -9,6 +9,19 @@
 #define _DEFAULT_SOURCE 1
 #endif
 #include "hphp_rt.h"
+#include "hphp_modules.h"
+
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#include <immintrin.h>
+#endif
+
+/* Address argument shared by the raw memory builtins: the challenge runtime
+ * passed raw pointers as integers; malloc() hands out an object-tagged value.
+ * Both mean "this address". */
+static void *hp_addr_arg(hval v) {
+    if (v.tag == HV_OBJ) return v.u.p;
+    return (void *)(intptr_t)hp_val_to_int(v);
+}
 
 #ifndef HPHP_VERSION
 #define HPHP_VERSION "1.0.0"
@@ -194,16 +207,6 @@ hval hpbi_strstr(hval h, hval n) {
     RETS(hp_str_slice(hp_val_to_str(h), i, hp_str_len(hp_val_to_str(h))));
 }
 hval hpbi_strchr(hval h, hval n) { return hpbi_strstr(h, n); }
-hval hpbi_strpos(hval h, hval n, hval off) {
-    hstr *hay = hp_val_to_str(h);
-    long long o = (hp_tag(off) == HV_NULL) ? 0 : off.u.i;
-    if (o < 0) o = 0;
-    if ((size_t)o > hay->len) o = (long long)hay->len;
-    hstr *tail = hp_str_new(hay->data + o, hay->len - (size_t)o);
-    int64_t r = hp_str_index(tail, hp_val_to_str(n));
-    if (r < 0) return hp_of_bool(false);   /* PHP: strpos miss => false */
-    RETI(r + o);                            /* absolute position */
-}
 hval hpbi_str_contains(hval h, hval n) {
     RETB(hp_str_index(hp_val_to_str(h), hp_val_to_str(n)) >= 0);
 }
@@ -2298,232 +2301,30 @@ static bool sock_split_addr(hstr *addr, char *host, size_t hsz, char *port, size
     return port[0] != 0;
 }
 
-hval hpbi_stream_socket_server(hval addr) {
-    hp_net_init();
-    char host[256], port[32];
-    if (!sock_split_addr(hp_val_to_str(addr), host, sizeof host, port, sizeof port))
-        return hp_of_int(-1);
-    struct addrinfo hints, *res = NULL;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
-    if (getaddrinfo(host[0] ? host : NULL, port, &hints, &res) != 0 || !res)
-        return hp_of_int(-1);
-    hp_sock s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (s == HP_SOCK_BAD) { freeaddrinfo(res); return hp_of_int(-1); }
-    int yes = 1;
-    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof yes);
-    if (bind(s, res->ai_addr, (int)res->ai_addrlen) != 0 || listen(s, 128) != 0) {
-        freeaddrinfo(res);
-        hp_sock_close(s);
-        return hp_of_bool(false);   /* PHP-style: failure is falsy */
-    }
-    freeaddrinfo(res);
-    sock_nonblocking(s, true);
-    sockrec((intptr_t)s, true);
-    return hp_of_int((int64_t)(intptr_t)s);
-}
 
-hval hpbi_stream_socket_client(hval addr) {
-    hp_net_init();
-    char host[256], port[32];
-    if (!sock_split_addr(hp_val_to_str(addr), host, sizeof host, port, sizeof port))
-        return hp_of_bool(false);
-    struct addrinfo hints, *res = NULL;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host[0] ? host : "127.0.0.1", port, &hints, &res) != 0 || !res)
-        return hp_of_bool(false);
-    hp_sock s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (s == HP_SOCK_BAD) { freeaddrinfo(res); return hp_of_bool(false); }
-    int rc = connect(s, res->ai_addr, (int)res->ai_addrlen);
-    freeaddrinfo(res);
-    if (rc != 0) { hp_sock_close(s); return hp_of_bool(false); }
-    sock_nonblocking(s, true);
-    sockrec((intptr_t)s, true);
-    return hp_of_int((int64_t)(intptr_t)s);
-}
 
-hval hpbi_stream_socket_accept(hval srv) {
-    hp_net_init();
-    hp_sock s = sock_of(srv);
-    if (s == HP_SOCK_BAD) return hp_of_bool(false);
-    /* block up to 50 ms at a time so ctrl-c / ui ticks still get through */
-    for (;;) {
-        struct sockaddr_storage ss;
-        socklen_t sl = sizeof ss;
-        hp_sock c = accept(s, (struct sockaddr *)&ss, &sl);
-        if (c != HP_SOCK_BAD) {
-            sock_nonblocking(c, true);
-            sockrec((intptr_t)c, true);
-            return hp_of_int((int64_t)(intptr_t)c);
-        }
-        if (!hp_sock_wouldblock()) return hp_of_bool(false);
-        sock_sleep_ms(5);
-    }
-}
+
+
+
 
 /* stream_socket_accept2(srv, timeoutMs): poll-then-accept, PHP-style.
  * Returns the client handle, or false when nothing arrived within the
  * timeout. Never blocks longer than timeoutMs (in 5 ms slices). */
-hval hpbi_stream_socket_accept2(hval srv, hval timeout_ms) {
-    hp_net_init();
-    hp_sock s = sock_of(srv);
-    if (s == HP_SOCK_BAD) return hp_of_bool(false);
-    int64_t waited = 0;
-    int64_t limit = hp_val_to_int(timeout_ms);
-    if (limit < 0) limit = 0;
-    for (;;) {
-        struct sockaddr_storage ss;
-        socklen_t sl = sizeof ss;
-        hp_sock c = accept(s, (struct sockaddr *)&ss, &sl);
-        if (c != HP_SOCK_BAD) {
-            sock_nonblocking(c, true);
-            sockrec((intptr_t)c, true);
-            return hp_of_int((int64_t)(intptr_t)c);
-        }
-        if (!hp_sock_wouldblock()) return hp_of_bool(false);
-        if (waited >= limit) return hp_of_bool(false);   /* poll timed out */
-        sock_sleep_ms(5);
-        waited += 5;
-    }
-}
 
-hval hpbi_stream_set_blocking(hval s, hval flag) {
-    hp_sock fd = sock_of(s);
-    if (fd == HP_SOCK_BAD) return hp_of_bool(false);
-    sock_nonblocking(fd, !hp_val_to_bool(flag));
-    return hp_of_bool(true);
-}
 
-hval hpbi_stream_recv(hval s, hval maxn) {
-    hp_net_init();
-    hp_sock fd = sock_of(s);
-    if (fd == HP_SOCK_BAD) return hp_of_str(hp_str_lit(""));
-    int64_t want = hp_val_to_int(maxn);
-    if (want <= 0) want = 4096;
-    if (want > (1 << 20)) want = (1 << 20);
-    char *buf = (char *)malloc((size_t)want);
-    if (!buf) return hp_of_str(hp_str_lit(""));
-    int r = recv(fd, buf, (int)want, 0);
-    bool blocked = (r < 0) && hp_sock_wouldblock();
-    if (r <= 0 && !blocked)
-        sockrec((intptr_t)fd, true)->eof = true;
-    if (r > 0) {
-        hstr *out = hp_str_new(buf, (size_t)r);
-        free(buf);
-        return hp_of_str(out);
-    }
-    free(buf);
-    if (r == 0) {                    /* orderly shutdown by the peer */
-        sockrec((intptr_t)fd, true)->eof = true;
-        return hp_of_str(hp_str_lit(""));
-    }
-    if (!blocked)                    /* hard error: treat as closed */
-        sockrec((intptr_t)fd, true)->eof = true;
-    return hp_of_str(hp_str_lit(""));
-}
 
-hval hpbi_stream_send(hval s, hval data) {
-    hp_net_init();
-    hp_sock fd = sock_of(s);
-    if (fd == HP_SOCK_BAD) return hp_of_int(0);
-    hstr *d = hp_val_to_str(data);
-    size_t sent = 0;
-    int waited_ms = 0;
-    while (sent < d->len) {
-        int r = send(fd, d->data + sent, (int)(d->len - sent), 0);
-        if (r > 0) { sent += (size_t)r; continue; }
-        if (r < 0 && hp_sock_wouldblock() && waited_ms < 2000) {
-            sock_sleep_ms(1);        /* let the peer drain; frames stay whole */
-            waited_ms++;
-            continue;
-        }
-        if (r < 0) sockrec((intptr_t)fd, true)->eof = true;
-        break;
-    }
-    return hp_of_int((int64_t)sent);
-}
 
-hval hpbi_stream_ready(hval handles, hval timeout_ms) {
-    hp_net_init();
-    harr *out = hp_arr_new();
-    if (handles.tag != HV_ARR || !handles.u.a) return hp_of_arr(out);
-    int64_t n = hp_arr_len(handles.u.a);
-    if (n <= 0) return hp_of_arr(out);
-#ifdef _WIN32
-    WSAPOLLFD *fds = (WSAPOLLFD *)calloc((size_t)n, sizeof(WSAPOLLFD));
-#else
-    struct pollfd *fds = (struct pollfd *)calloc((size_t)n, sizeof(struct pollfd));
-#endif
-    if (!fds) return hp_of_arr(out);
-    int64_t nvalid = 0;
-    for (int64_t i = 0; i < n; i++) {
-        hval item = hp_arr_get(handles.u.a, hp_of_int(i));
-        hp_sock fd = sock_of(item);
-        if (fd == HP_SOCK_BAD) continue;
-        fds[nvalid].fd = fd;
-        fds[nvalid].events = POLLIN;
-        nvalid++;
-    }
-    int to = (int)hp_val_to_int(timeout_ms);
-    if (to < 0) to = 0;
-    int r = 0;
-    if (nvalid > 0) {
-#ifdef _WIN32
-        r = WSAPoll(fds, (ULONG)nvalid, to);
-#else
-        r = poll(fds, (nfds_t)nvalid, to);
-#endif
-    }
-    if (r > 0) {
-        int64_t k = 0;
-        for (int64_t i = 0; i < n; i++) {
-            hval item = hp_arr_get(handles.u.a, hp_of_int(i));
-            hp_sock fd = sock_of(item);
-            if (fd == HP_SOCK_BAD) continue;
-            short rev = (short)fds[k++].revents;
-            if (!rev) continue;
-            /* NOTE: POLLHUP regularly arrives together with POLLIN when the
-             * peer writes and closes immediately; the unread data is still
-             * in the socket buffer. Do NOT mark the sticky eof flag here —
-             * stream_recv stays the single authority for EOF (recv()==0). */
-            if (rev & (POLLIN | POLLERR | POLLHUP))
-                hp_arr_push(out, item);
-        }
-    }
-    free(fds);
-    return hp_of_arr(out);
-}
 
-hval hpbi_stream_eof(hval s) {
-    hp_sockrec *rec = sockrec((intptr_t)sock_of(s), false);
-    return hp_of_bool(rec ? rec->eof : true);
-}
 
-hval hpbi_stream_peer(hval s) {
-    hp_sock fd = sock_of(s);
-    struct sockaddr_storage ss;
-    socklen_t sl = sizeof ss;
-    if (fd == HP_SOCK_BAD || getpeername(fd, (struct sockaddr *)&ss, &sl) != 0)
-        return hp_of_str(hp_str_lit(""));
-    char host[128] = "", port[16] = "";
-    if (getnameinfo((struct sockaddr *)&ss, sl, host, sizeof host, port, sizeof port,
-                    NI_NUMERICHOST | NI_NUMERICSERV) != 0)
-        return hp_of_str(hp_str_lit(""));
-    hstr *a = hp_str_concat2(hp_str_lit(host), hp_str_lit(":"));
-    return hp_of_str(hp_str_concat2(a, hp_str_lit(port)));
-}
 
-hval hpbi_stream_close(hval s) {
-    hp_sock fd = sock_of(s);
-    if (fd == HP_SOCK_BAD) return hp_of_bool(false);
-    hp_sock_graceful_close(fd);
-    sock_forget((intptr_t)fd);
-    return hp_of_bool(true);
-}
+
+
+
+
+
+
+
+
 
 /* PHP-style callable dispatch: any hval may hold a closure. */
 hval hp_call_value(hval fn, int nargs, const hval *args) {
@@ -6829,3 +6630,955 @@ hval hpbi_holy_challenge_start(hval port_val, hval db_path_val) {
     return hp_of_int(-1);
 }
 #endif
+
+/* ---- generic additions ported with the challenge runtime ----------------
+ * String range helpers, the strict-JSON/JWT helpers, request-scope
+ * compatibility, typed int arrays and the string builder. These are ordinary
+ * stdlib builtins, so they live in hphp_std.c; the transport and SQLite parts
+ * are separate modules (hphp_uring.c, hphp_sqlite.c).
+ */
+
+/* hbuf_reserve(b, n): make room for a TOTAL of n bytes plus the NUL. The
+ * core's hbuf_write grows by doubling on demand; the builder asks for the
+ * whole response up front so a feed answer does not realloc five times. */
+void hbuf_reserve(Buf *b, size_t n) {
+    if (n + 1 <= b->cap) return;
+    size_t ncap = b->cap ? b->cap : 64;
+    while (ncap < n + 1) ncap *= 2;
+    char *p = (char *)realloc(b->data, ncap);
+    if (!p) { fprintf(stderr, "Fatal error: out of memory\n"); exit(255); }
+    b->data = p;
+    b->cap = ncap;
+}
+
+/* ASCII case-insensitive compare of one byte (str_pos_ci and friends). */
+static int hp_ci_eq(unsigned char a, unsigned char b) {
+    if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + 32);
+    if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + 32);
+    return a == b;
+}
+
+hval hpbi_str_pos_ci(hval h, hval n, hval off) {
+    hstr *hay = hp_val_to_str(h);
+    hstr *nee = hp_val_to_str(n);
+    long long o = (hp_tag(off) == HV_NULL) ? 0 : off.u.i;
+    if (o < 0) o = 0;
+    if ((size_t)o > hay->len) return hp_of_bool(false);
+    size_t hlen = hay->len - (size_t)o;
+    if (nee->len == 0) return hp_of_int((int64_t)o);
+    if (nee->len <= hlen) {
+        for (size_t i = 0; i + nee->len <= hlen; i++) {
+            size_t j = 0;
+            while (j < nee->len &&
+                   hp_ci_eq((unsigned char)hay->data[o + i + j],
+                            (unsigned char)nee->data[j]))
+                j++;
+            if (j == nee->len) return hp_of_int((int64_t)o + (int64_t)i);
+        }
+    }
+    return hp_of_bool(false);
+}
+
+/* str_int_range(s, start, end): decimal integer in [start,end) without
+ * building a substring (Content-Length parsing). */
+hval hpbi_str_int_range(hval s, hval a, hval b) {
+    hstr *x = hp_val_to_str(s);
+    int64_t st = hp_val_to_int(a), en = hp_val_to_int(b);
+    if (st < 0) st = 0;
+    if ((size_t)st > x->len) st = (int64_t)x->len;
+    if (en < st) en = st;
+    if ((size_t)en > x->len) en = (int64_t)x->len;
+    int64_t v = 0;
+    int neg = 0;
+    size_t i = (size_t)st;
+    while (i < (size_t)en && (x->data[i] == ' ' || x->data[i] == '\t')) i++;
+    if (i < (size_t)en && x->data[i] == '-') { neg = 1; i++; }
+    for (; i < (size_t)en; i++) {
+        char c = x->data[i];
+        if (c < '0' || c > '9') break;
+        v = v * 10 + (c - '0');
+    }
+    return hp_of_int(neg ? -v : v);
+}
+
+/* str_trim_range(s, start, end): the slice trimmed of ASCII whitespace, one
+ * allocation (header values such as the Authorization token). */
+hval hpbi_str_trim_range(hval s, hval a, hval b) {
+    hstr *x = hp_val_to_str(s);
+    int64_t st = hp_val_to_int(a), en = hp_val_to_int(b);
+    if (st < 0) st = 0;
+    if ((size_t)st > x->len) st = (int64_t)x->len;
+    if (en < st) en = st;
+    if ((size_t)en > x->len) en = (int64_t)x->len;
+    size_t i = (size_t)st, e = (size_t)en;
+    while (i < e && (x->data[i] == ' ' || x->data[i] == '\t' ||
+                     x->data[i] == '\r' || x->data[i] == '\n')) i++;
+    while (e > i && (x->data[e - 1] == ' ' || x->data[e - 1] == '\t' ||
+                     x->data[e - 1] == '\r' || x->data[e - 1] == '\n')) e--;
+    return hp_of_str(hp_str_new(x->data + i, e - i));
+}
+
+/* str_prefix_ci(s, p): true when s starts with p, ASCII case-insensitive. */
+hval hpbi_str_prefix_ci(hval s, hval p) {
+    hstr *x = hp_val_to_str(s);
+    hstr *y = hp_val_to_str(p);
+    if (y->len > x->len) return hp_of_bool(false);
+    for (size_t i = 0; i < y->len; i++)
+        if (!hp_ci_eq((unsigned char)x->data[i], (unsigned char)y->data[i]))
+            return hp_of_bool(false);
+    return hp_of_bool(true);
+}
+
+hval hpbi_strpos(hval h, hval n, hval off) {
+    hstr *hay = hp_val_to_str(h);
+    hstr *nee = hp_val_to_str(n);
+    long long o = (hp_tag(off) == HV_NULL) ? 0 : off.u.i;
+    if (o < 0) o = 0;
+    if ((size_t)o > hay->len) o = (long long)hay->len;
+    /* search in place from the offset: the old path copied the tail into a
+     * throwaway hstr before scanning -- one allocation per call (three per
+     * request on the hot routes). Same result values, nothing copied. */
+    const char *base = hay->data + o;
+    size_t hlen = hay->len - (size_t)o;
+    if (nee->len == 0) return hp_of_int((int64_t)o);
+    if (nee->len <= hlen) {
+        /* memchr for the first byte (SIMD in glibc), then memcmp the rest:
+         * the old loop called memcmp at every position, which showed up as
+         * the top parse cost in the profile. */
+        const char *p = base;
+        const char *end = base + (hlen - nee->len) + 1;
+        while (p < end) {
+            const char *q = (const char *)memchr(p, nee->data[0],
+                                                (size_t)(end - p));
+            if (!q) break;
+            if (nee->len == 1 ||
+                memcmp(q + 1, nee->data + 1, nee->len - 1) == 0)
+                return hp_of_int((int64_t)o + (int64_t)(q - base));
+            p = q + 1;
+        }
+    }
+    return hp_of_bool(false);   /* PHP: strpos miss => false */
+}
+
+/* str_at_eq($s, $start, $len, $lit): compare $len bytes at $start with the
+ * literal, without building a substring. */
+hval hpbi_str_at_eq(hval s, hval start, hval len, hval lit) {
+    hstr *x = hp_val_to_str(s);
+    hstr *y = hp_val_to_str(lit);
+    int64_t st = hp_val_to_int(start);
+    int64_t n = hp_val_to_int(len);
+    if (st < 0 || n < 0 || (size_t)n != y->len ||
+        (uint64_t)st + (uint64_t)n > (uint64_t)x->len)
+        return hp_of_bool(false);
+    return hp_of_bool(memcmp(x->data + st, y->data, (size_t)n) == 0);
+}
+bool hp_str_at_eq_t(hstr *x, int64_t st, int64_t n, hstr *y) {
+    if (st < 0 || n < 0 || (size_t)n != y->len ||
+        (uint64_t)st + (uint64_t)n > (uint64_t)x->len)
+        return false;
+    return memcmp(x->data + st, y->data, (size_t)n) == 0;
+}
+
+/* str_to_int($s): parse a decimal string to int, -1 on a non-digit,
+ * empty string, or a value outside (0, INT64_MAX]. Replaces a per-character
+ * HolyPHP loop in the server's parse_id(); the string argument stays unboxed. */
+hval hpbi_str_to_int(hval s) {
+    hstr *x = hp_val_to_str(s);
+    size_t n = x->len;
+    if (n < 1 || n > 18) return hp_of_int(-1);
+    int64_t v = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)x->data[i];
+        if (c < '0' || c > '9') return hp_of_int(-1);
+        v = v * 10 + (int64_t)(c - '0');
+    }
+    return hp_of_int(v <= 0 ? -1 : v);
+}
+int64_t hp_str_to_int_t(hstr *x) {
+    size_t n = x->len;
+    if (n < 1 || n > 18) return -1;
+    int64_t v = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)x->data[i];
+        if (c < '0' || c > '9') return -1;
+        v = v * 10 + (int64_t)(c - '0');
+    }
+    return v <= 0 ? -1 : v;
+}
+
+/* Strict decimal parse over a byte range, without allocating a substring.
+ * Mirrors str_to_int() validation for route IDs. */
+int64_t hp_str_to_int_range_t(hstr *x, int64_t start, int64_t end) {
+    if (start < 0 || end < start || (uint64_t)end > (uint64_t)x->len)
+        return -1;
+    size_t n = (size_t)(end - start);
+    if (n < 1 || n > 18) return -1;
+    int64_t v = 0;
+    for (size_t i = (size_t)start; i < (size_t)end; i++) {
+        unsigned char c = (unsigned char)x->data[i];
+        if (c < '0' || c > '9') return -1;
+        v = v * 10 + (int64_t)(c - '0');
+    }
+    return v <= 0 ? -1 : v;
+}
+hval hpbi_str_to_int_range(hval s, hval start, hval end) {
+    return hp_of_int(hp_str_to_int_range_t(hp_val_to_str(s),
+        hp_val_to_int(start), hp_val_to_int(end)));
+}
+
+/* Find the first HTTP header terminator and the request-line separators in one
+ * bounded pass. Three 21-bit offsets fit in a positive tagged integer. */
+int64_t hp_http_request_bounds_t(hstr *x) {
+    if (!x) return 0;
+    size_t n = x->len;
+    size_t he = SIZE_MAX, sp1 = SIZE_MAX, sp2 = SIZE_MAX;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)x->data[i];
+        if (he == SIZE_MAX) {
+            if (sp1 == SIZE_MAX && c == ' ') sp1 = i;
+            else if (sp1 != SIZE_MAX && sp2 == SIZE_MAX && c == ' ') sp2 = i;
+            if (i >= 3 && x->data[i-3] == '\r' && x->data[i-2] == '\n' &&
+                x->data[i-1] == '\r' && c == '\n') {
+                he = i - 3;
+                break;
+            }
+        }
+    }
+    if (he == SIZE_MAX) return -1;
+    if (sp1 == SIZE_MAX || sp2 == SIZE_MAX || sp1 > he || sp2 > he) return -2;
+    if (he >= (1U << 21) || sp1 >= (1U << 21) || sp2 >= (1U << 21)) return -3;
+    return ((int64_t)he << 42) | ((int64_t)sp2 << 21) | (int64_t)sp1;
+}
+hval hpbi_http_request_bounds(hval s) {
+    return hp_of_int(hp_http_request_bounds_t(hp_val_to_str(s)));
+}
+
+int64_t hp_str_find_range_t(hstr *s, hstr *needle, int64_t start) {
+    if (!s || !needle || start < 0) return -1;
+    size_t n = s->len, m = needle->len, off = (size_t)start;
+    if (off > n || m > n - off) return -1;
+    if (m == 0) return (int64_t)off;
+    const unsigned char *p = (const unsigned char *)s->data;
+    const unsigned char *q = (const unsigned char *)needle->data;
+    for (size_t i = off; i <= n - m; i++)
+        if (p[i] == q[0] && memcmp(p + i, q, m) == 0) return (int64_t)i;
+    return -1;
+}
+hval hpbi_str_find_range(hval s, hval needle, hval start) {
+    return hp_of_int(hp_str_find_range_t(hp_val_to_str(s), hp_val_to_str(needle), hp_val_to_int(start)));
+}
+
+/* ---- JWT (HS256) verification ---------------------------------------------
+ * jwt_verify(token, secret, now): header.payload.signature, base64url without
+ * padding. The signature is HMAC-SHA256 over "header.payload" and must match
+ * in constant time, the header must say HS256, and the payload must carry a
+ * numeric exp >= now. On success the decoded payload is returned (one
+ * allocation); on any failure "" (no allocation). Generic: it is the standard
+ * JWT check, not an application claim reader -- callers parse their claims.
+ * The PHP-level version built the same check out of substr/concat/base64
+ * calls and allocated ~20 strings per authenticated request. */
+
+/* b64_val() as a table: 0..63, or -1 for a byte the decoders skip. */
+static const signed char hp_b64_tab[256] = {
+#define X16 -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+    X16, X16,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,62,-1,63,
+    52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
+    -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+    15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,63,
+    -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+    41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
+    X16, X16, X16, X16, X16, X16, X16, X16
+#undef X16
+};
+static int hp_b64url_decode_into(const char *in, size_t n, char *out, size_t cap) {
+    uint32_t acc = 0;
+    int bits = 0;
+    size_t o = 0;
+    size_t i = 0;
+    /* Four valid characters -> three bytes; anything unusual (a skipped
+     * byte, the tail) goes through the general loop below. */
+    while (i + 4 <= n && o + 3 <= cap) {
+        int a = hp_b64_tab[(unsigned char)in[i]], b = hp_b64_tab[(unsigned char)in[i + 1]];
+        int c = hp_b64_tab[(unsigned char)in[i + 2]], d = hp_b64_tab[(unsigned char)in[i + 3]];
+        if ((a | b | c | d) < 0) break;
+        uint32_t v = ((uint32_t)a << 18) | ((uint32_t)b << 12) | ((uint32_t)c << 6) | (uint32_t)d;
+        out[o] = (char)(v >> 16); out[o + 1] = (char)(v >> 8); out[o + 2] = (char)v;
+        o += 3;
+        i += 4;
+    }
+    for (; i < n; i++) {
+        int v = hp_b64_tab[(unsigned char)in[i]];
+        if (v < 0) continue;
+        acc = (acc << 6) | (uint32_t)v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (o >= cap) return -1;
+            out[o++] = (char)((acc >> bits) & 0xff);
+        }
+    }
+    return (int)o;
+}
+
+static size_t hp_b64url_encode_into(const unsigned char *in, size_t n, char *out) {
+    static const char tab[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    size_t o = 0;
+    size_t i = 0;
+    for (; i + 2 < n; i += 3) {
+        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8) | in[i + 2];
+        out[o++] = tab[(v >> 18) & 63];
+        out[o++] = tab[(v >> 12) & 63];
+        out[o++] = tab[(v >> 6) & 63];
+        out[o++] = tab[v & 63];
+    }
+    if (n - i == 1) {
+        uint32_t v = (uint32_t)in[i] << 16;
+        out[o++] = tab[(v >> 18) & 63];
+        out[o++] = tab[(v >> 12) & 63];
+    } else if (n - i == 2) {
+        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8);
+        out[o++] = tab[(v >> 18) & 63];
+        out[o++] = tab[(v >> 12) & 63];
+        out[o++] = tab[(v >> 6) & 63];
+    }
+    return o;
+}
+
+/* first occurrence of "key" : <value> in a flat JSON object; value is either a
+ * quoted string (quotes stripped) or a bare token up to , } or space */
+static bool hp_json_field(const char *j, size_t n, const char *key, size_t klen,
+                          const char **val, size_t *vlen, bool *quoted) {
+    for (size_t i = 0; i + klen + 2 <= n; i++) {
+        if (j[i] != '"') continue;
+        if (memcmp(j + i + 1, key, klen) != 0) continue;
+        if (j[i + 1 + klen] != '"') continue;
+        size_t p = i + 2 + klen;
+        while (p < n && (j[p] == ' ' || j[p] == '\t')) p++;
+        if (p >= n || j[p] != ':') continue;
+        p++;
+        while (p < n && (j[p] == ' ' || j[p] == '\t')) p++;
+        if (p < n && j[p] == '"') {
+            size_t s = ++p;
+            while (p < n && j[p] != '"') p++;
+            if (p >= n) return false;
+            *val = j + s;
+            *vlen = p - s;
+            *quoted = true;
+            return true;
+        }
+        size_t s = p;
+        while (p < n && j[p] != ',' && j[p] != '}' && j[p] != ' ' && j[p] != '\n') p++;
+        *val = j + s;
+        *vlen = p - s;
+        *quoted = false;
+        return true;
+    }
+    return false;
+}
+
+/* A prepared JWT verifier keeps the secret, not a running HMAC state: this
+ * core has only the one-shot helper (hp_hmac_sha256 above). The struct is
+ * copied through a string handle, so it stays a plain byte blob. */
+typedef struct { unsigned char key[256]; size_t klen; } HpHmac256Ctx;
+static void hp_hmac256_init(HpHmac256Ctx *ctx, const unsigned char *key, size_t klen) {
+    if (klen > sizeof ctx->key) klen = sizeof ctx->key;
+    memcpy(ctx->key, key, klen);
+    ctx->klen = klen;
+}
+static void hp_hmac256_run(const HpHmac256Ctx *ctx, const unsigned char *msg,
+                           size_t n, unsigned char out[32]) {
+    hp_hmac_sha256(ctx->key, ctx->klen, msg, n, out);
+}
+
+static hstr *hp_jwt_verify_ctx_t(hstr *tok, const HpHmac256Ctx *ctx, int64_t now) {
+    if (!tok || !ctx || tok->len < 8) return hp_str_lit("");
+    const char *t = tok->data;
+    size_t n = tok->len;
+    size_t p1 = n, p2 = n;
+    int dots = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (t[i] != '.') continue;
+        if (++dots == 1) p1 = i;
+        else if (dots == 2) p2 = i;
+        else return hp_str_lit("");            /* a third dot: malformed */
+    }
+    if (dots != 2 || p1 == 0 || p2 == p1 + 1) return hp_str_lit("");
+
+    /* header must be HS256 */
+    char hdr[512];
+    int hl = hp_b64url_decode_into(t, p1, hdr, sizeof hdr);
+    if (hl <= 0) return hp_str_lit("");
+    const char *av; size_t al; bool aq;
+    if (!hp_json_field(hdr, (size_t)hl, "alg", 3, &av, &al, &aq)) return hp_str_lit("");
+    if (!aq || al != 5 || memcmp(av, "HS256", 5) != 0) return hp_str_lit("");
+
+    /* constant-time signature check */
+    unsigned char mac[32];
+    hp_hmac256_run(ctx, (const unsigned char *)t, p2, mac);
+    char sig[64];
+    size_t sl = hp_b64url_encode_into(mac, 32, sig);
+    size_t sn = n - p2 - 1;
+    if (sn != sl) return hp_str_lit("");
+    unsigned diff = 0;
+    for (size_t i = 0; i < sl; i++)
+        diff |= (unsigned)((unsigned char)sig[i] ^ (unsigned char)t[p2 + 1 + i]);
+    if (diff) return hp_str_lit("");
+
+    /* payload: decode (the one allocation) and check exp */
+    char small[1024];
+    char *pj = small;
+    char *heap = NULL;
+    int pl;
+    if (n - p1 - 1 - (n - p2 - 1) <= sizeof small) {
+        pl = hp_b64url_decode_into(t + p1 + 1, p2 - p1 - 1, small, sizeof small);
+    } else {
+        heap = (char *)malloc(n - p1);
+        if (!heap) return hp_str_lit("");
+        pj = heap;
+        pl = hp_b64url_decode_into(t + p1 + 1, p2 - p1 - 1, heap, n - p1);
+    }
+    if (pl <= 0) { free(heap); return hp_str_lit(""); }
+    const char *ev; size_t el; bool eq;
+    bool has_exp = hp_json_field(pj, (size_t)pl, "exp", 3, &ev, &el, &eq);
+    if (!has_exp || eq) { free(heap); return hp_str_lit(""); }
+    int64_t exp = 0;
+    size_t ei = 0;
+    bool neg = false;
+    if (ei < el && ev[ei] == '-') { neg = true; ei++; }
+    if (ei >= el) { free(heap); return hp_str_lit(""); }
+    for (; ei < el; ei++) {
+        if (ev[ei] < '0' || ev[ei] > '9') { free(heap); return hp_str_lit(""); }
+        exp = exp * 10 + (ev[ei] - '0');
+    }
+    if (neg) exp = -exp;
+    if (exp < now) { free(heap); return hp_str_lit(""); }
+    hstr *out = hp_str_new(pj, (size_t)pl);
+    free(heap);
+    return out;
+}
+hstr *hp_jwt_verify_t(hstr *tok, hstr *secret, int64_t now) {
+    if (!secret) return hp_str_lit("");
+    HpHmac256Ctx ctx;
+    hp_hmac256_init(&ctx, (const unsigned char *)secret->data, secret->len);
+    return hp_jwt_verify_ctx_t(tok, &ctx, now);
+}
+hstr *hp_jwt_verifier_new_t(hstr *secret) {
+    if (!secret) return hp_str_lit("");
+    HpHmac256Ctx ctx;
+    hp_hmac256_init(&ctx, (const unsigned char *)secret->data, secret->len);
+    return hp_str_new((const char *)&ctx, sizeof ctx);
+}
+hstr *hp_jwt_verify_prepared_t(hstr *tok, hstr *prepared, int64_t now) {
+    if (!prepared || prepared->len != sizeof(HpHmac256Ctx)) return hp_str_lit("");
+    HpHmac256Ctx ctx;
+    memcpy(&ctx, prepared->data, sizeof ctx);
+    return hp_jwt_verify_ctx_t(tok, &ctx, now);
+}
+hval hpbi_jwt_verify(hval tok, hval secret, hval now) {
+    return hp_of_str(hp_jwt_verify_t(hp_val_to_str(tok), hp_val_to_str(secret),
+                                     hp_val_to_int(now)));
+}
+hval hpbi_jwt_verifier_new(hval secret) {
+    return hp_of_str(hp_jwt_verifier_new_t(hp_val_to_str(secret)));
+}
+hval hpbi_jwt_verify_prepared(hval tok, hval prepared, hval now) {
+    return hp_of_str(hp_jwt_verify_prepared_t(hp_val_to_str(tok), hp_val_to_str(prepared),
+                                              hp_val_to_int(now)));
+}
+
+/* json_str_field(json, key) / json_num_field(json, key): read one field of a
+ * flat JSON object in place. The PHP helper built the key with two
+ * concatenations and cut the value with substr; these scan and copy once. */
+hstr *hp_json_str_field_t(hstr *j, hstr *key) {
+    const char *v;
+    size_t vl;
+    bool q;
+    if (!j || !key) return hp_str_lit("");
+    if (!hp_json_field(j->data, j->len, key->data, key->len, &v, &vl, &q))
+        return hp_str_lit("");
+    if (!q) return hp_str_lit("");
+    bool esc = false;
+    for (size_t i = 0; i < vl; i++)
+        if (v[i] == '\\') { esc = true; break; }
+    if (!esc) return hp_str_new(v, vl);
+    char *tmp = (char *)malloc(vl + 1);
+    if (!tmp) return hp_str_lit("");
+    size_t o = 0;
+    for (size_t i = 0; i < vl; i++) {
+        if (v[i] == '\\' && i + 1 < vl) {
+            char c = v[++i];
+            switch (c) {
+            case 'n': tmp[o++] = '\n'; break;
+            case 't': tmp[o++] = '\t'; break;
+            case 'r': tmp[o++] = '\r'; break;
+            case 'b': tmp[o++] = '\b'; break;
+            case 'f': tmp[o++] = '\f'; break;
+            default:  tmp[o++] = c;    break;
+            }
+        } else {
+            tmp[o++] = v[i];
+        }
+    }
+    hstr *r = hp_str_new(tmp, o);
+    free(tmp);
+    return r;
+}
+int64_t hp_json_num_field_t(hstr *j, hstr *key) {
+    const char *v;
+    size_t vl;
+    bool q;
+    if (!j || !key) return -1;
+    if (!hp_json_field(j->data, j->len, key->data, key->len, &v, &vl, &q))
+        return -1;
+    if (q || vl == 0) return -1;
+    int64_t n = 0;
+    size_t i = 0;
+    bool neg = false;
+    if (v[0] == '-') { neg = true; i = 1; }
+    if (i >= vl) return -1;
+    for (; i < vl; i++) {
+        if (v[i] < '0' || v[i] > '9') return -1;
+        n = n * 10 + (v[i] - '0');
+    }
+    return neg ? -n : n;
+}
+hval hpbi_json_str_field(hval j, hval k) {
+    return hp_of_str(hp_json_str_field_t(hp_val_to_str(j), hp_val_to_str(k)));
+}
+hval hpbi_json_num_field(hval j, hval k) {
+    return hp_of_int(hp_json_num_field_t(hp_val_to_str(j), hp_val_to_str(k)));
+}
+
+/* Request-scope memory: the server loop wraps one poll cycle in
+ * scope_begin()/scope_end(); strings allocated in between are released in
+ * one shot. str_persist() copies a value out of the scope, str_free()/
+ * arr_free() release heap values early. */
+hval hpbi_scope_begin(void) { hp_scope_begin(); return hp_of_bool(true); }
+hval hpbi_scope_end(void) { hp_scope_end(); return hp_of_bool(true); }
+hval hpbi_str_persist(hval s) { return hp_of_str(hp_str_persist(hp_val_to_str(s))); }
+hval hpbi_str_free(hval s) {
+    if (s.tag == HV_STR) hp_str_free(s.u.s);
+    return hp_of_bool(true);
+}
+hval hpbi_live_allocs(void) { return hp_of_int(hp_live_allocs()); }
+hval hpbi_live_bytes(void) { return hp_of_int(hp_live_bytes()); }
+hval hpbi_arr_clear(hval a) {
+    if (a.tag == HV_ARR && a.u.a) {
+        harr *x = a.u.a;
+        x->len = 0;
+        x->next_index = 0;
+        x->is_map = false;
+        if (x->index) {
+            memset(x->index, 0, (size_t)x->icap * sizeof(uint32_t));
+            x->ibudget = x->icap;
+        }
+    }
+    return hp_of_bool(true);
+}
+hval hpbi_arr_free(hval a) {
+    if (a.tag == HV_ARR && a.u.a) hp_arr_free(a.u.a);
+    return hp_of_bool(true);
+}
+hval hpbi_object_free(hval obj) {
+    if (obj.tag == HV_OBJ && obj.u.p) hp_free(obj.u.p);
+    return hp_of_bool(true);
+}
+
+/* ---- generic string builder ---- */
+/* head: bytes of free space in front of the contents. The contents are
+ * b.data[head .. b.len). A reserved builder starts with HP_SB_HEADROOM bytes
+ * there, so sb_prepend() of a short prefix (a response header) writes into
+ * that space instead of moving the whole body. */
+#define HP_SB_HEADROOM 192
+HpSb *sb_h(hval v) { return (HpSb *)(intptr_t)hp_val_to_int(v); }
+
+
+hval hpbi_sb_new(void) {
+    HpSb *s = (HpSb *)hp_alloc(sizeof *s);
+    hbuf_init(&s->b);
+    s->head = 0;
+    return hp_of_int((int64_t)(intptr_t)s);
+}
+hval hpbi_sb_put(hval h, hval str) {
+    HpSb *s = sb_h(h);
+    hstr *x = hp_val_to_str(str);
+    hbuf_write(&s->b, x->data, x->len);
+    return hp_of_bool(true);
+}
+hval hpbi_sb_bytes(hval h, hval ptr, hval len) {
+    HpSb *s = sb_h(h);
+    int64_t n = hp_val_to_int(len);
+    const char *p = (const char *)hp_addr_arg(ptr);
+    if (p && n > 0) hbuf_write(&s->b, p, (size_t)n);
+    return hp_of_bool(true);
+}
+hval hpbi_sb_data_ptr(hval h) {
+    HpSb *s = sb_h(h);
+    return hp_of_int(s->b.data ? (int64_t)(intptr_t)(s->b.data + s->head) : 0);
+}
+hval hpbi_sb_discard(hval h) {
+    HpSb *s = sb_h(h);
+    if (s) {
+        char *p = hbuf_take(&s->b);
+        free(p);
+        hp_free(s);
+    }
+    return hp_of_bool(true);
+}
+hval hpbi_sb_int(hval h, hval n) {
+    HpSb *s = sb_h(h);
+    char tmp[24];
+    char *p = hp_fmt_i64(tmp + sizeof tmp, hp_val_to_int(n));
+    hbuf_write(&s->b, p, (size_t)(tmp + sizeof tmp - p));
+    return hp_of_bool(true);
+}
+/* int_digits(n): decimal digit count of an integer, so a caller can compute a
+ * Content-Length (or any numeric prefix width) without building a throwaway
+ * string. Generic. */
+int64_t hp_int_digits_t(int64_t v) {
+    unsigned long long u = v < 0 ? (unsigned long long)(-(v + 1)) + 1ULL
+                                 : (unsigned long long)v;
+    int64_t d = 1;
+    while (u >= 10ULL) { u /= 10ULL; d++; }
+    return d;
+}
+hval hpbi_int_digits(hval n) { return hp_of_int(hp_int_digits_t(hp_val_to_int(n))); }
+/* Copy clean bytes while checking them for JSON escapes. The AVX2 path fuses
+ * each 32-byte scan with its destination store, avoiding a second read of the
+ * clean prefix. */
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+__attribute__((target("avx2")))
+static size_t json_copy_clean_avx2(const unsigned char *p, size_t n, char *dst) {
+    size_t i = 0;
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i high = _mm256_set1_epi8((char)0x80);
+    const __m256i ctlmax = _mm256_set1_epi8(0x20);
+    const __m256i quote = _mm256_set1_epi8('"');
+    const __m256i slash = _mm256_set1_epi8('\\');
+    while (i + 32 <= n) {
+        __m256i x = _mm256_loadu_si256((const __m256i *)(const void *)(p + i));
+        __m256i ascii = _mm256_cmpeq_epi8(_mm256_and_si256(x, high), zero);
+        __m256i ctl = _mm256_and_si256(_mm256_cmpgt_epi8(ctlmax, x), ascii);
+        __m256i special = _mm256_or_si256(ctl,
+            _mm256_or_si256(_mm256_cmpeq_epi8(x, quote), _mm256_cmpeq_epi8(x, slash)));
+        unsigned mask = (unsigned)_mm256_movemask_epi8(special);
+        if (mask) {
+            size_t clean = (size_t)__builtin_ctz(mask);
+            if (clean) memcpy(dst + i, p + i, clean);
+            return i + clean;
+        }
+        _mm256_storeu_si256((__m256i *)(void *)(dst + i), x);
+        i += 32;
+    }
+    return i;
+}
+#endif
+
+/* append a quoted, escaped JSON string for n bytes at p */
+static void sb_json_esc(Buf *b, const unsigned char *p, size_t n) {
+    static const char H[] = "0123456789abcdef";
+    size_t old = b->len;
+    if (n > SIZE_MAX - old - 2) return;
+    hbuf_reserve(b, old + n + 2);
+    char *dst = b->data + old;
+    *dst++ = '"';
+    size_t i = 0;
+    bool avx2 = false;
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    static _Thread_local int have_avx2 = -1;
+    if (have_avx2 < 0) {
+        __builtin_cpu_init();
+        have_avx2 = __builtin_cpu_supports("avx2") ? 1 : 0;
+    }
+    avx2 = have_avx2 != 0;
+    if (avx2) i = json_copy_clean_avx2(p, n, dst);
+#endif
+    while (i + 8 <= n) {
+        uint64_t v;
+        memcpy(&v, p + i, 8);
+        uint64_t lt = (v - 0x2020202020202020ULL) & ~v & 0x8080808080808080ULL;
+        uint64_t zq = v ^ 0x2222222222222222ULL;
+        uint64_t zb = v ^ 0x5C5C5C5C5C5C5C5CULL;
+        uint64_t q = (zq - 0x0101010101010101ULL) & ~zq & 0x8080808080808080ULL;
+        uint64_t bs = (zb - 0x0101010101010101ULL) & ~zb & 0x8080808080808080ULL;
+        if (lt | q | bs) break;
+        memcpy(dst + i, p + i, 8);
+        i += 8;
+    }
+    while (i < n) {
+        unsigned char c = p[i];
+        if (c < 0x20 || c == '"' || c == '\\') break;
+        dst[i++] = (char)c;
+    }
+    if (i < n) {
+        size_t prefix_len = (size_t)((dst + i) - b->data);
+        size_t encoded = 1; /* closing quote */
+        for (size_t k = i; k < n; k++) {
+            unsigned char c = p[k];
+            size_t width = c == '"' || c == '\\' || c == '\n' || c == '\r' ||
+                           c == '\t' || c == '\b' || c == '\f' ? 2 :
+                           c < 0x20 ? 6 : 1;
+            if (encoded > SIZE_MAX - width) return;
+            encoded += width;
+        }
+        if (encoded > SIZE_MAX - prefix_len) return;
+        b->len = prefix_len;
+        hbuf_reserve(b, prefix_len + encoded);
+        dst = b->data + b->len;
+        for (; i < n; i++) {
+            unsigned char c = p[i];
+            if (c == '"' || c == '\\') { *dst++ = '\\'; *dst++ = (char)c; }
+            else if (c == '\n') { *dst++ = '\\'; *dst++ = 'n'; }
+            else if (c == '\r') { *dst++ = '\\'; *dst++ = 'r'; }
+            else if (c == '\t') { *dst++ = '\\'; *dst++ = 't'; }
+            else if (c == '\b') { *dst++ = '\\'; *dst++ = 'b'; }
+            else if (c == '\f') { *dst++ = '\\'; *dst++ = 'f'; }
+            else if (c < 0x20) {
+                *dst++ = '\\'; *dst++ = 'u'; *dst++ = '0'; *dst++ = '0';
+                *dst++ = H[(c >> 4) & 15]; *dst++ = H[c & 15];
+            } else *dst++ = (char)c;
+        }
+    } else dst += i;
+    *dst++ = '"';
+    b->len = (size_t)(dst - b->data);
+}
+hval hpbi_sb_json(hval h, hval ptr, hval len) {
+    HpSb *s = sb_h(h);
+    const unsigned char *p = (const unsigned char *)(intptr_t)hp_val_to_int(ptr);
+    int64_t n = hp_val_to_int(len);
+    if (p && n > 0) sb_json_esc(&s->b, p, (size_t)n);
+    else hbuf_puts(&s->b, "\"\"");
+    return hp_of_bool(true);
+}
+hval hpbi_sb_json_str(hval h, hval str) {
+    HpSb *s = sb_h(h);
+    hstr *x = hp_val_to_str(str);
+    sb_json_esc(&s->b, (const unsigned char *)x->data, x->len);
+    return hp_of_bool(true);
+}
+/* An empty builder reuses the capacity of an already-sent response buffer
+ * (they return to the pool on send completion) instead of a fresh malloc per
+ * response. Only capacity is reused, never bytes. */
+static void hp_sb_reserve_pooled(HpSb *s, int64_t want) {
+    if (want <= 0) return;
+    size_t extra = 0;
+    if (s->b.len == 0 && s->head == 0) {
+        extra = HP_SB_HEADROOM;
+        if (!s->b.data && (size_t)want + extra < HP_RESP_BUF_POOL_CAP_MAX) {
+            size_t cap = 0;
+            char *p = hp_resp_buf_acquire_min((size_t)want + extra + 1, &cap);
+            if (p) { s->b.data = p; s->b.cap = cap; s->b.len = 0; }
+        }
+    }
+    hbuf_reserve(&s->b, s->b.len + (size_t)want + extra);
+    if (extra && s->b.data) {
+        s->b.len = s->head = extra;
+        s->b.data[s->b.len] = 0;
+    }
+}
+/* Put x in front of the contents: into the headroom when it fits, else by
+ * moving the contents once (and dropping the headroom). */
+static void hp_sb_prepend_bytes(HpSb *s, const char *x, size_t n) {
+    if (n == 0) return;
+    if (n <= s->head) {
+        s->head -= n;
+        memcpy(s->b.data + s->head, x, n);
+        return;
+    }
+    size_t body = s->b.len - s->head;
+    hbuf_reserve(&s->b, body + n);
+    if (body) memmove(s->b.data + n, s->b.data + s->head, body);
+    memcpy(s->b.data, x, n);
+    s->b.len = body + n;
+    s->b.data[s->b.len] = 0;
+    s->head = 0;
+}
+hval hpbi_sb_reserve(hval h, hval n) {
+    HpSb *s = sb_h(h);
+    hp_sb_reserve_pooled(s, hp_val_to_int(n));
+    return hp_of_bool(true);
+}
+/* sb_len(sb): bytes currently in the builder. */
+hval hpbi_sb_len(hval h) { HpSb *s = sb_h(h); return hp_of_int((int64_t)(s->b.len - s->head)); }
+/* sb_prepend(sb, str): put str in front of the current contents. Used to add
+ * a response header to a body that is already built, without a second buffer
+ * or a header string concatenation. */
+hval hpbi_sb_prepend(hval h, hval str) {
+    HpSb *s = sb_h(h);
+    hstr *x = hp_val_to_str(str);
+    hp_sb_prepend_bytes(s, x->data, x->len);
+    return hp_of_bool(true);
+}
+hval hpbi_str_from_bytes(hval ptr, hval len) {
+    const char *p = (const char *)hp_addr_arg(ptr);
+    int64_t n = hp_val_to_int(len);
+    if (!p || n < 0) return hp_of_str(hp_null_str());
+    return hp_of_str(hp_str_new(p, (size_t)n));
+}
+/* Fixed-size int64 array indexed directly, for per-connection state keyed by
+ * fd. A hash map of boxed hvals costs a probe plus a 16-byte key and value per
+ * entry; this is 8 bytes per slot and one pointer add. 0 means "absent". */
+hval hpbi_iarr_new(hval size) {
+    int64_t n = hp_val_to_int(size);
+    return hp_of_int((int64_t)(intptr_t)hp_iarr_acquire(n, true));
+}
+hval hpbi_iarr_new_uninit(hval size) {
+    int64_t n = hp_val_to_int(size);
+    return hp_of_int((int64_t)(intptr_t)hp_iarr_acquire(n, false));
+}
+hval hpbi_iarr_release(hval h) {
+    hp_iarr_release_ptr((hp_iarr_t *)(intptr_t)hp_val_to_int(h));
+    return hp_of_bool(true);
+}
+int64_t hp_iarr_len_t(int64_t h) {
+    hp_iarr_t *a = (hp_iarr_t *)(intptr_t)h;
+    return a && a->leased ? a->len : 0;
+}
+hval hpbi_iarr_get(hval h, hval i) {
+    hp_iarr_t *a = iarr_of(h);
+    int64_t k = hp_val_to_int(i);
+    if (!a || !a->leased || k < 0 || k >= a->cap) return hp_of_int(0);
+    return hp_of_int(a->v[k]);
+}
+hval hpbi_iarr_set(hval h, hval i, hval v) {
+    hp_iarr_t *a = iarr_of(h);
+    int64_t k = hp_val_to_int(i);
+    if (a && a->leased && k >= 0 && k < a->cap) a->v[k] = hp_val_to_int(v);
+    return hp_of_bool(true);
+}
+hval hpbi_iarr_get_fast(hval h, hval i) {
+    return hp_of_int(hp_iarr_get_fast_impl(hp_val_to_int(h), hp_val_to_int(i)));
+}
+hval hpbi_iarr_set_fast(hval h, hval i, hval v) {
+    return hp_of_bool(hp_iarr_set_fast_impl(hp_val_to_int(h), hp_val_to_int(i),
+                                            hp_val_to_int(v)));
+}
+hval hpbi_iarr_data_ptr(hval h) {
+    hp_iarr_t *a = iarr_of(h);
+    return hp_of_int((a && a->leased) ? (int64_t)(intptr_t)a->v : 0);
+}
+hval hpbi_iarr_len(hval h) {
+    hp_iarr_t *a = iarr_of(h);
+    return hp_of_int(a && a->leased ? a->len : 0);
+}
+
+/* Response buffer pool (generic): the io_uring send path and the string
+ * builder share the capacity of completed responses. Moved here from the
+ * transport module so a program that only uses sb_* does not pull in
+ * io_uring. */
+#define HP_RESP_BUF_POOL_MAX 8192
+#define HP_RESP_BUF_POOL_CAP_MAX (16u * 1024u)
+#define HP_RESP_BUF_POOL_BYTES_MAX (32u * 1024u * 1024u)
+typedef struct { char *data; size_t cap; } hp_resp_buf_entry;
+/* Two size classes: small buffers (most responses) and large ones (feed-sized
+ * builders). One mixed stack let a run of small buffers hide every large
+ * one, so large builders fell back to malloc. */
+#define HP_RESP_BUF_SMALL_MAX 4096u
+typedef struct {
+    hp_resp_buf_entry e[HP_RESP_BUF_POOL_MAX / 2];
+    unsigned n;
+} hp_resp_buf_stack;
+static _Thread_local hp_resp_buf_stack hp_resp_buf_pool[2];
+static _Thread_local size_t hp_resp_buf_pool_bytes;
+
+static char *hp_resp_buf_take(hp_resp_buf_stack *st, unsigned i, size_t *cap) {
+    hp_resp_buf_entry e = st->e[i];
+    st->e[i] = st->e[st->n - 1];
+    st->n--;
+    if (hp_resp_buf_pool_bytes >= e.cap) hp_resp_buf_pool_bytes -= e.cap;
+    else hp_resp_buf_pool_bytes = 0;
+    *cap = e.cap;
+    return e.data;
+}
+
+char *hp_resp_buf_acquire(size_t *cap) {
+    for (int c = 0; c < 2; c++) {
+        hp_resp_buf_stack *st = &hp_resp_buf_pool[c];
+        if (st->n) return hp_resp_buf_take(st, st->n - 1, cap);
+    }
+    *cap = 0;
+    return NULL;
+}
+
+/* Take a pooled buffer of at least `want` bytes from the matching class (a
+ * small request may also use a large buffer). The hit is swapped out. */
+char *hp_resp_buf_acquire_min(size_t want, size_t *cap) {
+    for (int c = want > HP_RESP_BUF_SMALL_MAX ? 1 : 0; c < 2; c++) {
+        hp_resp_buf_stack *st = &hp_resp_buf_pool[c];
+        unsigned n = st->n;
+        unsigned look = n < 8 ? n : 8;
+        for (unsigned k = 0; k < look; k++) {
+            unsigned i = n - 1 - k;
+            if (st->e[i].cap >= want) return hp_resp_buf_take(st, i, cap);
+        }
+    }
+    *cap = 0;
+    return NULL;
+}
+
+void hp_resp_buf_release(char *data, size_t cap) {
+    if (!data) return;
+    hp_resp_buf_stack *st = &hp_resp_buf_pool[cap > HP_RESP_BUF_SMALL_MAX ? 1 : 0];
+    if (cap && cap <= HP_RESP_BUF_POOL_CAP_MAX &&
+        st->n < HP_RESP_BUF_POOL_MAX / 2 &&
+        cap <= HP_RESP_BUF_POOL_BYTES_MAX - hp_resp_buf_pool_bytes) {
+        st->e[st->n++] = (hp_resp_buf_entry){ data, cap };
+        hp_resp_buf_pool_bytes += cap;
+    } else {
+        free(data);
+    }
+}
+
+/* ---- raw-memory accessors -------------------------------------------------
+ * The challenge runtime let programs do pointer arithmetic directly
+ * (*($p + n)). This core's checker has no arithmetic on *T yet, so the same
+ * accesses go through these builtins: the address stays an integer, the
+ * offset is added in C, and memcpy keeps unaligned int64 access defined.
+ * Unsafe, like *T itself. */
+
+hval hpbi_u8_at(hval p, hval off) {
+    const unsigned char *b = (const unsigned char *)hp_addr_arg(p);
+    return hp_of_int(b ? (int64_t)b[hp_val_to_int(off)] : 0);
+}
+hval hpbi_u8_set(hval p, hval off, hval v) {
+    unsigned char *b = (unsigned char *)hp_addr_arg(p);
+    if (b) b[hp_val_to_int(off)] = (unsigned char)(hp_val_to_int(v) & 255);
+    return hp_of_int(hp_val_to_int(v));
+}
+hval hpbi_i64_at(hval p, hval off) {
+    const char *b = (const char *)hp_addr_arg(p);
+    int64_t v = 0;
+    if (b) memcpy(&v, b + hp_val_to_int(off) * 8, sizeof v);
+    return hp_of_int(v);
+}
+hval hpbi_i64_set(hval p, hval off, hval v) {
+    char *b = (char *)hp_addr_arg(p);
+    int64_t x = hp_val_to_int(v);
+    if (b) memcpy(b + hp_val_to_int(off) * 8, &x, sizeof x);
+    return hp_of_int(x);
+}
+hval hpbi_sb_take(hval h) {
+    HpSb *s = sb_h(h);
+    size_t head = s->head;
+    size_t n = s->b.len - head;
+    char *p = hbuf_take(&s->b);
+    hstr *r = hp_str_new(p + head, n);
+    free(p);
+    hp_free(s);
+    return hp_of_str(r);
+}
+
+/* ---- request scope (compatibility) ---------------------------------------
+ * The challenge runtime released every string allocated in a poll cycle at
+ * hp_scope_end(). This core has no request arena yet, so the scope is a
+ * counter-free no-op and persisting a value is the identity: every string is
+ * a plain heap block. Phase 1/2 of the memory plan replaces both with the
+ * automatic region allocator, and the builtins disappear from user code. */
+uint64_t hp_st[HP_ST_N];
+void hp_scope_begin(void) { }
+void hp_scope_end(void) { hp_st[HP_ST_SCOPE_END]++; }
+hstr *hp_str_persist(hstr *s) { return s; }
+int64_t hp_live_allocs(void) { return 0; }   /* no live counter in this core */
+int64_t hp_live_bytes(void) { return 0; }
