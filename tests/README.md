@@ -5,6 +5,7 @@ One entry point:
 ```bash
 bash tests/run.sh            # positive + negative + docs
 bash tests/run.sh manual     # tests that open a window or bind a port
+bash tests/run.sh --asan     # the whole suite with ASan + UBSan + LeakSanitizer
 ```
 
 | Folder | Rule |

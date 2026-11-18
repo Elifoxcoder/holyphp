@@ -9,8 +9,11 @@ set -u
 cd "$(dirname "$0")/.."
 
 CC=${CC:-gcc}
-CFLAGS="-O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable"
-OUT=hphp.exe
+# HPHP_CFLAGS / HPHP_OUT let a caller build a second flavour of the compiler
+# next to the normal one (scripts/build-asan.sh uses this for the sanitizer
+# build) without changing what the normal build produces.
+CFLAGS=${HPHP_CFLAGS:-"-O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable"}
+OUT=${HPHP_OUT:-hphp.exe}
 
 # 1. embed the runtime sources into the compiler binary
 # (name differs per platform: gcc on MinGW auto-appends .exe, Linux does not;
@@ -29,7 +32,7 @@ libs=(packages/lib/*/*.hphp)
 
 if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == *NT* || -n "${OS:-}" && "${OS:-}" == Windows_NT ]]; then
   # ---- MinGW/Windows: link the PE image directly with ld ----
-  OUT=hphp.exe
+  OUT=${HPHP_OUT:-hphp.exe}
   GCCLIB=$(gcc -print-file-name=libgcc.a | xargs dirname)
   GCCDIR=$(gcc -print-file-name=crtbegin.o | xargs dirname)
   CRTDIR=$(dirname "$(gcc -print-file-name=libmingwex.a)")
@@ -60,7 +63,7 @@ if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == *NT* || -n "${OS:-}" && "${OS:
   echo "build ok: $OUT ($(stat -c%s "$OUT") bytes, runtime embedded)"
 else
   # ---- POSIX (Linux/macOS): plain gcc link, ELF out ----
-  OUT=hphp
+  OUT=${HPHP_OUT:-hphp}
   mkdir -p build/obj
   objs=()
   rc=0
@@ -72,7 +75,8 @@ else
   [ $rc -eq 0 ] || { echo "compile failed"; exit 1; }
 
   rm -f "$OUT"
-  $CC -O2 "${objs[@]}" -o "$OUT" -lm -lpthread || { echo "link failed"; exit 1; }
+  # CFLAGS again: -fsanitize=... must also be on the link line (build-asan.sh)
+  $CC $CFLAGS "${objs[@]}" -o "$OUT" -lm -lpthread || { echo "link failed"; exit 1; }
 
   sig=$(head -c 2 "$OUT" 2>/dev/null | od -An -tx1 | tr -d ' \n')
   [ "$sig" = "7f45" ] || { echo "output invalid (not ELF)"; exit 1; }

@@ -14,6 +14,10 @@ behaves differently, what they have to change.
 - Closure escape diagnostics now distinguish values actually passed to a retaining callback from unrelated heap values, while keeping conservative borrow checks for unknown callbacks.
 - The runtime now reports the same version as the compiler (`phpversion()`
   said 1.0.0 while `hphp --version` said 1.0.2).
+- `tests/run.sh --asan` runs every test under AddressSanitizer,
+  UndefinedBehaviorSanitizer and LeakSanitizer (Linux/WSL); the build side is
+  `scripts/build-asan.sh`. The findings at the start of the memory-safety work
+  are listed in `STATUS.md`.
 
 ## 1.0.2
 

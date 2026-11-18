@@ -187,3 +187,150 @@ shell.
   lines.
 - **Documentation snippets** are checked by `tests/check_docs.sh` only when a
   Python interpreter is available; without one the suite reports SKIP.
+
+---
+
+## 4. Sanitizer findings (2026-11-18)
+
+`tests/run.sh --asan` runs the whole suite under AddressSanitizer,
+UndefinedBehaviorSanitizer and LeakSanitizer: the compiler is built as
+`hphp_asan` (`scripts/build-asan.sh`, output `build/hphp_asan`), and every
+backend `gcc` call is routed
+through a wrapper that adds the same flags, because the runtime is embedded as
+C source and compiled per program. Per-test output lands in
+`build/asan-logs/<test>.log`. Sanitizers need Linux; this ran in
+`wsl -d Ubuntu-24.04 -u root`.
+
+Current result on `safe/phase0` (2026-11-18): **50 test runs with findings**
+(every positive and negative test), 0 passed. Nothing here is fixed yet; the
+list below is the baseline the memory work has to bring to zero. The normal
+(non-sanitizer) suite at the same commit has two unrelated pre-existing
+failures: `ide_workbench.hphp` (4 assertions, crashes the same way as F4) and
+a docs snippet `pkg_02.hphp` importing `mathx` (library not in this
+checkout).
+
+### F1 — LeakSanitizer, compiler process (all 50 runs)
+
+Every `hphp_asan` invocation leaks between ~2 KB and ~0.8 MB (20 to 32 000
+allocations). The compiler frees nothing at exit: tokens, AST, types and the
+codegen text buffers are all kept. Representative stack (`check` on a
+negative test):
+
+```
+==2253==ERROR: LeakSanitizer: detected memory leaks
+Direct leak of 80 byte(s) in 1 object(s):
+    #0 calloc
+    #1 xcalloc src/hphpc/util.c:16
+    #2 main src/hphpc/main.c:1594
+Direct leak of 64 byte(s) in 1 object(s):
+    #1 xrealloc src/hphpc/util.c:11
+    #2 ptrvec_push src/hphpc/util.c:62
+    #3 load_source_recursive src/hphpc/main.c:1113
+Direct leak of 392 byte(s) in 1 object(s):
+    #2 expr_new src/hphpc/ast.c:4
+    #3 parse_primary src/hphpc/parser.c:1472
+SUMMARY: AddressSanitizer: 2179 byte(s) leaked in 20 allocation(s).
+```
+
+Aggregated allocation sites: `xmalloc src/hphpc/util.c:6` (mostly `fmt`,
+17 095 objects), `xrealloc src/hphpc/util.c:11` (7 492), `xcalloc
+src/hphpc/util.c:16` (1 535), `buf_grow src/hphpc/util.c:72` via `buf_printf
+src/hphpc/util.c:99` from `emit_fn`/`codegen_emit` (largest single run: 476 KB
+for `html_css`).
+
+### F2 — LeakSanitizer, generated program (29/29 positive tests)
+
+Every positive test leaves its runtime values behind: strings
+(`hp_str_new` `rt/hphp_rt.c:103`, `hp_str_concat_n` `:261`, `hp_str_join_v`
+`:230`), arrays (`hp_arr_new` `:551`, `hp_arr_grow` `:561/:563`,
+`hp_arr_set` `:919`), boxes (`hp_box_new` `:1385`) and argv
+(`hp_argv_from_c` `:138`). This is the known “no reference counting yet” state,
+not a new bug — but it is the exact list that phase 1 has to remove.
+
+Representative stack (`hello.hphp`, 497 B in 11 allocations):
+
+```
+==1098==ERROR: LeakSanitizer: detected memory leaks
+Direct leak of 41 byte(s):
+    #1 hp_alloc rt/hphp_rt.c:34
+    #2 hp_str_concat_n rt/hphp_rt.c:261
+    #3 hp_main prog_4286301e2.c:41
+```
+
+Per test, program-side leaks:
+
+| Test | Leaked |
+|---|---|
+| borrow_builtin_mutation.hphp | 931 B in 16 allocations |
+| borrow_closure_unrelated.hphp | 916 B in 22 |
+| borrow_new_object.hphp | 344 B in 7 |
+| byref.hphp | 522 B in 13 |
+| byref_storage.hphp | 7 404 B in 171 |
+| codegen_regress.hphp | 1 618 B in 25 |
+| concat_many.hphp | 4 257 B in 141 |
+| controlflow.hphp | 10 805 B in 282 |
+| early_return.hphp | 3 050 B in 55 |
+| explode_chars.hphp | 2 140 B in 43 |
+| features.hphp | 3 849 B in 94 |
+| globals.hphp | 1 026 B in 28 |
+| globals2.hphp | 1 082 B in 23 |
+| hello.hphp | 497 B in 11 |
+| html_css.hphp | 706 424 B in 17 975 |
+| html_layout.hphp | 5 926 688 B in 226 449 |
+| ide_editor.hphp | 355 067 B in 7 508 |
+| ide_workbench.hphp | 360 689 B in 34 862 |
+| match_narrow.hphp | 7 995 B in 190 |
+| mixedops.hphp | 9 791 B in 169 |
+| modern8.hphp | 28 144 B in 492 |
+| modules.hphp | 412 425 B in 2 343 |
+| nullable.hphp | 8 059 B in 171 |
+| nullobj.hphp | 339 B in 10 |
+| regress.hphp | 14 376 B in 301 |
+| strict.hphp | 9 221 B in 188 |
+| switch_narrow.hphp | 4 368 B in 96 |
+| unsafe_memory_builtins.hphp | 305 B in 4 |
+| values.hphp | 13 390 B in 255 |
+
+### F3 — AddressSanitizer: stack-buffer-overflow in `hp_b64_encode_raw`
+
+`tests/positive/modules.hphp` (`password_hash`, generated C line 91):
+
+```
+==1568==ERROR: AddressSanitizer: stack-buffer-overflow ... WRITE of size 1
+    #0 hp_b64_encode_raw rt/hphp_std.c:4199
+    #1 hpbi_password_hash rt/hphp_std.c:4212
+    #2 hp_main prog_5feaf63d8.c:91
+  'b64salt' (line 4211) <== Memory access at offset 104 overflows this variable
+SUMMARY: AddressSanitizer: stack-buffer-overflow rt/hphp_std.c:4199
+```
+
+`hpbi_password_hash` declares `char b64salt[24]`; base64 of a 16-byte salt is
+24 characters **plus** the terminator, so the encoder writes one byte past the
+array. Obvious one-line fix (`b64salt[25]`, same for `b64dk`), but
+`runtime/hphp_std.c` was not in this task's editable set — recorded, not
+touched here. This is real stack corruption, not a sanitizer artefact.
+
+### F4 — UBSan + ASan: null object access and SEGV in `ide_workbench`
+
+`tests/positive/ide_workbench.hphp` (the same test that already fails without
+sanitizers):
+
+```
+prog_4e9a1bb5a.c:12799:15: runtime error: member access within null pointer
+    of type 'struct IdeProblem'
+    #0 hp_main prog_4e9a1bb5a.c:12799
+AddressSanitizer:DEADLYSIGNAL
+==1291==ERROR: AddressSanitizer: SEGV on unknown address 0x000000000008
+    (READ)
+    #0 hp_main prog_4e9a1bb5a.c:12799
+```
+
+The test dereferences a null `IdeProblem` while reading the problems panel
+after a failing run. The preceding assertions fail because the problems list
+stays empty, so the test logic and the crash are the same defect.
+
+### Not found
+
+No use-after-free, no double free, no uninitialised read, and no UBSan report
+outside F4. The only memory *error* in the whole suite is F3; everything else
+is a leak (F1/F2) or the known `ide_workbench` defect (F4).
