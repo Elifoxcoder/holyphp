@@ -221,12 +221,11 @@ echo laenge($w);        // owner keeps $w
   <div class="note warn"><b>unsafe:</b> raw pointer operations need an unsafe block. The
   compiler cannot guarantee memory safety for code that uses raw pointers or escapes the
   supported borrow rules.</div>
-  <p><b>Runtime memory:</b> strings, arrays, and closures carry reference counters, and the
-  runtime now exposes retain/release primitives. Compiler-generated owners are not yet
-  consistently retained and released, so this is not a complete reclamation guarantee.
-  Objects still need a common drop protocol. The target model adds automatic object-cycle
-  collection and weak properties. See the <a href="guide/memory-model.md">memory model
-  guide</a> for the ownership rules and implementation boundary.</p>
+  <p><b>Runtime memory:</b> generated owners retain and release strings, arrays, closures,
+  and class instances. Arrays detach on mutation when shared. Object cycles and weak
+  properties are part of the target model, but cycle collection is not yet implemented;
+  programs that create strong object cycles can retain those graphs. See the
+  <a href="guide/memory-model.md">memory model guide</a> for ownership rules and limits.</p>
 
   <h2 id="imports">Imports &amp; the stdlib</h2>
   <p>Libraries ship inside the compiler binary — <code>import</code> finds them with no files

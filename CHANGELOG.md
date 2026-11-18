@@ -9,7 +9,7 @@ behaves differently, what they have to change.
 
 ## Unreleased
 
-- The runtime exposes reference-count retain/release hooks for heap-valued handles; generated-code ownership cleanup is still in progress.
+- Strings, arrays, closures, and class instances now release generated owners automatically; shared arrays detach on write. Strong object cycles are not yet collected.
 - Ordinary `new Class()` expressions now have the normal copyable class type; explicit `own Class` slots can still take a fresh instance.
 - By-reference calls to mutating builtins are checked as one write, and separate scalar by-reference arguments no longer conflict merely because their storage is boxed.
 - Closure escape diagnostics now distinguish values actually passed to a retaining callback from unrelated heap values, while keeping conservative borrow checks for unknown callbacks.

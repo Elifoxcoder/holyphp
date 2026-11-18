@@ -1,9 +1,10 @@
 ﻿# HolyPHP memory model
 
-This document specifies the ownership contract targeted by phase 1 and the later
-region optimization. Today the compiler already checks a subset of borrows, but
-its runtime representation and generated code are not yet fully connected to
-this contract; the implementation status at the end is explicit.
+This document specifies the ownership contract for phase 1 and the later region
+optimization. HolyPHP already checks a subset of borrows. Generated ownership
+cleanup and runtime reclamation are implemented for the paths listed below;
+cycle collection, weak properties, and builtin ownership metadata remain later
+work.
 
 ## Values and owners
 
@@ -143,9 +144,16 @@ ordinary code keep their meaning.
 
 ## Current implementation boundary
 
-`hstr`, `harr`, `hclosure`, generated objects, and generated locals do not yet
-share a complete ownership protocol. In particular, generated C currently has
-no systematic scope drops, closure environments have no drop metadata, and
-class structures lack a common object header/drop callback. The runtime hooks
-must not be treated as proof that the phase 1 safety or leak criteria are met
-until those pieces and the task 1.4 builtin audit land.
+The runtime implements reference counts and drop paths for strings, arrays,
+closures, and generated class objects. Generated code retains borrowed heap
+values on assignment and call boundaries, releases locals on scope exit and
+nonlocal exits, drops closure captures, and handles exception cleanup. Array
+writes, including nested indexed writes, detach shared arrays. A churn test
+checks that RSS stabilizes for strings, arrays, objects, and capturing closures.
+
+The current generated object header has a class-specific drop callback, but
+does not yet trace strong object edges. Consequently strong object cycles can
+remain allocated; weak-property syntax and invalidation are not implemented.
+Builtin ownership metadata also remains for task 1.4, so builtins that retain,
+consume, or alias heap arguments still require a separate audit. WSL is
+unavailable in the current environment, so sanitizer verification has not run.
