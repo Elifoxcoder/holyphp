@@ -27,6 +27,11 @@ holybrowser/native/build/
 # registry runtime state
 registry/server.log
 
+# fuzzing: crash inputs, logs and the growing corpus stay local. The curated
+# seeds under tests/fuzz/corpus/ and tests/fuzz/repro/ are committed.
+tests/fuzz/artifacts/
+tests/fuzz/logs/
+
 # editor / OS
 .freebuff/
 Thumbs.db

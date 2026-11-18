@@ -103,6 +103,7 @@ static char peek(Lexer *lx, size_t off) {
 static char cur(Lexer *lx) { return peek(lx, 0); }
 static bool eof(Lexer *lx) { return lx->pos >= lx->len; }
 static char adv(Lexer *lx) {
+    if (lx->pos >= lx->len) return '\0';   /* never read past the source */
     char c = lx->src[lx->pos++];
     if (c == '\n') { lx->line++; lx->col = 1; } else lx->col++;
     return c;
@@ -300,6 +301,9 @@ static void skip_trivia(Lexer *lx) {
         if (cur(lx) == '/' && peek(lx, 1) == '*') {
             adv(lx); adv(lx);
             while (!eof(lx) && !(cur(lx) == '*' && peek(lx, 1) == '/')) adv(lx);
+            if (eof(lx))
+                fatal("%s:%zu:%zu: unterminated block comment",
+                      lx->file, lx->line, lx->col);
             adv(lx); adv(lx); /* consume */
             continue;
         }

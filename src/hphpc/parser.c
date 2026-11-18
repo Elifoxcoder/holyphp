@@ -17,6 +17,20 @@
 #include "parser.h"
 #include <ctype.h>
 
+/* A recursive-descent parser runs out of stack on deeply nested input
+ * (`((((…`, `!!!!…`, `1**1**…`, `{{{…`). One fuzzer input killed the process
+ * with a stack overflow before this limit existed; report a normal error
+ * instead. The deepest legal test file needs well under 100 levels. */
+#define MAX_PARSE_DEPTH 400
+
+static void parser_enter(Parser *p) {
+    if (++p->depth <= MAX_PARSE_DEPTH) return;
+    const Token *t = ts_peek(p->ts);
+    fatal("%s:%zu:%zu: nesting too deep (limit %d)",
+          t->file, t->line, t->col, MAX_PARSE_DEPTH);
+}
+static void parser_leave(Parser *p) { p->depth--; }
+
 static Expr *parse_expr(Parser *p);
 static Expr *parse_assign(Parser *p);
 static Expr *parse_ternary(Parser *p);
@@ -687,7 +701,15 @@ static Stmt *parse_simple_stmt(Parser *p) {
     return s;
 }
 
+static Stmt *parse_stmt_inner(Parser *p);
 static Stmt *parse_stmt(Parser *p) {
+    parser_enter(p);
+    Stmt *s = parse_stmt_inner(p);
+    parser_leave(p);
+    return s;
+}
+
+static Stmt *parse_stmt_inner(Parser *p) {
     const Token *t0 = ts_peek(p->ts);
     switch (t0->kind) {
     case T_KW_LET: {
@@ -988,7 +1010,12 @@ static Stmt *parse_stmt(Parser *p) {
 }
 
 /* ---- Expressions ---- */
-static Expr *parse_expr(Parser *p) { return parse_assign(p); }
+static Expr *parse_expr(Parser *p) {
+    parser_enter(p);
+    Expr *e = parse_assign(p);
+    parser_leave(p);
+    return e;
+}
 
 /* Tokens that can begin a type annotation. This is what tells a typed
  * declaration ("$x: int = 5") apart from a ternary branch
@@ -1147,7 +1174,7 @@ static Expr *parse_shift(Parser *p) { return parse_binop_level(p, 8); }
 static Expr *parse_additive(Parser *p) { return parse_binop_level(p, 9); }
 static Expr *parse_multiplicative(Parser *p) { return parse_binop_level(p, 10); }
 
-static Expr *parse_pow(Parser *p) {
+static Expr *parse_pow_inner(Parser *p) {
     Expr *base = parse_unary(p);
     if (ts_check(p->ts, T_POW)) {
         Token op = *ts_advance(p->ts);
@@ -1161,7 +1188,14 @@ static Expr *parse_pow(Parser *p) {
     return base;
 }
 
-static Expr *parse_unary(Parser *p) {
+static Expr *parse_pow(Parser *p) {
+    parser_enter(p);
+    Expr *e = parse_pow_inner(p);
+    parser_leave(p);
+    return e;
+}
+
+static Expr *parse_unary_inner(Parser *p) {
     const Token *t = ts_peek(p->ts);
     if (t->kind == T_NOT || t->kind == T_MINUS || t->kind == T_PLUS || t->kind == T_TILDE) {
         Token op = *ts_advance(p->ts);
@@ -1192,6 +1226,13 @@ static Expr *parse_unary(Parser *p) {
         return e;
     }
     return parse_postfix(p);
+}
+
+static Expr *parse_unary(Parser *p) {
+    parser_enter(p);
+    Expr *e = parse_unary_inner(p);
+    parser_leave(p);
+    return e;
 }
 
 static Expr *parse_call_args(Parser *p, PtrVec *args) {

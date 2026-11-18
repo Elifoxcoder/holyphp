@@ -1,0 +1,80 @@
+<?php
+/* challenge_runtime.hphp — the generic pieces ported with the challenge
+ * runtime: string range helpers, typed int arrays, string builders, JSON
+ * fields and raw-memory accessors. Socket/SQLite builtins need a port or a
+ * database and live in tests/manual/runtime_modules.hphp. */
+
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    return false;
+}
+
+if (!check("str_to_int", str_to_int("42") == 42)) { $fail = $fail + 1; }
+if (!check("str_to_int rejects", str_to_int("4x") == -1)) { $fail = $fail + 1; }
+if (!check("str_to_int_range", str_to_int_range("id=12345;", 3, 8) == 12345)) { $fail = $fail + 1; }
+if (!check("str_int_range", str_int_range("x99", 1, 3) == 99)) { $fail = $fail + 1; }
+if (!check("str_find_range", str_find_range("a\r\n\r\nb", "\r\n\r\n", 0) == 1)) { $fail = $fail + 1; }
+if (!check("str_at_eq", str_at_eq("GET /feed", 0, 3, "GET") == true)) { $fail = $fail + 1; }
+if (!check("str_at_eq no", str_at_eq("POST /feed", 0, 3, "GET") == false)) { $fail = $fail + 1; }
+if (!check("str_pos_ci", str_pos_ci("Content-Type: X", "content-type", 0) == 0)) { $fail = $fail + 1; }
+if (!check("str_prefix_ci", str_prefix_ci("Bearer x", "bearer") == true)) { $fail = $fail + 1; }
+if (!check("str_trim_range", str_trim_range("  hi  ", 0, 6) == "hi")) { $fail = $fail + 1; }
+if (!check("int_digits", int_digits(0) == 1 && int_digits(99) == 2 && int_digits(-123) == 3)) { $fail = $fail + 1; }
+
+/* typed int arrays */
+$a = iarr_new(4);
+if (!check("iarr_zeroed", iarr_len($a) == 0 && iarr_get($a, 0) == 0)) { $fail = $fail + 1; }
+iarr_set($a, 2, 77);
+if (!check("iarr_set/get", iarr_get($a, 2) == 77)) { $fail = $fail + 1; }
+unsafe {
+    iarr_set_fast($a, 3, 5);
+    if (!check("iarr fast path", iarr_get_fast($a, 3) == 5)) { $fail = $fail + 1; }
+}
+iarr_release($a);
+
+/* raw memory through the accessors (pointer arithmetic is inside C) */
+unsafe {
+    $p = malloc(64);
+    i64_set($p, 0, 4242);
+    i64_set($p, 3, -7);
+    u8_set($p, 40, 65);
+    if (!check("i64 address access", i64_at($p, 0) == 4242 && i64_at($p, 3) == -7)) { $fail = $fail + 1; }
+    if (!check("u8 address access", u8_at($p, 40) == 65)) { $fail = $fail + 1; }
+    $q = iarr_new_uninit(2);
+    iarr_set($q, 1, 9);
+    if (!check("iarr data_ptr", i64_at(iarr_data_ptr($q), 1) == 9)) { $fail = $fail + 1; }
+    iarr_release($q);
+    free($p);
+}
+
+/* string builder */
+$sb = sb_new();
+sb_reserve($sb, 1024);
+sb_put($sb, "{\"n\":");
+sb_int($sb, 123);
+sb_put($sb, ",\"s\":");
+sb_json_str($sb, "a\"b");
+sb_put($sb, "}");
+if (!check("sb_len", sb_len($sb) == 20)) { $fail = $fail + 1; }
+unsafe { $body = sb_take($sb); }
+if (!check("sb_take", $body == "{\"n\":123,\"s\":\"a\\\"b\"}")) { $fail = $fail + 1; }
+if (!check("json_str_field", json_str_field("{\"sub\":\"7\",\"username\":\"ann\"}", "username") == "ann")) { $fail = $fail + 1; }
+if (!check("json_num_field", json_num_field("{\"exp\":1234}", "exp") == 1234)) { $fail = $fail + 1; }
+
+/* scope compatibility: persist returns the value, scope is a no-op */
+scope_begin();
+$kept = str_persist("kept");
+if (!check("scope round trip", $kept == "kept")) { $fail = $fail + 1; }
+scope_end();
+
+$x = [1, 2, 3];
+arr_clear($x);
+if (!check("arr_clear", count($x) == 0)) { $fail = $fail + 1; }
+$y = [1];
+arr_free($y);
+if (!check("arr_free", true)) { $fail = $fail + 1; }
+
+if ($fail == 0) { echo "challenge runtime OK\n"; }
+else { echo "challenge runtime FAILED (" . $fail . ")\n"; exit(1); }

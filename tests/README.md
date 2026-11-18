@@ -13,6 +13,7 @@ bash tests/run.sh --asan     # the whole suite with ASan + UBSan + LeakSanitizer
 | `positive/` | must compile **and** run to completion (exit 0) |
 | `negative/` | must be **rejected** by the type/borrow checker |
 | `manual/` | needs a screen (`ui_selftest`), a loopback port (`ws_selftest`), or threads (`thread_lib`); run on demand |
+| `fuzz/` | libFuzzer targets for the compiler front end and the runtime builtins; `bash tests/fuzz/run.sh` (see `fuzz/README.md`) |
 | `check_docs.sh` | every snippet in `docs/*.html` that imports a library must pass `hphp check` |
 
 `check_docs.sh` exits 77 when no Python interpreter is available; `run.sh`

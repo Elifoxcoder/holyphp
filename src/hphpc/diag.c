@@ -32,6 +32,7 @@
 
 static int g_tty;
 static int g_color;
+static int g_quiet;
 static int g_errors;
 static int g_warnings;
 
@@ -49,7 +50,13 @@ static void restore_cp(void) {
 void diag_init(void) {
     g_tty = HP_ISATTY(stderr);
     const char *mode = getenv("HPHP_DIAG");
-    if (mode && strcmp(mode, "rich") == 0) g_tty = 1;
+    if (mode && strcmp(mode, "quiet") == 0) {
+        /* the fuzzers feed thousands of invalid programs per minute; count the
+         * diagnostics but do not print them */
+        g_quiet = 1;
+        g_tty = 0;
+    }
+    else if (mode && strcmp(mode, "rich") == 0) g_tty = 1;
     else if (mode && strcmp(mode, "compact") == 0) g_tty = 0;
     const char *no_color = getenv("NO_COLOR");
     const char *term = getenv("TERM");
@@ -204,6 +211,7 @@ void diag_at(const char *severity, const char *file, size_t line, size_t col,
     if (!file || !*file) file = "?";
     if (strcmp(severity, "error") == 0) g_errors++;
     else if (strcmp(severity, "warning") == 0) g_warnings++;
+    if (g_quiet) return;
 
     if (!g_tty) {
         fprintf(stderr, "%s:%zu:%zu: %s: %s\n", file, line, col, severity, msg);
@@ -266,6 +274,7 @@ void diag_plain(const char *severity, const char *msg) {
     if (!severity) severity = "error";
     if (strcmp(severity, "error") == 0) g_errors++;
     else if (strcmp(severity, "warning") == 0) g_warnings++;
+    if (g_quiet) return;
     if (!g_tty) {
         fprintf(stderr, "hphpc: %s: %s\n", severity, msg ? msg : "");
         return;
@@ -296,6 +305,7 @@ static const char *base_name(const char *path) {
 }
 
 void diag_summary(const char *path) {
+    if (g_quiet) return;
     if (!g_tty) {
         fprintf(stderr, "hphp: compilation failed\n");
         return;
@@ -312,6 +322,7 @@ void diag_summary(const char *path) {
 }
 
 void diag_ok(const char *path) {
+    if (g_quiet) return;
     if (!g_tty) {
         fprintf(stderr, "%s: OK (types and borrows check)\n", path);
         return;

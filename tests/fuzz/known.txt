@@ -1,0 +1,15 @@
+# Known sanitizer findings the fuzzers still reach. Each line is a substring
+# of the report; run.sh subtracts matching lines from the findings. Remove an
+# entry as soon as the defect is fixed.
+#
+# hp_arr_sum() overflows int64_t when the array holds huge numeric strings
+# (QUESTION 1 in .agent/REPORT-opencode-2.md; src/hphpc/runtime/hphp_rt.c is
+# owned by the memory-core agent).
+src/hphpc/runtime/hphp_rt.c:1033
+# sema dereferences a null Type when an invalid program reaches it, at a few
+# call sites (QUESTION 2; sema.c is owned by the memory-core agent). The crash
+# inputs are tests/fuzz/repro/sema-null-type.hphp and the artifacts from the
+# first 20-minute run.
+src/hphpc/sema.c:1783
+src/hphpc/sema.c:1823
+src/hphpc/sema.c:3322

@@ -201,9 +201,9 @@ C source and compiled per program. Per-test output lands in
 `build/asan-logs/<test>.log`. Sanitizers need Linux; this ran in
 `wsl -d Ubuntu-24.04 -u root`.
 
-Current result on `safe/phase0` (2026-11-18): **50 test runs with findings**
-(every positive and negative test), 0 passed. Nothing here is fixed yet; the
-list below is the baseline the memory work has to bring to zero. The normal
+Current result on `safe/phase0` (2026-11-19): **54 test runs with findings**,
+1 passed. F3 (below) is fixed; the remaining findings are the compiler and
+program leaks (F1/F2) and the known `ide_workbench` defect (F4). The normal
 (non-sanitizer) suite at the same commit has two unrelated pre-existing
 failures: `ide_workbench.hphp` (4 assertions, crashes the same way as F4) and
 a docs snippet `pkg_02.hphp` importing `mathx` (library not in this
@@ -283,6 +283,7 @@ Per test, program-side leaks:
 | mixedops.hphp | 9 791 B in 169 |
 | modern8.hphp | 28 144 B in 492 |
 | modules.hphp | 412 425 B in 2 343 |
+| password_hash.hphp | 1 735 B in 30 |
 | nullable.hphp | 8 059 B in 171 |
 | nullobj.hphp | 339 B in 10 |
 | regress.hphp | 14 376 B in 301 |
@@ -291,7 +292,7 @@ Per test, program-side leaks:
 | unsafe_memory_builtins.hphp | 305 B in 4 |
 | values.hphp | 13 390 B in 255 |
 
-### F3 — AddressSanitizer: stack-buffer-overflow in `hp_b64_encode_raw`
+### F3 — fixed: AddressSanitizer stack-buffer-overflow in `hp_b64_encode_raw`
 
 `tests/positive/modules.hphp` (`password_hash`, generated C line 91):
 
@@ -304,11 +305,13 @@ Per test, program-side leaks:
 SUMMARY: AddressSanitizer: stack-buffer-overflow rt/hphp_std.c:4199
 ```
 
-`hpbi_password_hash` declares `char b64salt[24]`; base64 of a 16-byte salt is
-24 characters **plus** the terminator, so the encoder writes one byte past the
-array. Obvious one-line fix (`b64salt[25]`, same for `b64dk`), but
-`runtime/hphp_std.c` was not in this task's editable set — recorded, not
-touched here. This is real stack corruption, not a sanitizer artefact.
+`hpbi_password_hash` declared `char b64salt[24]`; base64 of a 16-byte salt is
+24 characters **plus** the terminator, so the encoder wrote one byte past the
+array. Fixed: `b64salt[25]`, `b64dk[45]`, `b64dk2[45]`. Regression test:
+`tests/positive/password_hash.hphp` (format, round-trips, long/empty
+passwords, malformed hashes). The 2026-11-19 sanitizer run no longer reports a
+stack-buffer-overflow; `password_hash.hphp` only shows the F2 leaks every
+program has.
 
 ### F4 — UBSan + ASan: null object access and SEGV in `ide_workbench`
 
@@ -332,5 +335,42 @@ stays empty, so the test logic and the crash are the same defect.
 ### Not found
 
 No use-after-free, no double free, no uninitialised read, and no UBSan report
-outside F4. The only memory *error* in the whole suite is F3; everything else
+outside F4. The only memory *error* in the whole suite was F3; everything else
 is a leak (F1/F2) or the known `ide_workbench` defect (F4).
+
+---
+
+## 5. Fuzzing results (2026-11-19)
+
+`bash tests/fuzz/run.sh` builds two libFuzzer targets (clang 18, ASan + UBSan)
+and runs them for 20 minutes each; see `tests/fuzz/README.md`. Both were run
+in WSL on `safe/phase0`, in parallel, with `-fork=2 -rss_limit_mb=1024`
+(the fork restarts are the known F1/F2 leaks).
+
+| Target | Time | Executions | Corpus | Sanitizer findings |
+|---|---|---|---|---|
+| compiler front end | 1219 s | 562 876 | 1477 | 18 × the known `sema.c:1783` null-Type SEGV |
+| runtime builtins | 1207 s | 30 438 216 | 936 | none |
+
+Fixed while fuzzing:
+
+- **Stack overflow in the parser** (`parse_binop_level`, found on 1.8–5.4 KB
+  inputs): deeply nested `((((…`, `!!!!…`, `1**1**…` or `{{{…` exhausted the
+  stack. The parser now stops at 400 levels with
+  `error: nesting too deep (limit 400)`; regression test
+  `tests/negative/nesting_too_deep.hphp`.
+- **Read past the source buffer** (`lexer.c:adv`): a file ending inside
+  `/* …` made `skip_trivia` advance twice after EOF. Fixed; the regression
+  test is `tests/negative/unterminated_comment.hphp`.
+
+Open, in files this work may not edit:
+
+- `sema.c:1783` (also 1823/3322): `check_bin` dereferences a null `Type` for
+  invalid input. Minimal reproducer: `tests/fuzz/repro/sema-null-type.hphp`
+  (`k(PHP_I==r)a`).
+- `hphp_rt.c:1033`: `hp_arr_sum` overflows `int64_t` on arrays holding huge
+  numeric strings. Both are listed in `tests/fuzz/known.txt` so the fuzzer
+  keeps looking for new bugs instead of stopping on them.
+
+OOM and `slow-unit` artifacts in the runtime log are the known leaks (F2) and
+inputs that take longer than usual, not memory errors.

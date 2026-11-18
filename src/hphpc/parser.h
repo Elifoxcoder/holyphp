@@ -8,6 +8,7 @@ typedef struct Parser {
     TokenStream *ts;
     const char *file;
     int loop_depth;
+    int depth;          /* recursive-descent depth, see MAX_PARSE_DEPTH */
 } Parser;
 
 Program *parse_program(const char *src, const char *filename);

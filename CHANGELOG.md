@@ -27,6 +27,20 @@ behaves differently, what they have to change.
   request-scope compatibility (`scope_begin`/`scope_end`/`str_persist`),
   byte/word memory accessors (`u8_at`, `i64_at`, …), HTTP/JWT/JSON helpers,
   and the full `sqlite_*`/`bt_*`/`epoll_*`/`stream_*` transport set.
+- `password_hash()` no longer writes one byte past a stack buffer while
+  encoding its salt (found by the sanitizer suite; `password_verify()` accepts
+  the hashes it produces as before).
+- Programs that never use SQLite or `io_uring` no longer link `libsqlite3` or
+  `liburing`. The two benchmark-only HTTP engines (`holy_maxout_start()`,
+  `holy_challenge_start()`) are no longer builtins; their sources stay under
+  `benchmarks/maxout/` with a build note.
+- A file that ends inside `/* …` is now rejected with an "unterminated block
+  comment" error instead of reading past the end of the source, and deeply
+  nested expressions (thousands of `(`, `!`, `**` or `{`) are rejected with
+  "nesting too deep" instead of overflowing the parser's stack.
+- New: `bash tests/fuzz/run.sh` builds and runs libFuzzer targets for the
+  compiler front end and the string/array/JSON builtins (see
+  `tests/fuzz/README.md`).
 
 ## 1.0.2
 
