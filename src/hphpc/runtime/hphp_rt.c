@@ -3,7 +3,8 @@
  * Memory model:
  *   - strings and arrays are refcounted immutable-ish structures
  *   - arrays use copy-on-write: assignment shares; first write clones
- *   - objects are owned via own<T>/Rc<T> smart pointers (refcounted)
+ *   - own<T>/Rc<T> ownership is checked by the compiler; runtime Rc release
+ *     and dynamic-value free hooks are currently no-ops
  *   - raw pointers only exist inside unsafe blocks; runtime helpers used
  *     there map directly onto C (malloc/free/memcpy/memset)
  *
@@ -24,6 +25,9 @@
 #include <math.h>
 #include <ctype.h>
 #include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 /* ---------------- allocation ---------------- */
 void *hp_alloc(size_t n) {
@@ -41,6 +45,10 @@ void hp_rc_dec(void *p) { (void)p; }
 void hp_echo(hval v) {
     hstr *s = hp_val_to_str(v);
     fwrite(s->data, 1, s->len, stdout);
+}
+
+void hp_echo_newline(void) {
+    fputc('\n', stdout);
 }
 
 /* ---------------- string builder ---------------- */
@@ -202,30 +210,65 @@ hstr *hp_str_concat2(hstr *a, hstr *b) {
 
 /* hval-level concat: PHP '.' operator on two values of any kind. */
 hstr *hp_str_concat_v(hval a, hval b) {
+    return hp_str_join_v(a, b);
+}
+
+/* PHP `.` on two values: the result is a NEW string.
+ *
+ * hp_str_concat2 appends in place when its left operand is uniquely owned,
+ * which is the right thing for a builder nobody else can see - but a
+ * variable holding the left operand is exactly the case where "uniquely
+ * owned" is a lie, because the variable is still there afterwards. Codegen
+ * emits this one for `.`, so `$b = $a . "x"` leaves $a alone; `$a .= "x"`
+ * goes through hp_str_append_v, where overwriting $a is the point. */
+hstr *hp_str_join_v(hval a, hval b) {
     hstr *l = hp_val_to_str(a);
     hstr *r = hp_val_to_str(b);
-    hstr *out = hp_str_concat2(l, r);
-    return out;
+    if (!l) l = hp_str_lit("");
+    if (!r) r = hp_str_lit("");
+    size_t len = l->len + r->len;
+    hstr *s = hp_alloc(sizeof(hstr) + len + 1);
+    s->len = len;
+    s->cap = len + 1;
+    s->hash = 0;
+    s->rc = 1;
+    memcpy(s->data, l->data, l->len);
+    memcpy(s->data + l->len, r->data, r->len);
+    s->data[len] = 0;
+    return s;
+}
+
+/* `$s .= x` writes a new string into the target slot. Runtime string
+ * reference counts are not maintained yet, so mutating the old buffer in
+ * place could also change another variable that still points to it. */
+hstr *hp_str_append_v(hval a, hval b) {
+    return hp_str_join_v(a, b);
 }/* Concat over an hval array — avoids struct varargs (Win64 ABI pitfalls). */
 hstr *hp_str_concat_n(int n, const hval *vals) {
-    hstr *parts[64];
-    int cnt = 0;
+    if (n <= 0 || !vals) return hp_str_lit("");
+    hstr **parts = malloc((size_t)n * sizeof *parts);
+    if (!parts) return hp_str_lit("");
     size_t len = 0;
-    for (int i = 0; i < n && cnt < 64; i++) {
-        parts[cnt++] = hp_val_to_str(vals[i]);
+    for (int i = 0; i < n; i++) {
+        parts[i] = hp_val_to_str(vals[i]);
+        if (parts[i]->len > SIZE_MAX - len) {
+            free(parts);
+            return hp_str_lit("");
+        }
+        len += parts[i]->len;
     }
-    for (int i = 0; i < cnt; i++) len += parts[i]->len;
 
     hstr *s = hp_alloc(sizeof(hstr) + len + 1);
     s->len = len;
     s->cap = len + 1;
     s->rc = 1;
     size_t off = 0;
-    for (int i = 0; i < cnt; i++) {
+    for (int i = 0; i < n; i++) {
         memcpy(s->data + off, parts[i]->data, parts[i]->len);
         off += parts[i]->len;
     }
     s->data[len] = 0;
+    free(parts);
     return s;
 }
 
@@ -465,7 +508,11 @@ bool hp_val_to_bool(hval v) {
     case HV_INT: return v.u.i != 0;
     case HV_FLOAT: return v.u.f != 0.0;
     case HV_BOOL: return v.u.b;
-    case HV_STR: return v.u.s && v.u.s->len > 0;
+    /* PHP's "falsy strings" are "" and the single character "0" - and only
+     * those. A non-empty "0"-led string like "00" or "0.0" is truthy. */
+    case HV_STR:
+        return v.u.s && !(v.u.s->len == 0 ||
+                          (v.u.s->len == 1 && v.u.s->data[0] == '0'));
     case HV_ARR: return v.u.a && v.u.a->len > 0;
     /* A property declared with a class type but defaulted to null --
        `public Button $tab = null;` -- is an object slot holding a NULL
@@ -786,6 +833,47 @@ hval hp_arr_get(harr *a, hval idx) {
     return a->vals[i];
 }
 
+void *hp_move_ptr(void *slot) {
+    void *value = NULL;
+    if (!slot) return NULL;
+    memcpy(&value, slot, sizeof(value));
+    memset(slot, 0, sizeof(value));
+    return value;
+}
+
+hval hp_move_hval(hval *slot) {
+    if (!slot) return hp_null;
+    hval value = *slot;
+    *slot = hp_null;
+    return value;
+}
+
+/* Linear element extraction: the compiler only permits this for collections
+ * whose element type is statically linear, so there must be no collection
+ * aliases. Refuse a violated invariant rather than silently copying a value. */
+hval hp_arr_take(harr *a, hval idx) {
+    if (!a) return hp_null;
+    if (a->rc != 1) {
+        hp_throw(hp_of_str(hp_str_lit("cannot move an element from a shared collection")));
+        return hp_null;
+    }
+    int64_t i = hp_key_index(a, idx);
+    if (i < 0) return hp_null;
+    hval value = a->vals[i];
+    size_t last = a->len - 1;
+    if (a->is_map) {
+        hp_arr_index_del(a, (size_t)i);
+        if ((size_t)i != last) hp_arr_index_del(a, last);
+    }
+    if ((size_t)i != last) {
+        a->vals[i] = a->vals[last];
+        if (a->is_map) a->keys[i] = a->keys[last];
+    }
+    a->len = last;
+    if (a->is_map && (size_t)i != last) hp_arr_index_add(a, (size_t)i);
+    return value;
+}
+
 /* PHP-style indexing on any value: arrays/maps index normally, strings
  * return a 1-char string, null indexes to null (like PHP 8 null["]). */
 hval hp_arr_get_v(hval container, hval idx) {
@@ -1049,7 +1137,7 @@ hval hp_add(hval a, hval b) {
                 return hp_of_int((int64_t)da + (int64_t)db);
             return hp_of_float(da + db);
         }
-        return hp_of_str(hp_str_concat2(hp_val_to_str(a), hp_val_to_str(b)));
+        return hp_of_str(hp_str_join_v(a, b));
     }
     if (a.tag == HV_FLOAT || b.tag == HV_FLOAT)
         return hp_of_float(hp_val_to_float(a) + hp_val_to_float(b));
@@ -1156,9 +1244,13 @@ hval hp_nullcoal(hval a, hval b) {
     return a;
 }
 
+/* match ($x) { "a" => ... } compares with ===, the way PHP 8 does: match is
+ * strict, only `switch`/`==` is loose. So `match(0.0) { 0 => ... }` takes the
+ * default arm, and a pattern can only ever be taken by a value of its own
+ * type - which is what lets the checker narrow the subject inside an arm. */
 hval hp_match_any(hval subj, hval *pats, size_t n) {
     for (size_t i = 0; i < n; i++)
-        if (hp_val_eq(subj, pats[i])) return hp_of_bool(true);
+        if (hp_ident_eq(subj, pats[i])) return hp_of_bool(true);
     return hp_of_bool(false);
 }
 
@@ -1280,9 +1372,9 @@ hval hp_closure_call(hclosure *c, int nargs, const hval *args) {
 }
 
 /* ---------------- smart pointers / objects ---------------- */
-/* Rc<T> model: hp_alloc'd objects carry a uint32_t rc as first field.
- * Rc increments/decrements are real: hp_rc_inc_obj/hp_rc_dec_obj.
- * Compiler inserts calls for Rc<T> bindings; own<T> relies on scope end. */
+/* Rc<T> runtime hooks are placeholders. The compiler currently emits these
+ * calls, but no object header/drop protocol is implemented, so allocations
+ * are not reclaimed here. */
 void hp_val_free(hval v) { (void)v; }
 void hp_val_rc_inc(hval v) { (void)v; }
 void hp_val_rc_dec(hval v) { (void)v; }
@@ -1297,9 +1389,38 @@ hval *hp_box_new(void) {
 
 void hp_box_free(hval *b) { free(b); }
 
+#ifdef _WIN32
+static UINT hp_old_out_cp, hp_old_in_cp;
+static int hp_cp_saved;
+static void hp_restore_console_cp(void) {
+    if (!hp_cp_saved) return;
+    SetConsoleOutputCP(hp_old_out_cp);
+    SetConsoleCP(hp_old_in_cp);
+}
+#endif
+
 void hp_init(void) {
     if (hp_inited) return;
     hp_inited = true;
+#ifdef _WIN32
+    /* A Windows console defaults to an OEM codepage (437/850), so UTF-8
+     * strings print as mojibake. Switch a real console to UTF-8 and restore
+     * it on exit; a pipe or a file already receives the raw bytes. */
+    {
+        HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+        DWORD mode;
+        if (h != INVALID_HANDLE_VALUE && GetConsoleMode(h, &mode)) {
+            if (!hp_cp_saved) {
+                hp_old_out_cp = GetConsoleOutputCP();
+                hp_old_in_cp = GetConsoleCP();
+                hp_cp_saved = 1;
+                atexit(hp_restore_console_cp);
+            }
+            SetConsoleOutputCP(CP_UTF8);
+            SetConsoleCP(CP_UTF8);
+        }
+    }
+#endif
     setvbuf(stdout, NULL, _IONBF, 0);
 }
 

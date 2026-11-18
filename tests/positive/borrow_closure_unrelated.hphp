@@ -1,0 +1,36 @@
+$fn = function(int $n): int { return $n + 1; };
+echo $fn(2) . "\n";
+class BorrowClosureWidget {
+    pub int $value = 0;
+    pub function touch(): void { $this->value = $this->value + 1; }
+}
+$widget = new BorrowClosureWidget();
+$widget->touch();
+echo $widget->value . "\n";
+
+/* A retained callback cannot alias locals created in the receiving function.
+ * Saving the closure must not make `$holder` or `$ok` look like captures. */
+class BorrowClosureHolder {
+    pub mixed $handler = null;
+    pub bool $running = false;
+    pub function store(callable $callback): bool {
+        $self = $this;
+        $this->handler = function() use ($self, $callback) {};
+        return true;
+    }
+    pub function run(): void { $this->running = true; }
+}
+function borrow_closure_local_writes(callable $callback): int {
+    $holder = new BorrowClosureHolder();
+    $ok = $holder->store($callback);
+    if ($ok) { $holder->run(); }
+    return $holder->running ? 1 : 0;
+}
+echo borrow_closure_local_writes(function(): void {}) . "\n";
+
+function borrow_if_assign_both_arms(bool $condition): int {
+    if ($condition) { $workers = 2; }
+    else { $workers = 4; }
+    return $workers;
+}
+echo borrow_if_assign_both_arms(true) . "\n";

@@ -1,0 +1,7 @@
+{
+  "name": "ide",
+  "version": "0.1.0",
+  "entry": "ide.hphp",
+  "description": "HolyIDE: an editor and workbench for HolyPHP, written in HolyPHP on top of HolyHTML",
+  "author": "HolyPHP"
+}

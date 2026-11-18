@@ -3,16 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
 <title>Language reference — HolyPHP</title>
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/style.css?v=6">
 </head>
 <body>
 <div class="layout">
-<script src="assets/nav.html.js"></script>
+<script src="assets/nav.html.js?v=3"></script>
 <main>
   <h1>Language <span class="ph">reference</span></h1>
   <p class="lead">Everything HolyPHP adds on top of PHP — and everything it borrows from Rust.
   All snippets are verified against the compiler.</p>
+
+  <p><code>echo</code> prints its values together and adds a newline at the end of each
+  statement. Use <code>print</code> when you need output without an automatic newline.</p>
 
   <h2 id="variables">Variables &amp; types</h2>
   <p>Variables are PHP-style: start with <code>$</code>, no declaration keyword, inferred types.
@@ -57,6 +61,29 @@ function bump(int &amp;$r): void { $r += 1; }
 $n = 41;
 bump($n);        // $n === 42</code></pre>
 
+  <p>An <code>&amp;$r</code> parameter <b>aliases the caller's variable</b>: the callee
+  writes through it and the call site sees the new value. The argument must be a
+  variable the compiler can alias, and it may live in any of the shapes a variable
+  takes here — a local, a <code>global</code>, a slot a closure captured with
+  <code>use (&amp;$x)</code>, or another by-reference parameter.</p>
+<pre><code class="hphp">function anonymize(mixed &amp;$who): void { $who = "nobody"; }
+
+$user = "Elias";
+$seen = function() use (&amp;$user): void { anonymize($user); };  // boxed capture
+$seen();
+echo $user;      // nobody
+
+function total(array &amp;$bag): void { $bag[] = 3; }
+
+$bag = [1, 2];
+total($bag);     // $bag === [1, 2, 3]</code></pre>
+  <div class="note"><b>What is not aliased:</b> a by-reference argument has to be a
+  variable (“<code>bump(1 + 1)</code>” is an error, not a silent copy), a closure
+  cannot declare one (its arguments arrive boxed — capture with <code>use (&amp;$x)</code>
+  instead), and a by-reference parameter cannot itself be captured by reference, since
+  that would need a write-back the compiler does not emit yet. Each of those is a
+  compile error naming the line, never a wrong answer.</div>
+
   <h2 id="operators">Operators</h2>
   <table>
     <tr><th>Group</th><th>Operators</th></tr>
@@ -73,15 +100,15 @@ bump($n);        // $n === 42</code></pre>
 
   <h2 id="control">Control flow</h2>
 <pre><code class="hphp">if ($n &lt; 2) { return $n; }
-elseif ($n == 2) { echo "two\n"; }
-else { echo "many\n"; }
+elseif ($n == 2) { echo "two"; }
+else { echo "many"; }
 
 while ($i &lt; 10) { $i++; }
 
 for ($i = 0; $i &lt; 10; $i++) { echo $i; }
 
 foreach ($nums as $x) { $total += $x; }
-foreach ($user as $k =&gt; $v) { echo "{$k} =&gt; {$v}\n"; }</code></pre>
+foreach ($user as $k =&gt; $v) { echo "{$k} =&gt; {$v}"; }</code></pre>
 
   <h3>match — algebraic switching</h3>
 <pre><code class="hphp">function classify(int $n): string {
@@ -144,9 +171,9 @@ echo $clicks;    // 2</code></pre>
 <pre><code class="hphp">try {
     throw "boom";
 } catch (string $e) {
-    echo "caught: {$e}\n";
+    echo "caught: {$e}";
 } finally {
-    echo "always runs\n";
+    echo "always runs";
 }</code></pre>
   <p><code>throw</code> accepts a value (strings today, Exception objects too). Handlers are
   invoked through a setjmp-free architecture — the runtime runs each protected block as a
@@ -164,14 +191,16 @@ function colorName(Farbe $f): string {
 }</code></pre>
 
   <h2 id="memory">Memory model</h2>
-  <p>HolyPHP is memory-safe <b>by default</b> and low-level <b>when you ask</b>.</p>
+  <p>HolyPHP checks ownership and supported borrow patterns at compile time. The checker
+  is still a subset of Rust's borrow checker; dynamic values, aliases and unsafe code
+  have additional limits.</p>
   <table>
     <tr><th>Concept</th><th>Syntax</th><th>Meaning</th></tr>
     <tr><td>Value semantics</td><td>plain assignment</td><td>scalars &amp; arrays copy-on-write</td></tr>
     <tr><td>Immutable borrow</td><td><code>&amp;$x</code></td><td>read-only alias, many allowed</td></tr>
     <tr><td>Mutable borrow</td><td><code>&amp;mut $x</code></td><td>exactly one at a time</td></tr>
     <tr><td>Owned box</td><td><code>own&lt;T&gt;</code></td><td>exclusive ownership, moves</td></tr>
-    <tr><td>Shared pointer</td><td><code>Rc&lt;T&gt;</code></td><td>refcounted shared ownership</td></tr>
+    <tr><td>Shared pointer</td><td><code>Rc&lt;T&gt;</code></td><td>shared ownership syntax; runtime reference counting is not implemented yet</td></tr>
     <tr><td>Raw pointer</td><td><code>*T</code> / <code>&amp;$x</code> under <code>unsafe</code></td><td>only inside <code>unsafe {}</code></td></tr>
   </table>
 <pre><code class="hphp">// borrow checker at compile time:
@@ -187,10 +216,15 @@ echo laenge($w);        // owner keeps $w
 <pre><code class="hphp">unsafe {
     $geheim: int = 42;
     $zeiger: &amp;int = &amp;$geheim;      // raw pointer
-    echo "deref = " . (*$zeiger) . "\n";
+    echo "deref = " . (*$zeiger);
 }</code></pre>
-  <div class="note warn"><b>unsafe:</b> everything outside the braces is still checked;
-  inside, you take responsibility for aliasing — exactly Rust's contract, minus the ceremony.</div>
+  <div class="note warn"><b>unsafe:</b> raw pointer operations need an unsafe block. The
+  compiler cannot guarantee memory safety for code that uses raw pointers or escapes the
+  supported borrow rules.</div>
+  <p><b>Runtime memory:</b> HolyPHP currently has no tracing garbage collector, and its
+  reference-count increment/decrement and dynamic-value free hooks are not implemented.
+  Heap allocations may therefore remain allocated until process exit. Compile-time borrow
+  checking does not itself reclaim memory.</p>
 
   <h2 id="imports">Imports &amp; the stdlib</h2>
   <p>Libraries ship inside the compiler binary — <code>import</code> finds them with no files
@@ -205,7 +239,7 @@ import "helpers";     // helpers.hphp next to this file</code></pre>
   <h2 id="strings">Strings</h2>
   <p>Immutable and refcounted; interpolation is compile-time parsed into concat calls.</p>
 <pre><code class="hphp">$name = "Ada";
-echo "Hi {$name}, you have " . (3 + 4) . " new messages\n";
+echo "Hi {$name}, you have " . (3 + 4) . " new messages";
 
 $s = "Hello";
 $s .= " World";          // append (rebuilt behind the scenes)</code></pre>
@@ -222,7 +256,7 @@ $m = [];
 $m[1] = "a";                 // key 1 is remembered
 $m["name"] = "Ada";        // becomes a keyed map
 foreach ($m as $k =&gt; $v) {
-    echo "{$k} =&gt; {$v}\n";   // 1 =&gt; a, then name =&gt; Ada
+    echo "{$k} =&gt; {$v}";   // 1 =&gt; a, then name =&gt; Ada
 }
 
 $a = [1, 2, 3];
@@ -230,6 +264,7 @@ $b = $a;                     // COW: shares until one writes
 $b[0] = 99;                  // clones now; $a unchanged</code></pre>
 </main>
 </div>
-<script src="assets/site.js"></script>
+<script src="assets/site.js?v=4"></script>
+<script src="assets/theme.js?v=1"></script>
 </body>
 </html>

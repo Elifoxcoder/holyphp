@@ -1,0 +1,1503 @@
+// holybrowser.hphp — HolyBrowser, a real browser written in HolyPHP.
+//
+//   hphp run   examples/holybrowser.hphp
+//   hphp build examples/holybrowser.hphp -o holybrowser.exe
+//
+// The chrome — tab strip, toolbar, omnibox — is drawn by HolyPHP's own ui
+// library, exactly like every other app in examples/. The page is genuine
+// Chromium: the runtime hosts a CEF browser as a child window of the app
+// window, underneath the toolbar (src/hphpc/runtime/hphp_wv2.c). Nothing is
+// shelled out to Edge or Chrome, and nothing depends on a Microsoft runtime
+// being installed — the page lives inside this window, and the window around
+// it is HolyPHP's.
+//
+// Needs the CEF runtime folder (cefshim.dll, libcef.dll, the .pak files,
+// icudtl.dat and locales) beside the executable. If the engine is missing, the
+// app says so instead of starting blank.
+
+import "ui";
+
+// ---------------------------------------------------------------------
+// One tab: a CEF browser and its tab-strip button. The browser keeps its own
+// history, so back and forward behave like a browser's should.
+// ---------------------------------------------------------------------
+
+class HbTab {
+    public int $view = 0;
+    public string $url = "";
+    public string $title = "New Tab";
+    public Button $tab = null;
+    public Label $fav = null;
+    public Button $close = null;
+    public string $favPath = "";
+    public int $tabX = 0;
+    public int $tabW = 0;
+
+    pub function __construct(int $view, string $url) {
+        $this->view = $view;
+        $this->url = $url;
+    }
+
+    /** Take over another tab's *page*, leaving our widgets alone.
+     *  Reading an array element yields a mixed hval, so a closing tab cannot
+     *  be swapped by assigning one slot to another; moving the contents
+     *  instead keeps everything typed.
+     *
+     *  The widgets deliberately do NOT move with it. They used to, and that
+     *  was the reason tabs could not be closed: both slots then pointed at the
+     *  same Button, so hiding the emptied slot hid the live tab's button too,
+     *  and the strip looked like it had swallowed the close. The new owner
+     *  gets fresh widgets from buildTabs(). */
+    pub function absorb(HbTab $other) {
+        $this->view = $other->view;
+        $this->url = $other->url;
+        $this->title = $other->title;
+        $this->tabX = $other->tabX;
+        $this->tabW = $other->tabW;
+    }
+
+    /** Give up the widgets but keep the browser alive. */
+    pub function release() {
+        if ($this->tab != null) { $this->tab->hide(); $this->tab = null; }
+        if ($this->fav != null) { $this->fav->hide(); $this->fav = null; }
+        if ($this->close != null) { $this->close->hide(); $this->close = null; }
+        $this->favPath = "";
+    }
+
+    pub function dismiss() {
+        $this->release();
+        ui_browser_free($this->view);
+        $this->view = -1;
+    }
+
+    pub function caption(int $maxChars): string {
+        $cap = $this->title;
+        if ($cap == "" || $cap == "New Tab") {
+            /* An untitled tab falls back to its address, but about:blank and
+               about:newtab are placeholders, not places - showing them would
+               just put the scheme in the tab strip. */
+            $u = trim($this->url);
+            $low = strtolower($u);
+            if ($u == "" || $low == "about:blank" || $low == "about:newtab") { return "New Tab"; }
+            if (str_starts_with($low, "holybrowser://")) {
+                if (str_starts_with($low, "holybrowser://settings")) { return "Settings"; }
+                return "New Tab";
+            }
+            if (str_starts_with($u, "https://")) { $u = substr($u, 8); }
+            if (str_starts_with($u, "http://"))  { $u = substr($u, 7); }
+            $cap = $u;
+        }
+        if ($cap == "") { $cap = "New Tab"; }
+        if (strlen($cap) > $maxChars) { $cap = substr($cap, 0, $maxChars - 1) . "…"; }
+        return $cap;
+    }
+}
+
+// ---------------------------------------------------------------------
+// The browser
+// ---------------------------------------------------------------------
+
+class HolyBrowser {
+    public App $app = null;
+    public int $win = 0;
+
+    /* geometry, in the logical pixels lib/ui/ui.hphp uses. $W is the live client
+       width, refreshed from the window on every layout tick, so resizing the
+       window stretches the tab strip and the toolbar instead of leaving a
+       2/3-wide browser with a dead margin down the right. */
+    public int $WIN_W = 1180;
+    public int $WIN_H = 780;
+    public int $W = 1180;
+    public int $H = 780;
+    public int $laidW = 0;
+    public int $laidH = 0;
+    public int $PAD = 8;
+    public int $BAR_H = 34;
+    public int $TAB_GAP = 6;
+    /* PAD + BAR_H (tab strip) + TAB_GAP + BAR_H (toolbar) + PAD. This used to
+       be a number that did not add up to the toolbar below it, which left a
+       dead band of empty window between the chrome and the page. */
+    public int $CHROME_H = 90;
+    public int $BTN_W = 34;
+    public int $BTN_GAP = 3;
+    /* The address bar's leading glyph. A native edit cannot draw an icon of
+       its own, so the lock/globe is a label stacked on top of it and the
+       text is pushed clear with a real left margin. */
+    public int $OMNI_PAD = 10;
+    public int $OMNI_ICON = 15;
+    /* Total width of the docked devtools area, splitter included. */
+    public int $devW = 340;
+    public int $SPLIT_W = 7;
+
+    /* persisted settings; deliberately untyped so a Map can land in it */
+    public $cfg = null;
+    public string $cfgPath = "";
+    public string $profile = "";
+
+    /* tabs. $tabs is append-only and $tabCount says how much of it is live:
+       closing swaps objects instead of re-slicing, because a re-built array
+       literal has element type mixed and will not assign back to [HbTab]. */
+    public [HbTab] $tabs = [];
+    public int $tabCount = 0;
+    public int $cur = 0;
+    public string $cmd = "";
+
+    /* chrome widgets */
+    public Input $omni = null;
+    public Label $omniIcon = null;
+    public string $omniText = "";
+    public Button $newTabBtn = null;
+    public Button $backBtn = null;
+    public Button $fwdBtn = null;
+    public Button $reloadBtn = null;
+    public Button $homeBtn = null;
+    public Button $printBtn = null;
+    public Button $devBtn = null;
+    public Button $settingsBtn = null;
+    public bool $devtools = false;
+    public int $MAX_TABS = 10;
+    public string $pendingNewUrl = "";
+    public string $pendingNavUrl = "";
+    public int $pendingNavView = 0;
+    public int $pendingSavedView = 0;
+    public int $pendingThemeView = 0;
+    public bool $creatingTab = false;
+    /* false until the tab strip has been built: newTab() runs before the
+       tab widgets exist, so select() must not try to lay them out yet */
+    public bool $chromeReady = false;
+    public bool $engineFailed = false;
+    public int $muted = 0;
+    public ListBox $suggestions = null;
+    public int $suggestIndex = -1;
+    public bool $suppressAutocomplete = false;
+    public Button $splitter = null;
+    public int $dragBase = 0;
+
+    // ---------------------------------------------------------------
+    // settings
+    // ---------------------------------------------------------------
+
+    pub function loadConfig() {
+        $appdata = getenv("APPDATA");
+        if ($appdata == "") { $appdata = getenv("LOCALAPPDATA"); }
+        if ($appdata == "") { $appdata = getcwd(); }
+        $this->cfgPath = $appdata . "/hphp/holybrowser.json";
+        $this->profile = $appdata . "/hphp/holybrowser";
+        mkdir(dirname($this->cfgPath), true);
+        mkdir($this->profile . "/tabs", true);
+
+        $cfg = [
+            "search"   => "https://search.brave.com/search?q=%s",
+            "homepage" => "https://search.brave.com",
+            "theme"    => "dark",
+            "zoom"     => 1.0,
+            "devwidth" => 340,
+            "history"  => [],
+        ];
+        if (file_exists($this->cfgPath)) {
+            $saved = json_decode(file_get_contents($this->cfgPath), true);
+            if (is_array($saved)) {
+                foreach ($cfg as $k => $v) {
+                    if (in_array($k, array_keys($saved))) { $cfg[$k] = $saved[$k]; }
+                }
+            }
+        }
+        if (!is_array($cfg["history"])) { $cfg["history"] = []; }
+        $history = [];
+        foreach ($cfg["history"] as $entry) {
+            if (is_string($entry) && $entry != "" && count($history) < 30) {
+                $history[] = $entry;
+            }
+        }
+        $cfg["history"] = $history;
+        if (!is_string($cfg["search"]) || strpos($cfg["search"], "%s") === false) {
+            $cfg["search"] = "https://search.brave.com/search?q=%s";
+        }
+        if (!is_string($cfg["homepage"]) || $cfg["homepage"] == "") {
+            $cfg["homepage"] = "https://search.brave.com";
+        }
+        if (!is_string($cfg["theme"]) ||
+            !in_array($cfg["theme"], ["dark", "light", "midnight", "ocean", "forest", "rose", "mono"])) {
+            $cfg["theme"] = "dark";
+        }
+        if (!is_numeric($cfg["zoom"])) { $cfg["zoom"] = 1.0; }
+        if (!is_numeric($cfg["devwidth"])) { $cfg["devwidth"] = 340; }
+        $dw = intval($cfg["devwidth"]);
+        if ($dw < 240 || $dw > 1600) { $dw = 340; }
+        $cfg["devwidth"] = $dw;
+        $zoom = floatval($cfg["zoom"]);
+        if ($zoom < 0.25) { $zoom = 0.25; }
+        if ($zoom > 3.0) { $zoom = 3.0; }
+        $cfg["zoom"] = $zoom;
+        $this->cfg = $cfg;
+    }
+
+    pub function save() {
+        mkdir(dirname($this->cfgPath), true);
+        $json = json_encode($this->cfg);
+        if ($json === false || file_put_contents($this->cfgPath, $json) === false) {
+            $this->app->title("HolyBrowser — settings could not be saved");
+            return false;
+        }
+        return true;
+    }
+
+    /** Inline SVGs keep toolbar artwork crisp at every DPI and theme. */
+    pub function icon(string $name): string {
+        if ($name == "back") { return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18 L9 12 L15 6"/></svg>'; }
+        if ($name == "forward") { return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18 L15 12 L9 6"/></svg>'; }
+        if ($name == "reload") { return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11 C19 7 16 4 12 4 C7 4 4 8 4 12 C4 16 7 20 12 20 C15 20 18 18 19 16"/><path d="M16 4 L20 4 L20 8"/></svg>'; }
+        if ($name == "home") { return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11 L12 4 L21 11 M6 10 L6 20 L18 20 L18 10 M10 20 L10 14 L14 14 L14 20"/></svg>'; }
+        if ($name == "settings") { return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8 C14 8 16 10 16 12 C16 14 14 16 12 16 C10 16 8 14 8 12 C8 10 10 8 12 8 Z M12 3 L13 5 L15 6 L17 5 L19 7 L18 9 L19 12 L18 15 L19 17 L17 19 L15 18 L12 19 L9 18 L7 19 L5 17 L6 15 L5 12 L6 9 L5 7 L7 5 L9 6 L12 5 Z"/></svg>'; }
+        if ($name == "close") { return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6 L18 18 M18 6 L6 18"/></svg>'; }
+        if ($name == "print") { return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 9 V4 H17 V9"/><path d="M6 18 H4 V10 H20 V18 H18"/><rect x="7" y="14" width="10" height="7"/></svg>'; }
+        if ($name == "code") { return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 8 L5 12 L9 16 M15 8 L19 12 L15 16"/></svg>'; }
+        if ($name == "plus") { return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5 L12 19 M5 12 L19 12"/></svg>'; }
+        if ($name == "lock") { return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11 L8 8 A4 4 0 0 1 16 8 L16 11"/></svg>'; }
+        return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 C7 3 3 7 3 12 C3 17 7 21 12 21 C17 21 21 17 21 12 C21 7 17 3 12 3 Z M3 12 L21 12 M12 3 C9 6 9 18 12 21 M12 3 C15 6 15 18 12 21"/></svg>';
+    }
+
+
+    // ---------------------------------------------------------------
+    // url handling
+    // ---------------------------------------------------------------
+
+    pub function searchUrl(string $q): string {
+        $tpl = $this->cfg["search"];
+        if (strpos($tpl, "%s") !== false) {
+            return str_replace("%s", urlencode($q), $tpl);
+        }
+        return $tpl . urlencode($q);
+    }
+
+    /** Anything that is not obviously a URL becomes a Brave search. */
+    pub function target(string $input): string {
+        $t = trim($input);
+        if ($t == "") { return $this->cfg["homepage"]; }
+
+        $low = strtolower($t);
+        if (str_starts_with($low, "holybrowser://")) { return $low; }
+        if (str_starts_with($low, "about:")) { return $low; }
+
+        $hasScheme = false;
+        if (strpos($t, "://") !== false) { $hasScheme = true; }
+        if (str_starts_with($low, "mailto:")) { $hasScheme = true; }
+        if ($hasScheme) { return $t; }
+
+        /* a bare host is a URL; anything with a space, or with neither a dot
+           nor a known host name, is a search */
+        $host = false;
+        if (strpos($t, " ") === false) {
+            if (strpos($t, ".") !== false) { $host = true; }
+            if (str_starts_with($low, "localhost")) { $host = true; }
+        }
+        if ($host) { return "https://" . $t; }
+        return $this->searchUrl($t);
+    }
+
+    // ---------------------------------------------------------------
+    // the pages HolyBrowser draws itself
+    // ---------------------------------------------------------------
+
+    pub function blankPage(): string {
+        return "<!doctype html><meta charset=utf-8><title>New Tab</title>"
+          . "<body style='margin:0;background:#15171d;color:#e6e8ee;"
+          . "font:15px/1.7 \"Segoe UI\",system-ui,sans-serif'>"
+          . "<div style='max-width:540px;margin:13vh auto;text-align:center'>"
+          . "<div style='font-size:46px;font-weight:600'>HolyBrowser</div>"
+          . "<p style='color:#969fb0'>Type in the box above, or press <b>Ctrl+L</b>."
+          . "<br>Anything that is not a URL is searched with Brave.</p>"
+          . "</div>";
+    }
+
+    /** A theme colour as #rrggbb, for the settings page's own stylesheet. */
+    pub function hex(int $rgb): string {
+        $digits = "0123456789abcdef";
+        $out = "#";
+        $p = 16 * 16 * 16 * 16 * 16;
+        for ($i = 0; $i < 6; $i = $i + 1) {
+            /* the digit at place p is (rgb / p) mod 16. Parameters are
+               immutable, so it is computed rather than peeled off one digit
+               at a time - and a plain "rgb mod p" is wrong here: for every
+               digit but the last it returns the whole tail, not that digit. */
+            $q = intdiv($rgb, $p);
+            $d = $q - intdiv($q, 16) * 16;
+            $out = $out . substr($digits, $d, 1);
+            $p = intdiv($p, 16);
+        }
+        return $out;
+    }
+
+    pub function settingsPage(): string {
+        $engine = htmlspecialchars($this->cfg["search"]);
+        $home   = htmlspecialchars($this->cfg["homepage"]);
+        $theme  = htmlspecialchars($this->cfg["theme"]);
+        $pct    = intval($this->cfg["zoom"] * 100);
+
+        /* The page is drawn by the same palette as the chrome. When the theme
+           did not reach it, switching theme looked like nothing happened at
+           all: the browser changed and the settings page stayed dark. */
+        $bg   = $this->hex($this->app->_theme("bg"));
+        $surf = $this->hex($this->app->_theme("surface"));
+        $elev = $this->hex($this->app->_theme("elevated"));
+        $txt  = $this->hex($this->app->_theme("text"));
+        $mut  = $this->hex($this->app->_theme("muted"));
+        $acc  = $this->hex($this->app->_theme("accent"));
+        $onA  = $this->hex($this->app->_theme("onAccent"));
+        $bdr  = $this->hex($this->app->_theme("border"));
+
+        return "<!doctype html><meta charset=utf-8><title>Settings</title>"
+          . "<style>"
+          . "body{margin:0;background:{$bg};color:{$txt};"
+          . "font:15px/1.75 'Segoe UI',system-ui,sans-serif}"
+          . ".wrap{max-width:660px;margin:0 auto;padding:46px 32px 90px}"
+          . "h1{font-size:30px;margin:0 0 4px}"
+          . "h2{font-size:12px;color:{$mut};text-transform:uppercase;"
+          . "letter-spacing:.09em;margin:40px 0 12px}"
+          . ".row{background:{$surf};border:1px solid {$bdr};border-radius:12px;"
+          . "padding:15px 18px;margin-bottom:9px}"
+          . ".row label{display:block;color:{$mut};font-size:13px;margin-bottom:7px}"
+          . "input[type=text]{width:100%;box-sizing:border-box;background:{$elev};"
+          . "border:1px solid {$bdr};border-radius:8px;color:{$txt};padding:10px 12px;"
+          . "font:inherit;outline:none}"
+          . "input[type=text]:focus{border-color:{$acc}}"
+          . "select{width:100%;box-sizing:border-box;background:{$elev};border:1px solid {$bdr};"
+          . "border-radius:8px;color:{$txt};padding:10px 12px;font:inherit}"
+          . "button{background:{$acc};border:0;border-radius:8px;color:{$onA};"
+          . "padding:11px 26px;font:inherit;font-weight:600;cursor:pointer;margin-top:6px}"
+          . ".hint{color:{$mut};font-size:12px;margin-top:9px;opacity:.75}"
+          . ".hint code{background:{$elev};padding:1px 5px;border-radius:4px}"
+          . "#status{margin-top:14px;font-size:13px;min-height:20px;color:{$mut}}"
+          . "#status.bad{color:#e2564a}"
+          . "table{width:100%;border-collapse:collapse}"
+          . "td{padding:4px 0;font-size:13px;color:{$mut}}"
+          . "td.k{color:{$txt};width:212px;font-family:Consolas,monospace}"
+          . "</style><div class=wrap>"
+          . "<h1>Settings</h1>"
+          . "<p style='color:#969fb0;margin-top:0'>Saved to holybrowser.json when "
+          . "you save changes.</p>"
+
+          . "<h2>Search</h2>"
+          . "<div class=row><label>Search engine</label>"
+          . "<input type=text id=engine value=\"{$engine}\">"
+          . "<div class=hint>Put <code>%s</code> where the query belongs. "
+          . "Brave Search is the default.</div></div>"
+          . "<div class=row><label>Home page</label>"
+          . "<input type=text id=home value=\"{$home}\"></div>"
+
+          . "<h2>Appearance</h2>"
+          . "<div class=row><label>Theme</label>"
+          . "<select id=theme onchange=\"themeChanged(this)\">"
+          . "<option value=dark>Dark</option><option value=light>Light</option>"
+          . "<option value=midnight>Midnight</option><option value=ocean>Ocean</option>"
+          . "<option value=forest>Forest</option><option value=rose>Rose</option>"
+          . "<option value=mono>Mono</option></select>"
+          . "<div class=hint>Applied to browser chrome immediately.</div></div>"
+          . "<div class=row><label>Page zoom — currently {$pct}%</label>"
+          . "<input type=text id=zoom value='{$pct}'></div>"
+
+          . "<h2>Keyboard shortcuts</h2><div class=row><table>"
+          . "<tr><td class=k>Ctrl+L</td><td>Focus the address bar</td></tr>"
+          . "<tr><td class=k>Ctrl+T</td><td>New tab</td></tr>"
+          . "<tr><td class=k>Ctrl+Tab / Ctrl+Shift+Tab</td><td>Next / previous tab</td></tr>"
+          . "<tr><td class=k>Ctrl+W</td><td>Close tab</td></tr>"
+          . "<tr><td class=k>Ctrl+J</td><td>New tab page</td></tr>"
+          . "<tr><td class=k>Alt+Left</td><td>Back</td></tr>"
+          . "<tr><td class=k>Alt+Right</td><td>Forward</td></tr>"
+          . "<tr><td class=k>Alt+Home</td><td>Home page</td></tr>"
+          . "<tr><td class=k>F5 / Ctrl+R</td><td>Reload</td></tr>"
+          . "<tr><td class=k>Ctrl+,</td><td>Settings</td></tr>"
+          . "<tr><td class=k>Ctrl++ / Ctrl+- / Ctrl+0</td><td>Zoom in / out / reset</td></tr>"
+          . "<tr><td class=k>F12</td><td>Developer tools</td></tr>"
+          . "<tr><td class=k>Ctrl+Q</td><td>Quit</td></tr>"
+          . "</table></div>"
+
+          . "<button onclick=\"save()\">Save changes</button>"
+          . "<div id=status></div>"
+          . "<script>"
+          . "function note(m,bad){var s=document.getElementById('status');"
+          . "s.textContent=m;s.className=bad?'bad':'';}"
+          . "function send(o){try{"
+          . "if(!window.chrome||!window.chrome.webview||"
+          . "!window.chrome.webview.postMessage){throw 0;}"
+          . "window.chrome.webview.postMessage(o);return true;}"
+          . "catch(e){note('This page cannot reach the browser, so nothing was saved.',true);"
+          . "return false;}}"
+          . "document.getElementById('theme').value='{$theme}';"
+          . "function themeChanged(s){"
+          . "if(!send({hb:'set',key:'theme',value:s.value}))return;"
+          . "note('Theme applied. Press Save changes to keep it.');}"
+          . "var settingsTimer=0;function saved(){var b=document.querySelector('button');"
+          . "b.textContent='Saved';b.style.opacity='.75';"
+          . "clearTimeout(settingsTimer);settingsTimer=setTimeout(function(){"
+          . "b.textContent='Save changes';b.style.opacity='1';},1800);"
+          . "note('Saved to holybrowser.json.');}"
+          . "function save(){"
+          . "var e=document.getElementById('engine').value;"
+          . "var h=document.getElementById('home').value;"
+          . "var t=document.getElementById('theme').value;"
+          . "var z=parseFloat(document.getElementById('zoom').value)/100;"
+          . "if(!e||e.indexOf('%s')<0){note('The search URL must contain the %s token.',true);return;}"
+          . "if(!h){note('The home page cannot be empty.',true);return;}"
+          . "if(!(z>=0.25&&z<=3)){note('Zoom must be between 25 and 300.',true);return;}"
+          . "note('Saving...');"
+          . "if(!send({hb:'save',settings:{search:e,homepage:h,theme:t,zoom:z}}))return;}"
+          . "send({hb:'ready'});"
+          . "try{window.chrome.webview.addEventListener('message',function(ev){"
+          . "if(ev.data==='saved')saved();"
+          . "if(ev.data&&ev.data.hb==='theme'){document.documentElement.style.background="
+          . "'{$bg}';}});}catch(e){}"            . "note('Ready.');"
+            . "</script></div>";
+    }
+
+    /** Route holybrowser:// ourselves; Chromium has never heard of it. */
+    pub function internal(string $url): string {
+        $u = strtolower(trim($url));
+        if (str_starts_with($u, "holybrowser://settings")) { return $this->settingsPage(); }
+        if (str_starts_with($u, "holybrowser://newtab"))   { return $this->blankPage(); }
+        return "<!doctype html><meta charset=utf-8><title>Unknown page</title>"
+          . "<body style='background:#15171d;color:#e6e8ee;font:15px/1.75 \"Segoe UI\","
+          . "system-ui,sans-serif;padding:48px'>"
+          . "<h2>Unknown internal page</h2>"
+          . "<p style='color:#969fb0'>HolyBrowser serves "
+          . "<code>holybrowser://settings</code> and <code>holybrowser://newtab</code>.</p>"
+          . "</body>";
+    }
+
+    /** The one place a URL becomes something a view can show. */
+    pub function go(int $view, string $url) {
+        $u = trim($url);
+        $low = strtolower($u);
+        if (str_starts_with($low, "holybrowser://")) {
+            $html = $this->internal($low);
+            /* HOLYCEF_DEBUG=1 writes the page we generated to disk: a page we
+               drew ourselves is otherwise only visible as base64 in a log. */
+            if (getenv("HOLYCEF_DEBUG") != "" && getenv("HOLYCEF_PAGE_DIR") != "") {
+                file_put_contents(getenv("HOLYCEF_PAGE_DIR") . "/page.html", $html);
+            }
+            ui_browser_html($view, $html);
+            return;
+        }
+        if ($low == "about:blank" || $low == "about:newtab") {
+            ui_browser_html($view, $this->blankPage());
+            return;
+        }
+        ui_browser_go($view, $u);
+    }
+
+    // ---------------------------------------------------------------
+    // tabs
+    // ---------------------------------------------------------------
+
+    pub function newTab(string $url) {
+        if ($this->creatingTab) {
+            $this->pendingNewUrl = $url;
+            return;
+        }
+        /* Once the engine has refused to give us a view, asking again only
+           spawns another browser window and another error box - the first
+           refusal is the whole answer. Say it once and stop. */
+        if ($this->engineFailed) { return; }
+        if ($this->tabCount >= $this->MAX_TABS) {
+            $this->app->msg("HolyBrowser has " . $this->MAX_TABS . " tabs open.");
+            return;
+        }
+        $this->pendingNewUrl = "";
+        $this->hideSuggestions();
+        $this->creatingTab = true;
+        $view = ui_browser_new($this->win, $this->profile . "/tabs");
+        $this->creatingTab = false;
+        if ($view < 0) {
+            /* Chromium refused to start. Say so once, rather than leaving an
+               empty window behind or failing again on every Ctrl+T. */
+            $this->engineFailed = true;
+            $this->app->error("Chromium could not start a view for this tab.");
+            return;
+        }
+        $tab = new HbTab($view, $url);
+        $this->tabs[] = $tab;
+        $this->tabCount = $this->tabCount + 1;
+
+        $this->wire($view);
+        $this->bindKeys($view);
+        ui_browser_zoom($view, $this->cfg["zoom"]);
+        $this->go($view, $url);
+        if ($this->chromeReady) {
+            $this->buildTabs();
+            $this->select($this->tabCount - 1);
+            if ($url == "about:newtab") { $this->omni->focus(); $this->omni->selectAll(); }
+        }
+    }
+
+    pub function tabIndex(int $view): int {
+        for ($k = 0; $k < $this->tabCount; $k++) {
+            if ($this->tabs[$k]->view == $view) { return $k; }
+        }
+        return -1;
+    }
+
+    pub function selectView(int $view) {
+        $i = $this->tabIndex($view);
+        if ($i >= 0) { $this->select($i); }
+    }
+
+    pub function closeView(int $view) {
+        $i = $this->tabIndex($view);
+        if ($i >= 0) { $this->closeTab($i); }
+    }
+
+    pub function closeTab(int $i) {
+        if ($i < 0 || $i >= $this->tabCount) { return; }
+        /* Closing the only tab does not end the app - it goes back to the new
+           tab page, which is what every other browser does. */
+        if ($this->tabCount <= 1) {
+            $t = $this->tabs[0];
+            $t->url = "about:newtab";
+            $t->title = "New Tab";
+            if ($t->tab != null) { $t->tab->picture(""); }
+            $t->favPath = "";
+            $this->go($t->view, $t->url);
+            $this->render(true);
+            return;
+        }
+
+        $last = $this->tabCount - 1;
+        $activeView = -1;
+        if ($this->cur != $i) { $activeView = $this->tabs[$this->cur]->view; }
+
+        /* Close the browser sitting in slot $i. When a later slot exists it
+           slides into the hole: its PAGE is taken over, but its widgets are
+           released rather than shared, so the live tab keeps a button of its
+           own and buildTabs() can make it one. */
+        $this->tabs[$i]->dismiss();
+        if ($i != $last) {
+            $mover = $this->tabs[$last];
+            $moverFav = $mover->favPath;
+            $this->tabs[$i]->absorb($mover);
+            $mover->release();
+            $this->tabs[$i]->favPath = $moverFav;
+        }
+
+        /* $tabCount is the ONLY source of truth for "how many tabs are open".
+           The buffer is append-only on purpose: array_pop() on a typed array
+           property did not reliably shorten it, so the strip kept drawing
+           tabs that were already closed and nothing ever appeared to close.
+           Layout and render both walk $tabCount and ignore the tail. */
+        $this->tabCount = $this->tabCount - 1;
+        if ($this->cur > $this->tabCount - 1) { $this->cur = $this->tabCount - 1; }
+        if ($this->cur < 0) { $this->cur = 0; }
+        if ($activeView < 0) { $activeView = $this->tabs[$this->cur]->view; }
+
+        $this->buildTabs();
+        $activeIndex = $this->tabIndex($activeView);
+        if ($activeIndex < 0) { $activeIndex = 0; }
+        $this->select($activeIndex);
+    }
+
+    /** Hide the widgets of any slot past the end. The tail of the buffer is
+     *  never freed, so this is what actually removes a closed tab from view. */
+    pub function hideOrphans() {
+        for ($k = $this->tabCount; $k < count($this->tabs); $k++) {
+            $t = $this->tabs[$k];
+            if ($t == null) { continue; }
+            if ($t->tab != null) { $t->tab->hide(); }
+            if ($t->fav != null) { $t->fav->hide(); }
+            if ($t->close != null) { $t->close->hide(); }
+        }
+    }
+
+    pub function front(int $i) {
+        for ($k = 0; $k < $this->tabCount; $k++) {
+            ui_browser_visible($this->tabs[$k]->view, $k == $i);
+        }
+    }
+
+    pub function select(int $i) {
+        if ($i < 0 || $i >= $this->tabCount) { return; }
+        $this->cur = $i;
+        $this->hideSuggestions();
+        $this->front($i);
+        $this->layoutTabs();
+        $this->render(true);
+    }
+
+    /** Create one button per tab, then lay the strip out evenly. */
+    pub function buildTabs() {
+        for ($k = 0; $k < $this->tabCount; $k++) {
+            $t = $this->tabs[$k];
+            if ($t->tab != null) { continue; }
+
+            $view = $t->view;
+            $hb = $this;
+            $b = $this->app->button("", "subtle", function() use ($hb, $view) {
+                $hb->selectView($view);
+            }, $this->PAD, $this->PAD, 200, $this->BAR_H);
+            $b->color($this->app->_theme("muted"));
+            $b->radius(9);
+            $b->svg($this->icon("globe"));
+
+            $hb2 = $this;
+            $c = $this->app->button("", "ghost", function() use ($hb2, $view) {
+                $hb2->closeView($view);
+            }, $this->PAD + 170, $this->PAD + 7, 22, $this->BAR_H - 14);
+            $c->color($this->app->_theme("muted"));
+            $c->radius(7);
+            $c->svg($this->icon("close"));
+
+            $t->tab = $b;
+            $t->fav = null;
+            $t->close = $c;
+        }
+        $this->chromeReady = true;
+        $this->layoutTabs();
+    }
+
+    /** x of the toolbar button in position $n (0 = back). */
+    pub function navX(int $n): int {
+        return $this->PAD + ($this->BTN_W + $this->BTN_GAP) * $n;
+    }
+
+    /** x of the omnibox: after the nav buttons, before the right-hand ones. */
+    pub function omniX(): int {
+        return $this->navX(5) + $this->BTN_W + 10;
+    }
+
+    /** width the omnibox gets at the current window width. */
+    pub function omniW(): int {
+        $right = $this->PAD + ($this->BTN_W + $this->BTN_GAP) * 2 + 4;
+        $w = $this->W - $this->omniX() - $right;
+        if ($w < 160) { $w = 160; }
+        return $w;
+    }
+
+    /** The whole chrome in one pass, from the live client width. */
+    pub function layoutTabs() {
+        $this->hideOrphans();
+        if ($this->tabCount < 1) { return; }
+
+        /* ---- toolbar ---- */
+        $toolY = $this->PAD + $this->BAR_H + $this->TAB_GAP;
+        $this->omni->move($this->omniX(), $toolY, $this->omniW(), $this->BAR_H);
+        $this->omniIcon->move($this->omniX() + $this->OMNI_PAD,
+            $toolY + ($this->BAR_H - $this->OMNI_ICON) / 2,
+            $this->OMNI_ICON, $this->OMNI_ICON);
+        $this->omniIcon->raise();
+        $rx = $this->W - $this->PAD - $this->BTN_W;
+        $this->settingsBtn->move($rx, $toolY, $this->BTN_W, $this->BAR_H);
+        $this->devBtn->move($rx - $this->BTN_W - $this->BTN_GAP, $toolY,
+                            $this->BTN_W, $this->BAR_H);
+
+        /* ---- tab strip: use every pixel, then stop growing at a readable
+           width, exactly like a real browser does ---- */
+        $stripW = $this->W - $this->PAD * 2 - $this->BTN_W - $this->BTN_GAP;
+        if ($stripW < 80) { $stripW = 80; }
+        $tabW = intdiv($stripW, $this->tabCount);
+        if ($tabW > 300) { $tabW = 300; }
+        if ($tabW < 116) { $tabW = 116; }
+        $x = $this->PAD;
+        for ($k = 0; $k < $this->tabCount; $k++) {
+            $t = $this->tabs[$k];
+            if ($t->tab == null) { continue; }
+            $t->tabX = $x;
+            $t->tabW = $tabW;
+            $t->tab->move($x, $this->PAD, $tabW, $this->BAR_H);
+            /* the close button lives inside the tab, at its right edge, so it
+               is there for every tab and not only for the ones that happen to
+               be wide enough for it to land on */
+            $t->close->move($x + $tabW - 26, $this->PAD + 7, 20, $this->BAR_H - 14);
+            /* the close button overlaps its own tab on purpose, so it has to
+               be the one on top - otherwise the tab swallows every click on
+               the cross and no tab can ever be closed */
+            $t->close->raise();
+            $x = $x + $tabW;
+        }
+        if ($x + 6 <= $this->W - $this->PAD - $this->BTN_W) {
+            $this->newTabBtn->show();
+            $this->newTabBtn->move($x + 6, $this->PAD, $this->BTN_W, $this->BAR_H);
+        } else {
+            $this->newTabBtn->hide();
+        }
+
+        /* ---- the suggestion list follows the omnibox ---- */
+        $rect = ui_rect($this->omni->h);
+        $this->suggestions->move($rect[0], $rect[1] + $rect[3] + 2, $rect[2], 224);
+
+        /* ---- the devtools splitter sits on the page's right edge ---- */
+        if ($this->devtools) {
+            $this->splitter->show();
+            $this->splitter->move($this->pageWidth(), $this->CHROME_H,
+                                  $this->SPLIT_W, $this->H - $this->CHROME_H);
+        } else {
+            $this->splitter->hide();
+        }
+    }
+
+    /** Re-read the client width and re-lay the chrome when it changed. */
+    pub function relayout() {
+        $sz = ui_client_size($this->app->h);
+        if ($sz != null) {
+            $w = $sz[0];
+            $h = $sz[1];
+            if ($w > 320) { $this->W = $w; }
+            if ($h > 200) { $this->H = $h; }
+        }
+        if ($this->W == $this->laidW && $this->H == $this->laidH) { return; }
+        $this->laidH = $this->H;
+        $this->laidW = $this->W;
+        $this->layoutTabs();
+        $this->render(false);
+    }
+
+    /** Re-fit the engine right now instead of waiting for the next tick. */
+    pub function relayoutNow() {
+        $pageW = $this->pageWidth();
+        for ($k = 0; $k < $this->tabCount; $k++) {
+            ui_browser_fit($this->tabs[$k]->view, $this->CHROME_H, $pageW);
+        }
+        if ($this->devtools && $this->cur >= 0 && $this->cur < $this->tabCount) {
+            $v = $this->tabs[$this->cur]->view;
+            $ph = $this->H - $this->CHROME_H;
+            if ($ph < 60) { $ph = 60; }
+            ui_browser_devtools_fit($v, $pageW + $this->SPLIT_W, $this->CHROME_H,
+                                    $this->W - $pageW - $this->SPLIT_W, $ph);
+        }
+    }
+
+    /** Page rectangle in logical pixels, honouring a docked devtools panel. */
+    pub function pageWidth(): int {
+        if (!$this->devtools) { return $this->W; }
+        $w = $this->W - $this->devW;
+        $floor = 280;
+        if ($w < $floor) { $w = $floor; }
+        $ceil = $this->W - 260;
+        if ($w > $ceil) { $w = $ceil; }
+        if ($w < 160) { $w = 160; }
+        return $w;
+    }
+
+    /** Dragging the splitter resizes the docked panel. */
+    pub function dragSplitter(int $dx, int $dy, int $phase) {
+        if ($phase == 0) {
+            $this->dragBase = $this->devW;
+            return;
+        }
+        if ($phase == 2) {
+            $this->cfg["devwidth"] = $this->devW;
+            $this->save();
+            return;
+        }
+        $w = $this->dragBase - $dx;
+        if ($w < 240) { $w = 240; }
+        $max = $this->W - 420;
+        if ($max > 240 && $w > $max) { $w = $max; }
+        if ($w == $this->devW) { return; }
+        $this->devW = $w;
+        $this->cfg["devwidth"] = $w;
+        $this->layoutTabs();
+        $this->relayoutNow();
+    }
+
+    // ---------------------------------------------------------------
+    // chrome state
+    // ---------------------------------------------------------------
+
+    pub function render(bool $redrawOmni) {
+        $this->hideOrphans();
+        if ($this->cur < 0 || $this->cur >= $this->tabCount) { return; }
+
+        /* The toolbar is asked to paint on every pass for the same reason the
+           tab strip is: the chrome is owner-drawn straight into the parent
+           window, so anything that repaints that window can leave it bare -
+           and a control nobody asks for again simply never comes back. */
+        $this->backBtn->repaint();
+        $this->fwdBtn->repaint();
+        $this->reloadBtn->repaint();
+        $this->homeBtn->repaint();
+        $this->printBtn->repaint();
+        $this->devBtn->repaint();
+        $this->settingsBtn->repaint();
+        $this->newTabBtn->repaint();
+        $this->omniIcon->repaint();
+
+        if ($redrawOmni) {
+            $show = $this->tabs[$this->cur]->url;
+            if ($show == "about:newtab") { $show = ""; }
+            if ($show == "") { $show = $this->cfg["homepage"]; }
+            if ($show != $this->omniText) {
+                $this->suppressAutocomplete = true;
+                $this->omni->text($show);
+                $this->omniText = $show;
+                $this->suppressAutocomplete = false;
+            }
+            $this->hideSuggestions();
+            /* The one glyph in the chrome that says whether the page is
+               actually secure, so it follows the scheme rather than whatever
+               the user happens to have typed into the bar. */
+            $this->omniIcon->svg($this->icon(
+                str_starts_with($show, "https://") ? "lock" : "globe"));
+        }
+
+        for ($k = 0; $k < $this->tabCount; $k++) {
+            $t = $this->tabs[$k];
+            if ($t->tab == null) { continue; }
+            /* room for the icon (18 + 8 left + 7 gap) and the close button */
+            $maxChars = intdiv($t->tabW - 60, 7);
+            if ($maxChars < 3) { $maxChars = 3; }
+            $t->tab->text($t->caption($maxChars));
+            $t->tab->move($t->tabX, $this->PAD, $t->tabW, $this->BAR_H);
+            /* Roles, never explicit colours: an explicit bg() overrides the
+               theme outright, which throws away the hover fade.
+               Every tab is "subtle" (a real surface fill with a border) rather
+               than "ghost", because ghost fills with the window background -
+               an inactive tab was therefore pixel-identical to the strip
+               behind it and read as a title with its bottom sliced off. The
+               active tab is told apart by its brighter fill and full-strength
+               text instead. */
+            if ($k == $this->cur) {
+                $t->tab->style("subtle");
+                $t->tab->bg($this->app->_theme("elevated"));
+                $t->tab->color($this->app->_theme("text"));
+                if ($t->close != null) {
+                    $t->close->style("subtle");
+                    $t->close->bg($this->app->_theme("elevated"));
+                    $t->close->color($this->app->_theme("muted"));
+                }
+            } else {
+                $t->tab->style("subtle");
+                $t->tab->color($this->app->_theme("muted"));
+                if ($t->close != null) {
+                    $t->close->style("ghost");
+                    $t->close->color($this->app->_theme("muted"));
+                }
+            }
+        }
+    }
+
+    /** Pick up a tab's icon once the engine has fetched it. */
+    pub function refreshFavicons() {
+        for ($k = 0; $k < $this->tabCount; $k++) {
+            $t = $this->tabs[$k];
+            if ($t->view < 0) { continue; }
+            $path = ui_browser_favicon($t->view);
+            if ($path == $t->favPath) { continue; }
+            $t->favPath = $path;
+            if ($t->tab != null) {
+                if ($path == "") { $t->tab->picture(""); }
+                else { $t->tab->picture($path); }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // commands, shared by the toolbar and the shortcuts
+    // ---------------------------------------------------------------
+
+    pub function doCmd(string $name) {
+        if ($this->engineFailed) { return; }
+        if ($name == "newtab") { $this->newTab("about:newtab"); return; }
+        if ($name == "newtabpage") {
+            if ($this->cur >= 0 && $this->cur < $this->tabCount) {
+                $t = $this->tabs[$this->cur];
+                $t->url = "about:newtab";
+                $t->title = "New Tab";
+                $this->go($t->view, $t->url);
+                $this->render(true);
+                $this->omni->focus();
+                $this->omni->selectAll();
+            }
+            return;
+        }
+        if ($this->cur < 0 || $this->cur >= $this->tabCount) { return; }
+        $t = $this->tabs[$this->cur];
+
+        if ($name == "closetab") { $this->closeTab($this->cur); return; }
+        if ($name == "nexttab")  { $this->select(($this->cur + 1) % $this->tabCount); return; }
+        if ($name == "prevtab")  { $this->select(($this->cur + $this->tabCount - 1) % $this->tabCount); return; }
+        if ($name == "back")     { ui_browser_back($t->view); return; }
+        if ($name == "forward")  { ui_browser_forward($t->view); return; }
+        if ($name == "reload")   { ui_browser_reload($t->view); return; }
+        if ($name == "focus")    { $this->omni->focus(); $this->omni->selectAll(); return; }
+        if ($name == "print") { ui_browser_print($t->view); return; }
+        if ($name == "devtools") {
+            if (!$this->devtools) {
+                /* The panel's size is fixed by CEF when it is created, so the
+                   first open has to ask for the width the engine will use. */
+                $want = intdiv($this->W * 30, 100);
+                if ($want < 280) { $want = 280; }
+                $cap = $this->W - 420;
+                if ($cap > 240 && $want > $cap) { $want = $cap; }
+                $this->devW = $want;
+                $this->cfg["devwidth"] = $want;
+            }
+            $this->devtools = !$this->devtools;
+            ui_browser_devtools($t->view, $this->devtools);
+            $this->devBtn->style($this->devtools ? "subtle" : "ghost");
+            $this->cfg["devwidth"] = $this->devW;
+            $this->layoutTabs();
+            $this->relayoutNow();
+            return;
+        }
+        if ($name == "quit")     { $this->quit(); return; }
+
+        if ($name == "home") {
+            $t->url = $this->cfg["homepage"];
+            $t->title = "New Tab";
+            $this->go($t->view, $t->url);
+            $this->render(true);
+            ui_browser_visible($t->view, true);
+            return;
+        }
+        if ($name == "settings") {
+            $t->url = "holybrowser://settings";
+            $t->title = "Settings";
+            $this->go($t->view, $t->url);
+            $this->render(true);
+            ui_browser_visible($t->view, true);
+            return;
+        }
+        if ($name == "zoomout" || $name == "zoomin" || $name == "zoomreset") {
+            $z = $this->cfg["zoom"];
+            if ($name == "zoomout")   { $z = $z - 0.1; }
+            if ($name == "zoomin")    { $z = $z + 0.1; }
+            if ($name == "zoomreset") { $z = 1.0; }
+            if ($z < 0.25) { $z = 0.25; }
+            if ($z > 3.0)  { $z = 3.0; }
+            $this->cfg["zoom"] = $z;
+            for ($k = 0; $k < $this->tabCount; $k++) {
+                ui_browser_zoom($this->tabs[$k]->view, $z);
+            }
+            $this->save();
+            return;
+        }
+    }
+
+    pub function quit() {
+        $this->shutdown();
+        $this->app->quit();
+    }
+
+    // ---------------------------------------------------------------
+    // theme
+    // ---------------------------------------------------------------
+
+    /** Re-theme the chrome and tell the settings page, which draws its own
+     *  stylesheet and would otherwise stay on the old palette. */
+    pub function applyTheme(int $view) {
+        $this->app->theme($this->cfg["theme"]);
+        $this->muted = $this->app->_theme("muted");
+        if ($this->suggestions != null) {
+            $this->suggestions->bg($this->app->_theme("elevated"));
+        }
+        $this->render(false);
+        if ($view > 0) { $this->pendingThemeView = $view; }
+    }
+
+    // ---------------------------------------------------------------
+    // events coming back out of Chromium
+    // ---------------------------------------------------------------
+
+    pub function wire(int $view) {
+        $hb = $this;
+        ui_browser_on($view, 1, function($url) use ($hb, $view) { $hb->onNavigate($view, $url); });
+        ui_browser_on($view, 2, function($ok) use ($hb, $view) { $hb->onLoaded($view); });
+        ui_browser_on($view, 3, function($json) use ($hb, $view) { $hb->onMessage($view, $json); });
+        ui_browser_on($view, 4, function($url) use ($hb) { $hb->pendingNewUrl = $url; });
+    }
+
+    /** holybrowser:// never reaches the renderer, so we see it here first. */
+    pub function onNavigate(int $view, string $url) {
+        if ($this->engineFailed) { return; }
+        $i = $this->tabIndex($view);
+        $low = strtolower($url);
+        /* A page HolyBrowser drew itself is loaded as a data: URL. Reporting
+           that back would fill the address bar with base64 and push the whole
+           document into history - the tab keeps the URL the user asked for. */
+        if ($i < 0 || str_starts_with($low, "holybrowser://") ||
+            str_starts_with($low, "data:") ||
+            ($low == "about:blank" &&
+             (str_starts_with(strtolower($this->tabs[$i]->url), "holybrowser://") ||
+              str_starts_with(strtolower($this->tabs[$i]->url), "about:newtab")))) { return; }
+        $this->tabs[$i]->url = $url;
+        if ($i == $this->cur) {
+            $this->suppressAutocomplete = true;
+            $this->omni->text($url);
+            $this->omniText = $url;
+            $this->suppressAutocomplete = false;
+            $this->hideSuggestions();
+            $this->render(false);
+        }
+    }
+
+    pub function onLoaded(int $view) {
+        $i = $this->tabIndex($view);
+        if ($i < 0) { return; }
+        $t = $this->tabs[$i];
+        $title = ui_browser_title($t->view);
+        $url = ui_browser_url($t->view);
+        if ($title != "" && $title != "about:blank" &&
+            !str_starts_with(strtolower($title), "data:")) { $t->title = $title; }
+        /* a page HolyBrowser drew itself reports about:blank or a data: URL:
+           keep our own label rather than letting the caption collapse to
+           nothing, or the address bar fill up with base64 */
+        if ($url != "" && !str_starts_with(strtolower($url), "about:") &&
+            !str_starts_with(strtolower($url), "data:")) {
+            $t->url = $url;
+            $this->remember($url);
+        }
+        if ($i == $this->cur) { $this->render(false); }
+    }
+
+    pub function onMessage(int $view, string $json) {
+        $m = json_decode($json, true);
+        if (!is_array($m)) { return; }
+        if (!in_array("hb", array_keys($m))) { return; }
+        $i = $this->tabIndex($view);
+        if ($i < 0) { return; }
+
+
+        if ($m["hb"] == "nav") {
+            if (in_array("url", array_keys($m)) && is_string($m["url"]) &&
+                str_starts_with(strtolower($m["url"]), "holybrowser://")) {
+                $this->tabs[$i]->url = $m["url"];
+                $this->pendingNavView = $view;
+                $this->pendingNavUrl = $m["url"];
+            }
+            return;
+        }
+        if ($m["hb"] == "save") {
+            if (!in_array("settings", array_keys($m)) || !is_array($m["settings"])) { return; }
+            $settings = $m["settings"];
+            if (!in_array("search", array_keys($settings)) || !is_string($settings["search"]) ||
+                strpos($settings["search"], "%s") === false) { return; }
+            if (!in_array("homepage", array_keys($settings)) || !is_string($settings["homepage"]) ||
+                trim($settings["homepage"]) == "") { return; }
+            if (!in_array("theme", array_keys($settings)) || !is_string($settings["theme"]) ||
+                !in_array($settings["theme"], ["dark", "light", "midnight", "ocean", "forest", "rose", "mono"])) { return; }
+            if (!in_array("zoom", array_keys($settings)) || !is_numeric($settings["zoom"])) { return; }
+            $z = floatval($settings["zoom"]);
+            if ($z < 0.25 || $z > 3.0) { return; }
+            $this->cfg["search"] = $settings["search"];
+            $this->cfg["homepage"] = trim($settings["homepage"]);
+            $this->cfg["theme"] = $settings["theme"];
+            $this->cfg["zoom"] = $z;
+            $this->applyTheme($view);
+            for ($j = 0; $j < $this->tabCount; $j++) {
+                ui_browser_zoom($this->tabs[$j]->view, $z);
+            }
+            $this->render(false);
+            if ($this->save()) {
+                $this->app->title("HolyBrowser — settings saved");
+                $this->pendingSavedView = $view;
+            }
+            return;
+        }
+        if ($m["hb"] == "set") {
+            if (!in_array("key", array_keys($m)) || !in_array("value", array_keys($m))) { return; }
+            $k = $m["key"];
+            if ($k == "search" && is_string($m["value"]) && strpos($m["value"], "%s") !== false) {
+                $this->cfg["search"] = $m["value"];
+            } elseif ($k == "homepage" && is_string($m["value"]) && trim($m["value"]) != "") {
+                $this->cfg["homepage"] = trim($m["value"]);
+            } elseif ($k == "theme" && is_string($m["value"]) &&
+                      in_array($m["value"], ["dark", "light", "midnight", "ocean", "forest", "rose", "mono"])) {
+                $this->cfg["theme"] = $m["value"];
+                $this->applyTheme($view);
+            } elseif ($k == "zoom" && is_numeric($m["value"])) {
+                $z = floatval($m["value"]);
+                if ($z >= 0.25 && $z <= 3.0) {
+                    $this->cfg["zoom"] = $z;
+                    for ($j = 0; $j < $this->tabCount; $j++) {
+                        ui_browser_zoom($this->tabs[$j]->view, $z);
+                    }
+                }
+            }
+            $this->save();
+            return;
+        }
+        if ($m["hb"] == "saved") {
+            if ($this->save()) { $this->app->title("HolyBrowser — settings saved"); }
+            return;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // shortcuts
+    //
+    // Ctrl/Alt combinations are claimed by the runtime from inside the
+    // Chromium widget, so they work while a page owns the keyboard focus.
+    // The callback only records the command; the timer below runs it, so
+    // no layout work happens in the middle of a page navigation.
+    // ---------------------------------------------------------------
+
+    pub function bindKeys(int $view) {
+        $hb = $this;
+        /* Every keyboard path now reads the same table. The three sources are
+           the page (CEF's own handler, which needs the render widget to hold
+           focus), the address bar, and the window itself. Before this existed
+           only the first two were bound, so every shortcut in the help table
+           on the settings page silently did nothing unless the omnibox
+           happened to have the caret - Ctrl+T and Ctrl+, among them. */
+        foreach ($this->shortcuts() as $s) {
+            $mods = $s[0]; $vk = $s[1]; $cmd = $s[2];
+            ui_browser_key($view, $mods, $vk, 0, function($c) use ($hb, $cmd) {
+                $hb->cmd = $cmd;
+            });
+        }
+        $this->app->onKey(function(int $vk, $ch, int $mods) use ($hb) {
+            $hb->windowKey($vk, $mods);
+        });
+    }
+
+    /** mod, virtual key, command. 1 = Ctrl, 2 = Shift, 4 = Alt. */
+    pub function shortcuts(): array {
+        return [
+            [1, 76, "focus"],        /* Ctrl+L  address bar            */
+            [1, 84, "newtab"],       /* Ctrl+T  new tab                 */
+            [1, 9,  "nexttab"],      /* Ctrl+Tab                        */
+            [3, 9,  "prevtab"],      /* Ctrl+Shift+Tab                  */
+            [1, 87, "closetab"],     /* Ctrl+W                          */
+            [1, 74, "newtabpage"],   /* Ctrl+J                          */
+            [1, 188, "settings"],    /* Ctrl+,                          */
+            [1, 82, "reload"],       /* Ctrl+R                          */
+            [1, 81, "quit"],         /* Ctrl+Q                          */
+            [3, 187, "zoomin"], [1, 187, "zoomin"], [1, 107, "zoomin"],
+            [1, 189, "zoomout"], [1, 109, "zoomout"],
+            [1, 48, "zoomreset"],
+            [4, 37, "back"], [4, 39, "forward"], [4, 36, "home"],
+            [0, 116, "reload"],      /* F5                             */
+            [0, 123, "devtools"],    /* F12                            */
+        ];
+    }
+
+    /** The window's own key handler: the same table, so a shortcut behaves the
+     *  same whether the page, the address bar or nothing at all has focus. */
+    pub function windowKey(int $vk, int $mods) {
+        foreach ($this->shortcuts() as $s) {
+            if ($s[1] == $vk && $s[0] == $mods) { $this->cmd = $s[2]; return; }
+        }
+        if ($vk == 27) { $this->hideSuggestions(); }
+    }
+
+    // ---------------------------------------------------------------
+    // construction
+    // ---------------------------------------------------------------
+
+    pub function build() {
+        $this->loadConfig();
+
+        $this->app = new App("HolyBrowser", $this->WIN_W, $this->WIN_H);
+        $this->app->pad(0)->gap(0);
+        $this->app->theme($this->cfg["theme"]);
+        $this->muted = $this->app->_theme("muted");
+        $this->win = ui_hwnd($this->app->h);
+
+        $hb = $this;
+        $btnW = $this->BTN_W;
+        $toolY = $this->PAD + $this->BAR_H + $this->TAB_GAP;
+
+        /* ---- toolbar. Every button is kept in a field so layoutTabs() can
+           move the whole row when the window is resized. ---- */
+        $this->backBtn = $this->app->button("", "ghost", function() use ($hb) { $hb->doCmd("back"); },
+                                 $this->PAD, $toolY, $btnW, $this->BAR_H);
+        $this->backBtn->svg($this->icon("back"));
+        $this->backBtn->color($this->app->_theme("muted"));
+        $this->fwdBtn = $this->app->button("", "ghost", function() use ($hb) { $hb->doCmd("forward"); },
+                                 $this->navX(1), $toolY, $btnW, $this->BAR_H);
+        $this->fwdBtn->svg($this->icon("forward"));
+        $this->fwdBtn->color($this->app->_theme("muted"));
+        $this->reloadBtn = $this->app->button("", "ghost", function() use ($hb) { $hb->doCmd("reload"); },
+                                 $this->navX(2), $toolY, $btnW, $this->BAR_H);
+        $this->reloadBtn->svg($this->icon("reload"));
+        $this->reloadBtn->color($this->app->_theme("muted"));
+        $this->homeBtn = $this->app->button("", "ghost", function() use ($hb) { $hb->doCmd("home"); },
+                                 $this->navX(3), $toolY, $btnW, $this->BAR_H);
+        $this->homeBtn->svg($this->icon("home"));
+        $this->homeBtn->color($this->app->_theme("muted"));
+        $this->printBtn = $this->app->button("", "ghost", function() use ($hb) { $hb->doCmd("print"); },
+                                 $this->navX(4), $toolY, $btnW, $this->BAR_H);
+        $this->printBtn->svg($this->icon("print"));
+        $this->printBtn->color($this->app->_theme("muted"));
+
+        $omniX = $this->omniX();
+        $omniW = $this->omniW();
+
+        $this->omni = $this->app->input("", $omniX, $toolY, $omniW, $this->BAR_H);
+        /* A full pill (BAR_H/2) read as a search box rather than an address
+           bar, and at this width it was the only rounded thing on the row, so
+           it drew the eye away from the tabs. Match the tabs' radius and give
+           it a little more height than the icon buttons beside it. */
+        $this->omni->radius(9);
+        /* Text starts clear of the glyph. The edit's own margins are set here
+           rather than left to the theme default, which was tight enough that
+           the URL looked pasted against the edge of the field. */
+        $this->omni->inputMargin($this->OMNI_PAD + $this->OMNI_ICON + 6,
+                                 $this->OMNI_PAD);
+        $this->omniIcon = $this->app->label("", $omniX + $this->OMNI_PAD,
+            $toolY + ($this->BAR_H - $this->OMNI_ICON) / 2,
+            $this->OMNI_ICON, $this->OMNI_ICON);
+        $this->omniIcon->color($this->app->_theme("muted"));
+        $this->omniIcon->svg($this->icon("lock"));
+        /* on top of the edit: it is a sibling, not a child of it */
+        $this->omniIcon->raise();
+        $this->omni->onChange(function($text) use ($hb) {
+            if (!$hb->suppressAutocomplete) { $hb->omniText = $text; }
+            $hb->refreshSuggestions($text);
+        });
+        $this->omni->onKey(function(int $vk, $ch, int $mods) use ($hb) {
+            /* The Ctrl/Alt bindings come from the one table, so the address bar
+               and the rest of the window cannot drift apart: a shortcut added
+               to the table works in the omnibox, on the page and anywhere
+               else without being written down three times. */
+            foreach ($hb->shortcuts() as $s) {
+                if ($s[1] == $vk && $s[0] == $mods) { $hb->cmd = $s[2]; return; }
+            }
+            if ($vk == 13) {
+                if ($hb->suggestIndex >= 0 && $hb->suggestions->count() > 0) {
+                    $hb->acceptSuggestion($hb->suggestions->selectedText());
+                } else { $hb->submitOmni(); }
+                return;
+            }
+            if ($vk == 27) {
+                $hb->hideSuggestions();
+                $hb->suppressAutocomplete = true;
+                $hb->omni->text($hb->omniText);
+                $hb->suppressAutocomplete = false;
+                return;
+            }
+            if ($vk == 40) { $hb->moveSuggestion(1); return; }
+            if ($vk == 38) { $hb->moveSuggestion(-1); return; }
+        });
+
+        $this->suggestions = $this->app->list([], $omniX, $toolY + $this->BAR_H + 2, $omniW, 224);
+        $this->suggestions->bg($this->app->_theme("elevated"))->hide();
+        ui_ctrl_show($this->suggestions->h, false);
+        $this->suggestions->onChange(function(int $index, string $text) use ($hb) {
+            if ($text != "") {
+                $pick = $text;
+                if (str_starts_with($pick, "Search for: ")) { $pick = substr($pick, 12); }
+                $hb->acceptSuggestion($pick);
+            }
+        });
+
+        $rx = $this->W - $this->PAD - $btnW;
+        $this->settingsBtn = $this->app->button("", "ghost", function() use ($hb) { $hb->doCmd("settings"); },
+                                          $rx, $toolY, $btnW, $this->BAR_H);
+        $this->settingsBtn->svg($this->icon("settings"));
+        $this->settingsBtn->color($this->app->_theme("muted"));
+
+        $this->devBtn = $this->app->button("", "ghost", function() use ($hb) { $hb->doCmd("devtools"); },
+                                          $rx - $btnW - $this->BTN_GAP, $toolY, $btnW, $this->BAR_H);
+        $this->devBtn->svg($this->icon("code"));
+        $this->devBtn->color($this->app->_theme("muted"));
+
+        /* ---- the splitter between the page and the docked devtools. It is a
+           real drag target, not a decoration: the panel is unusable at a fixed
+           size on a wide screen and unusable on a narrow one. ---- */
+        $this->devW = intval($this->cfg["devwidth"]);
+        $hb3 = $this;
+        $this->splitter = $this->app->button("", "ghost", null,
+            $this->WIN_W, $this->CHROME_H, $this->SPLIT_W, $this->WIN_H - $this->CHROME_H);
+        $this->splitter->radius(3);
+        $this->splitter->onDrag(function($dx, $dy, $phase) use ($hb3) {
+            $hb3->dragSplitter($dx, $dy, $phase);
+        });
+        $this->splitter->hide();
+
+        /* ---- new tab button; layoutTabs() places it after the strip ---- */
+        $this->newTabBtn = $this->app->button("", "ghost",
+            function() use ($hb) { $hb->doCmd("newtab"); },
+            $this->WIN_W, $this->PAD, 30, $this->BAR_H);
+        $this->newTabBtn->svg($this->icon("plus"));
+        $this->newTabBtn->show();
+        $this->newTabBtn->radius(10);
+
+        /* ---- the first tab; if Chromium will not start, say so and stop ----
+         *
+         * HOLYCEF_START overrides what the first tab opens, which is how the
+         * internal pages get reached from a script or a test: driving the
+         * omnibox needs synthetic keystrokes, and those need a foreground
+         * window, which an unattended session does not have. */
+        $start = getenv("HOLYCEF_START");
+        if ($start == "") { $start = $this->cfg["homepage"]; }
+        $this->newTab($start);
+        if ($this->engineFailed) {
+            $this->app->close();
+            return;
+        }
+        $this->buildTabs();
+        $this->front(0);
+        $this->render(true);
+
+        /* Chromium is laid out against the parent client rect, so a timer is
+           all it takes to stay right while the window is resized. */
+        $this->app->every(120, function() use ($hb) {
+            if ($hb->creatingTab || !$hb->app->alive()) { return; }
+            $hb->relayout();
+            $hb->refreshFavicons();
+            $hb->relayoutNow();
+        });
+
+        /* drain queued shortcut commands */
+        $this->app->every(40, function() use ($hb) {
+            if (!$hb->app->alive()) { return; }
+            /* hpwv2_create pumps the native message loop while waiting for its
+               async controller. Do not recursively create another tab from
+               a timer dispatched by that nested pump. */
+            if ($hb->creatingTab) { return; }
+            if ($hb->pendingNavUrl != "") {
+                $view = $hb->pendingNavView;
+                $url = $hb->pendingNavUrl;
+                $hb->pendingNavView = 0;
+                $hb->pendingNavUrl = "";
+                if ($hb->tabIndex($view) >= 0) {
+                    $hb->go($view, $url);
+                    if ($hb->tabIndex($view) == $hb->cur) { $hb->render(true); }
+                }
+                return;
+            }
+            if ($hb->pendingNewUrl != "") {
+                $url = $hb->pendingNewUrl;
+                $hb->pendingNewUrl = "";
+                $hb->newTab($url);
+                return;
+            }
+            if ($hb->pendingThemeView != 0) {
+                $view = $hb->pendingThemeView;
+                $hb->pendingThemeView = 0;
+                if ($hb->tabIndex($view) >= 0) {
+                    ui_browser_post($view, "{\"hb\":\"theme\"}");
+                }
+                return;
+            }
+            if ($hb->pendingSavedView != 0) {
+                $view = $hb->pendingSavedView;
+                $hb->pendingSavedView = 0;
+                if ($hb->tabIndex($view) >= 0) { ui_browser_post($view, "saved"); }
+                return;
+            }
+            if ($hb->cmd == "") { return; }
+            $c = $hb->cmd;
+            $hb->cmd = "";
+            $hb->doCmd($c);
+        });
+
+        $this->app->onClose(function() use ($hb) { $hb->shutdown(); });
+    }
+
+    pub function remember(string $url) {
+        $low = strtolower($url);
+        if ($url == "" || str_starts_with($low, "holybrowser://") || str_starts_with($low, "about:")) { return; }
+        if (count($this->cfg["history"]) > 0 && $this->cfg["history"][0] == $url) { return; }
+        $history = [];
+        $history[] = $url;
+        foreach ($this->cfg["history"] as $old) {
+            if ($old != $url && count($history) < 30) { $history[] = $old; }
+        }
+        $this->cfg["history"] = $history;
+        $this->save();
+    }
+
+    pub function refreshSuggestions(string $text) {
+        if ($this->suppressAutocomplete || $this->suggestions == null) { return; }
+        $query = strtolower(trim($text));
+        if ($query == "") { $this->hideSuggestions(); return; }
+        $this->suggestions->clear();
+        $this->suggestions->add("Search for: " . trim($text));
+        foreach ($this->cfg["history"] as $url) {
+            if (strpos(strtolower($url), $query) !== false) { $this->suggestions->add($url); }
+            if ($this->suggestions->count() >= 7) { break; }
+        }
+        if ($this->suggestions->count() == 0) { $this->hideSuggestions(); return; }
+        $this->suggestIndex = -1;
+        $this->suggestions->show();
+        ui_ctrl_show($this->suggestions->h, true);
+    }
+
+    pub function hideSuggestions() {
+        if ($this->suggestions != null) {
+            $this->suggestions->hide();
+            ui_ctrl_show($this->suggestions->h, false);
+        }
+        $this->suggestIndex = -1;
+    }
+
+    pub function moveSuggestion(int $step) {
+        if ($this->suggestions == null || $this->suggestions->count() == 0) { return; }
+        if ($this->suggestIndex < 0 && $step < 0) {
+            $this->submitOmni();
+            return;
+        }
+        $this->suggestIndex = $this->suggestIndex + $step;
+        if ($this->suggestIndex < 0) { $this->suggestIndex = $this->suggestions->count() - 1; }
+        if ($this->suggestIndex >= $this->suggestions->count()) { $this->suggestIndex = 0; }
+        $this->suggestions->select($this->suggestIndex);
+        $this->suppressAutocomplete = true;
+        $this->omni->text($this->suggestions->selectedText());
+        $this->suppressAutocomplete = false;
+        $this->omni->focus();
+    }
+
+    pub function acceptSuggestion(string $text) {
+        $this->suppressAutocomplete = true;
+        $this->omni->text($text);
+        $this->omniText = $text;
+        $this->suppressAutocomplete = false;
+        $this->hideSuggestions();
+        $this->submitOmni();
+    }
+
+    pub function submitOmni() {
+        if ($this->cur < 0 || $this->cur >= $this->tabCount) { return; }
+        $this->omniText = $this->omni->content();
+        $this->hideSuggestions();
+        $input = $this->omni->content();
+        if (str_starts_with($input, "Search for: ")) { $input = substr($input, 12); }
+        $target = $this->target($input);
+        $t = $this->tabs[$this->cur];
+        $t->url = $target;
+        $t->title = "New Tab";
+        if (str_starts_with(strtolower($target), "holybrowser://settings")) { $t->title = "Settings"; }
+        $this->remember($target);
+        $this->go($t->view, $target);
+        $this->render(true);
+    }
+
+    pub function shutdown() {
+        for ($k = 0; $k < $this->tabCount; $k++) {
+            ui_browser_free($this->tabs[$k]->view);
+        }
+        $this->save();
+    }
+
+    pub function run() {
+        $this->build();
+        $this->app->run();
+    }
+}
+
+// ---------------------------------------------------------------------
+// entry point
+// ---------------------------------------------------------------------
+
+/** If the engine is missing, explain instead of starting blank. */
+function hb_boot_message() {
+    $boot = new App("HolyBrowser", 680, 320);
+    $boot->pad(28)->gap(11);
+    $boot->heading("HolyBrowser needs its Chromium engine");
+    $boot->sub("The engine was not found next to the executable.");
+    $boot->divider();
+    $boot->label("Copy the cef_runtime folder (cefshim.dll, libcef.dll, the .pak "
+               . "files, icudtl.dat and locales) next to HolyBrowser.exe.");
+    $boot->label("Searched: the executable folder, cef/ and cef_runtime/ beside it.");
+    $boot->label("Set HOLYCEF_SHIM to an explicit cefshim.dll path to override.");
+    $boot->label("Engine actually found: [" . ui_browser_loader() . "]");
+    $boot->button("Close", "primary", function() use ($boot) { $boot->close(); });
+    $boot->run();
+}
+
+if (ui_browser_ready()) {
+    $browser = new HolyBrowser();
+    $browser->run();
+} else {
+    hb_boot_message();
+}

@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+
+PackageIdentifier: HolyPHP.HolyPHP
+PackageVersion: 1.0.2
+InstallerLocale: en-US
+Platform:
+- Windows.Desktop
+MinimumOSVersion: 10.0.17763.0
+InstallerType: inno
+Scope: user
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+UpgradeBehavior: install
+ReleaseDate: "2026-11-03"
+AppsAndFeaturesEntries:
+- ProductCode: "{4F6E1B7C-9D2A-4E8B-A1C3-5D7F9B2E4A6C}_is1"
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/Elifoxcoder/holyphp/releases/download/v1.0.2/HolyPHP-1.0.2-x64-setup.exe
+  InstallerSha256: 35F8174A5278E95BBB20E921C8AAA2696E45604679ADCEC312D31E84EA20AC81
+ManifestType: installer
+ManifestVersion: 1.12.0

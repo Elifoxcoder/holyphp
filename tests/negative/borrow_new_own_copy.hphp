@@ -1,0 +1,4 @@
+class BorrowOwnedWidget {}
+let $owned: own BorrowOwnedWidget = new BorrowOwnedWidget();
+let $copy: BorrowOwnedWidget = $owned;
+echo $copy;

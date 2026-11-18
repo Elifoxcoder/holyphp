@@ -1,0 +1,11 @@
+[Unit]
+Description=Bounded temporary workspace for HolyPHP playground containers
+
+[Mount]
+What=tmpfs
+Where=/var/lib/hphp-playground/jobs
+Type=tmpfs
+Options=rw,nosuid,nodev,mode=1730,gid=979,size=256M,nr_inodes=8192
+
+[Install]
+WantedBy=local-fs.target

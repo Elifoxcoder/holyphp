@@ -53,3 +53,15 @@ const char *intern_range(const char *start, size_t len);
 const char *intern(const char *s);
 
 #endif
+
+/* incremental compilation cache */
+char *cache_key_for_files(PtrVec *files, PtrVec *tools);
+bool cache_has_object(const char *key, const char *objname);
+bool cache_get_object(const char *key, const char *objname, const char *dest);
+bool cache_put_object(const char *key, const char *objname, const char *src);
+bool cache_has_generated(const char *key);
+bool cache_get_generated(const char *key, const char *dest);
+bool cache_put_generated(const char *key, const char *src);
+bool cache_has_exe(const char *key);
+bool cache_get_exe(const char *key, const char *dest);
+bool cache_put_exe(const char *key, const char *src);

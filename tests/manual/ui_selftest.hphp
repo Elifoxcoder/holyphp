@@ -1,6 +1,6 @@
 // ui_selftest.hphp — headless smoke test for the HolyPHP UI 2.0 library.
 //
-//   hphp run examples/ui_selftest.hphp
+//   hphp run tests/manual/ui_selftest.hphp
 //
 // Creates a window, exercises every factory, both layout directions, the
 // theme system and the role system, ticks the event pump and closes. No

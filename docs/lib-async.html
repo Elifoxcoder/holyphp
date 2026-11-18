@@ -3,12 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
 <title>async — HolyPHP standard library</title>
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/style.css?v=6">
 </head>
 <body>
 <div class="layout">
-<script src="assets/nav.html.js"></script>
+<script src="assets/nav.html.js?v=3"></script>
 <main>
   <h1>async</h1>
   <p class="lead">A cooperative event loop for HolyPHP: timers, socket watchers,
@@ -27,8 +28,8 @@
 <pre><code class="hphp">import "async";
 
 $loop = new Loop();
-$loop->after(1000, function() { echo "one second passed\n"; });
-$loop->every(250, function() { echo "tick\n"; });
+$loop->after(1000, function() { echo "one second passed"; });
+$loop->every(250, function() { echo "tick"; });
 $loop->run();          // blocks until stop() or nothing left to wait on</code></pre>
   <table>
     <tr><th>Method</th><th>Returns</th><th>What it does</th></tr>
@@ -41,7 +42,7 @@ $loop->run();          // blocks until stop() or nothing left to wait on</code><
   </table>
 
   <h2>TCP: servers, watchers, lines</h2>
-<pre><code class="hphp">import "async";
+<pre class="fragment"><code class="hphp">import "async";
 
 // one-shot TCP server: accept callback per connection
 $loop = new Loop();
@@ -53,7 +54,7 @@ $loop->listen("tcp://127.0.0.1:8080", function($client, $peer) {
 // raw readable-socket watcher
 $loop->watch($sock, function($sock, $chunk, $eof) {
     if ($eof) { return; }
-    echo "got: $chunk\n";
+    echo "got: $chunk";
 });
 
 // line-oriented server with automatic ACK replies
@@ -72,9 +73,9 @@ $loop = new Loop();
 
 // in-loop GET: the loop stays live (timers + other sockets keep firing)
 $loop->httpGet("http://service.local/api", function($resp) {
-    echo "status: " . substr($resp, 0, 15) . "\n";
+    echo "status: " . substr($resp, 0, 15);
 }, function($err) {
-    echo "failed: $err\n";
+    echo "failed: $err";
 });
 
 // blocking shape: runs a private loop, returns when done
@@ -118,6 +119,7 @@ hphp run examples/async_demo.hphp</code></pre>
   works offline, no install needed. Source: <code>lib/async/async.hphp</code>.</p>
 </main>
 </div>
-<script src="assets/site.js"></script>
+<script src="assets/site.js?v=4"></script>
+<script src="assets/theme.js?v=1"></script>
 </body>
 </html>

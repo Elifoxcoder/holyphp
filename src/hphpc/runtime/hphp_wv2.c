@@ -1,417 +1,234 @@
-/* hphp_wv2.c — a real Chromium view hosted inside a HolyPHP window.
+/* hphp_wv2.c - the embedded browser backend.
  *
- * The Edge WebView2 runtime is the only way to get genuine Chromium
- * rendering into a program built with this toolchain: CEF needs a C++
- * toolchain and a completely different link model. WebView2 needs nothing at
- * build time -- we LoadLibrary WebView2Loader.dll and GetProcAddress the one
- * factory function out of it, the same way hphp_ui.c picks up uxtheme.dll and
- * dwmapi.dll.
+ * The engine is the Chromium Embedded Framework, reached through cefshim.dll
+ * (src/hphpc/native/cefshim.cpp): a small C ABI built with MSVC that owns CEF
+ * and its UI thread, so this file stays plain C compiled by gcc like the rest
+ * of the runtime. The exported names are unchanged from the old WebView2
+ * backend, so hphp_std.c and every app keep working untouched.
  *
- * There are no WebView2 headers usable from C (the SDK's WebView2.h is C++),
- * so the vtables below are transcribed from WebView2.idl. The GUIDs and the
- * slot ORDER are the ABI: every slot before the ones we actually call has to
- * be declared, even as an unnamed placeholder, or the offsets shift.
+ * The shim hands callbacks back on a queue rather than on its own thread -
+ * script must only ever run on the VM thread - and wakes the UI message loop
+ * with WM_APP+0x51CE. hpui_dispatch() drains that queue.
  *
- * Everything here runs on the UI thread. Creating the environment and the
- * controller is asynchronous and the completions arrive through the very
- * message loop that is sitting inside GetMessage, so hpwv2_create() pumps
- * messages until the controller lands instead of deadlocking on it.
- *
- * Layout note: lib/ui.hphp hands out LOGICAL pixels (96 DPI) and the control
- * layer scales them again, so hpwv2_fit() takes the top inset in logical
- * pixels and converts exactly once, here, to the physical pixels that
- * ICoreWebView2Controller::Bounds expects.
+ * Search order for the engine: HOLYCEF_SHIM, then next to the executable, in
+ * cef/ next to it, in ..\cef_runtime\, then in the repository's
+ * build\cef_runtime.
  */
+
 #include "hphp_rt.h"
 
+/* Windows-only. The POSIX stubs at the bottom keep the language checking. */
 #ifdef _WIN32
 
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <objbase.h>
+
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <wchar.h>
 
-#define WV2_CALL __stdcall
+#include "hphp_rt.h"
 
-#define WV2_GUID(a, b, c, d0, d1, d2, d3, d4, d5, d6, d7) \
-    { a, b, c, { d0, d1, d2, d3, d4, d5, d6, d7 } }
+/* ================= the shim's C ABI ================= */
 
-/* ---- event-handler interface ids (from WebView2.idl). We never
- *      QueryInterface for the main objects: they arrive as [retval] out
- *      parameters from the getters below, so their iids are not needed. --- */
-static const GUID IID_WV2NavStartingH =
-    WV2_GUID(0x9adbe429, 0xf36d, 0x432b, 0x9d, 0xdc, 0xf8, 0x88, 0x1f, 0xbd, 0x76, 0xe3);
-static const GUID IID_WV2NavDoneH =
-    WV2_GUID(0xd33a35bf, 0x1c49, 0x4f98, 0x93, 0xab, 0x00, 0x6e, 0x05, 0x33, 0xfe, 0x1c);
-static const GUID IID_WV2NewWindowH =
-    WV2_GUID(0xd4c185fe, 0xc81c, 0x4989, 0x97, 0xaf, 0x2d, 0x3f, 0xa7, 0xab, 0x56, 0x51);
-static const GUID IID_WV2WebMsgH =
-    WV2_GUID(0x57213f19, 0x00e6, 0x49fa, 0x8e, 0x07, 0x89, 0x8e, 0xa0, 0x1e, 0xcb, 0xd2);
-static const GUID IID_WV2EnvDoneH =
-    WV2_GUID(0x4e8a3389, 0xc9d8, 0x4bd2, 0xb6, 0xb5, 0x12, 0x4f, 0xee, 0x6c, 0xc1, 0x4d);
-static const GUID IID_WV2CtlDoneH =
-    WV2_GUID(0x6c4819f3, 0xc9b7, 0x4260, 0x81, 0x27, 0xc9, 0xf5, 0xbd, 0xe7, 0xf6, 0x8c);/* ---- vtables -------------------------------------------------------
- * Every WebView2 interface derives from IUnknown, so slots 0, 1 and 2 are
- * QueryInterface/AddRef/Release and the FIRST declared method lands on
- * slot 3. That offset is the single easiest thing to get wrong by hand,
- * so instead of writing out structs with unnamed filler members (where
- * one miscounted `void *` silently shifts every later call) we keep a
- * plain array of slots and address the ones we want by name.
- *
- * The numbers are the slot positions in the SDK's own
- * ICoreWebView2*Vtbl structs -- Microsoft.Web.WebView2 1.0.3124.44 --
- * which is the ABI we are talking to. Do not renumber them by eye.      */
-typedef struct { void *s[52]; } WvWeb;   /* ICoreWebView2           */
-typedef struct { void *s[26]; } WvCtl;   /* ICoreWebView2Controller */
-typedef struct { void *s[8];  } WvEnv;   /* ICoreWebView2Environment*/
-typedef struct { void *s[21]; } WvSet;   /* ICoreWebView2Settings   */
-typedef struct { void *s[10]; } WvNavA;  /* ...NavigationStartingEventArgs  */
-typedef struct { void *s[6];  } WvDoneA; /* ...NavigationCompletedEventArgs */
-typedef struct { void *s[11]; } WvNewA;  /* ...NewWindowRequestedEventArgs   */
-typedef struct { void *s[6];  } WvMsgA;  /* ...WebMessageReceivedEventArgs   */
+typedef int      (*fn_init)(void);
+typedef void     (*fn_void)(void);
+typedef int64_t  (*fn_ll)(int64_t);
+typedef int64_t  (*fn_ll_ll)(int64_t, int64_t);
+typedef int64_t  (*fn_ll_int)(int64_t, int);
+typedef int64_t  (*fn_ll_str)(int64_t, const char *);
+typedef int64_t  (*fn_ll_str_ll)(int64_t, const char *, int64_t);
+typedef int64_t  (*fn_ll_str_out)(int64_t, char **);
+typedef int64_t  (*fn_ll_double)(int64_t, double);
+typedef int64_t  (*fn_ll_double_out)(int64_t, double *);
+typedef int64_t  (*fn_ll_4int)(int64_t, int, int, int, int);
+typedef int      (*fn_avail)(char *, int);
+typedef int      (*fn_void_i)(void);
 
-enum {                      /* ICoreWebView2 */
-    W_SETTINGS  =  3, W_SOURCE    =  4, W_NAVIGATE =  5, W_NAVSTR  =  6,
-    W_ADD_NAVSTART = 7, W_ADD_NAVDONE = 15, W_ADDSCRIPT = 27,
-    W_RELOAD    = 31, W_ADD_WEBMSG = 34, W_CANBACK   = 38,
-    W_CANFWD    = 39, W_GOBACK    = 40, W_GOFWD     = 41,
-    W_STOP      = 43, W_ADD_NEWWIN = 44, W_DOCTITLE  = 48,
-    W_DEVTOOLS  = 51
-};
-enum {                      /* ICoreWebView2Controller */
-    C_ISVISIBLE =  4, C_BOUNDS   =  6, C_ZOOMGET  =  7,
-    C_ZOOMPUT   =  8, C_NOTIFY   = 23, C_CLOSE    = 24,
-    C_GETWEB    = 25
-};
-enum { E_CREATECTL = 3, E_VERSION = 5 };          /* ICoreWebView2Environment */
-enum {                      /* ICoreWebView2Settings */
-    S_SCRIPT = 4, S_WEBMSG = 6, S_STATUSBAR = 10,
-    S_DEVTOOLS = 12, S_ZOOMCTL = 18
-};
-enum { A_URI = 3, A_CANCEL = 8 };          /* NavigationStartingEventArgs  */
-enum { D_SUCCESS = 3 };                     /* NavigationCompletedEventArgs */
-enum { X_URI = 3, X_HANDLED = 6 };          /* NewWindowRequestedEventArgs   */
-enum { G_JSON = 4 };                        /* WebMessageReceivedEventArgs   */
+typedef struct {
+    HMODULE         dll;
+    fn_init         init;
+    fn_void         shutdown;
+    fn_void         pump;
+    fn_ll_str_ll    create;
+    fn_ll           destroy;
+    fn_ll           ident;
+    fn_ll_4int      fit;
+    fn_ll_str       go;
+    fn_ll_str       html;
+    fn_ll           back;
+    fn_ll           forward;
+    fn_ll           reload;
+    fn_ll           stop;
+    fn_ll           can_back;
+    fn_ll           can_forward;
+    fn_ll_str_out   url;
+    fn_ll_str_out   title;
+    int64_t  (*favicon)(int64_t, char *, int);
+    fn_ll_double     zoom;
+    fn_ll_double_out zoom_get;
+    fn_ll_int       devtools;
+    fn_ll           devtools_ready;
+    fn_ll_4int      devtools_fit;
+    fn_ll           print;
+    fn_ll_str       post;
+    fn_ll_int       visible;
+    fn_avail        available;
+    fn_void_i       closing;
+} Shim;
 
-/* add_* event methods all share one shape */
-typedef HRESULT (WV2_CALL *fn_add_ev)(void *, void *, long *);
+static Shim g_shim;
+static int  g_searched = 0;
+static int  g_started = 0;
+static char g_shim_path[MAX_PATH * 2];
 
-/* every COM interface starts with a pointer to its vtable */
-typedef struct WObj { const void *vt; } WObj;
+/* Why each candidate was rejected, so the message on screen names the actual
+ * problem instead of just saying "not found" - a missing cefshim.dll and a
+ * missing libcef.dll need very different fixes. */
+static char g_tried[4096];
 
-static const WvWeb   *web_v (void *o) { return (const WvWeb  *)((const WObj *)o)->vt; }
-static const WvCtl   *ctl_v (void *o) { return (const WvCtl  *)((const WObj *)o)->vt; }
-static const WvEnv   *env_v (void *o) { return (const WvEnv  *)((const WObj *)o)->vt; }
-static const WvSet   *set_v (void *o) { return (const WvSet  *)((const WObj *)o)->vt; }
-static const WvNavA  *nav_v (void *o) { return (const WvNavA *)((const WObj *)o)->vt; }
-static const WvNewA  *neww_v(void *o) { return (const WvNewA *)((const WObj *)o)->vt; }
-static const WvMsgA  *msg_v (void *o) { return (const WvMsgA *)((const WObj *)o)->vt; }
-static const WvDoneA *don_v (void *o) { return (const WvDoneA*)((const WObj *)o)->vt; }
-
-/* ---- one typed entry point per call, so the casts live in one place --- */
-typedef HRESULT (WV2_CALL *fn_out_obj)(void *, void **);
-typedef HRESULT (WV2_CALL *fn_out_wstr)(void *, LPWSTR *);
-typedef HRESULT (WV2_CALL *fn_in_wstr)(void *, LPCWSTR);
-typedef HRESULT (WV2_CALL *fn_void)(void *);
-typedef HRESULT (WV2_CALL *fn_bool_out)(void *, BOOL *);
-typedef HRESULT (WV2_CALL *fn_bool_in)(void *, BOOL);
-typedef HRESULT (WV2_CALL *fn_dbl_out)(void *, double *);
-typedef HRESULT (WV2_CALL *fn_dbl_in)(void *, double);
-typedef HRESULT (WV2_CALL *fn_rect_in)(void *, RECT);
-
-static HRESULT web_get_settings(void *o, void **out) {
-    return ((fn_out_obj)web_v(o)->s[W_SETTINGS])(o, out);
-}
-static HRESULT web_get_source(void *o, LPWSTR *out) {
-    return ((fn_out_wstr)web_v(o)->s[W_SOURCE])(o, out);
-}
-static HRESULT web_navigate(void *o, LPCWSTR u) {
-    return ((fn_in_wstr)web_v(o)->s[W_NAVIGATE])(o, u);
-}
-static HRESULT web_navstr(void *o, LPCWSTR u) {
-    return ((fn_in_wstr)web_v(o)->s[W_NAVSTR])(o, u);
-}
-static HRESULT web_addscript(void *o, LPCWSTR js) {
-    return ((HRESULT (WV2_CALL *)(void *, LPCWSTR, void *))web_v(o)->s[W_ADDSCRIPT])
-           (o, js, NULL);
-}
-static HRESULT web_can_back(void *o, BOOL *b) {
-    return ((fn_bool_out)web_v(o)->s[W_CANBACK])(o, b);
-}
-static HRESULT web_can_fwd(void *o, BOOL *b) {
-    return ((fn_bool_out)web_v(o)->s[W_CANFWD])(o, b);
-}
-static HRESULT web_goback(void *o)  { return ((fn_void)web_v(o)->s[W_GOBACK])(o); }
-static HRESULT web_gofwd(void *o)   { return ((fn_void)web_v(o)->s[W_GOFWD])(o); }
-static HRESULT web_reload(void *o)  { return ((fn_void)web_v(o)->s[W_RELOAD])(o); }
-static HRESULT web_stop(void *o)    { return ((fn_void)web_v(o)->s[W_STOP])(o); }
-static HRESULT web_title(void *o, LPWSTR *out) {
-    return ((fn_out_wstr)web_v(o)->s[W_DOCTITLE])(o, out);
-}
-static HRESULT web_devtools(void *o) { return ((fn_void)web_v(o)->s[W_DEVTOOLS])(o); }
-static HRESULT web_add_navstart(void *o, void *h, long *t) {
-    return ((fn_add_ev)web_v(o)->s[W_ADD_NAVSTART])(o, h, t);
-}
-static HRESULT web_add_navdone(void *o, void *h, long *t) {
-    return ((fn_add_ev)web_v(o)->s[W_ADD_NAVDONE])(o, h, t);
-}
-static HRESULT web_add_webmsg(void *o, void *h, long *t) {
-    return ((fn_add_ev)web_v(o)->s[W_ADD_WEBMSG])(o, h, t);
-}
-static HRESULT web_add_newwin(void *o, void *h, long *t) {
-    return ((fn_add_ev)web_v(o)->s[W_ADD_NEWWIN])(o, h, t);
+static void tried_add(const char *path, const char *why) {
+    if (!g_tried[0]) return;
+    size_t n = strlen(g_tried);
+    int w = snprintf(g_tried + n, sizeof g_tried - n, "\n  %s -- %s", path, why);
+    (void)w;
 }
 
-static HRESULT ctl_visible(void *o, BOOL b) {
-    return ((fn_bool_in)ctl_v(o)->s[C_ISVISIBLE])(o, b);
-}
-static HRESULT ctl_bounds(void *o, RECT r) {
-    return ((fn_rect_in)ctl_v(o)->s[C_BOUNDS])(o, r);
-}
-static HRESULT ctl_notify(void *o) { return ((fn_void)ctl_v(o)->s[C_NOTIFY])(o); }
-static HRESULT ctl_close(void *o)  { return ((fn_void)ctl_v(o)->s[C_CLOSE])(o); }
-static HRESULT ctl_web(void *o, void **out) {
-    return ((fn_out_obj)ctl_v(o)->s[C_GETWEB])(o, out);
-}
-/* vtable slot 1 of every COM interface is AddRef */
-static ULONG ctl_ar_addref(void *o) {
-    return ((ULONG (WV2_CALL *)(void *))ctl_v(o)->s[1])(o);
-}
-static HRESULT ctl_zoom_get(void *o, double *z) {
-    return ((fn_dbl_out)ctl_v(o)->s[C_ZOOMGET])(o, z);
-}
-static HRESULT ctl_zoom_put(void *o, double z) {
-    return ((fn_dbl_in)ctl_v(o)->s[C_ZOOMPUT])(o, z);
-}
+static void shim_try(const char *path) {
+    if (g_shim.dll || !path || !path[0]) return;
+    DWORD a = GetFileAttributesA(path);
+    if (a == INVALID_FILE_ATTRIBUTES) { tried_add(path, "no such file"); return; }
+    if (a & FILE_ATTRIBUTE_DIRECTORY) { tried_add(path, "is a directory"); return; }
 
-/* ICoreWebView2Environment::CreateCoreWebView2Controller takes only the
- * parent window and the handler; the old options argument is gone. */
-static HRESULT env_create_ctl(void *o, HWND parent, void *handler) {
-    return ((HRESULT (WV2_CALL *)(void *, HWND, void *))env_v(o)->s[E_CREATECTL])
-           (o, parent, handler);
-}
-
-static void set_flag(void *o, int slot, BOOL b) {
-    ((fn_bool_in)set_v(o)->s[slot])(o, b);
-}
-static HRESULT nav_uri(void *o, LPWSTR *out) {
-    return ((fn_out_wstr)nav_v(o)->s[A_URI])(o, out);
-}
-static void nav_cancel(void *o) {
-    ((fn_bool_in)nav_v(o)->s[A_CANCEL])(o, TRUE);
-}
-static HRESULT neww_uri(void *o, LPWSTR *out) {
-    return ((fn_out_wstr)neww_v(o)->s[X_URI])(o, out);
-}
-static void neww_handled(void *o) {
-    ((fn_bool_in)neww_v(o)->s[X_HANDLED])(o, TRUE);
-}
-static HRESULT msg_json(void *o, LPWSTR *out) {
-    return ((fn_out_wstr)msg_v(o)->s[G_JSON])(o, out);
-}
-static HRESULT done_success(void *o, BOOL *b) {
-    return ((fn_bool_out)don_v(o)->s[D_SUCCESS])(o, b);
-}
-
-/* ================= instances ================= */
-typedef struct Wv2 Wv2;
-
-enum { HND_NAVSTART = 1, HND_NAVDONE, HND_NEWWIN, HND_WEBMSG };
-
-#define WV2_MAX_KEYS 32
-typedef struct Wv2Key Wv2Key;   /* the table itself lives with the shortcuts */
-struct Wv2Key {
-    int  mod, vk, cmd;
-    bool used;
-    hval cb;
-};
-
-
-typedef struct Hnd {
-    const void *vt;
-    long  ref;
-    int   kind;
-    Wv2 *owner;
-} Hnd;
-
-typedef struct HndVtbl {
-    HRESULT (WV2_CALL *QueryInterface)(void *, const GUID *, void **);
-    ULONG   (WV2_CALL *AddRef)(void *);
-    ULONG   (WV2_CALL *Release)(void *);
-    HRESULT (WV2_CALL *Invoke)(void *, void *, void *);   /* sender, args */
-} HndVtbl;
-
-typedef struct DoneVtbl {
-    HRESULT (WV2_CALL *QueryInterface)(void *, const GUID *, void **);
-    ULONG   (WV2_CALL *AddRef)(void *);
-    ULONG   (WV2_CALL *Release)(void *);
-    HRESULT (WV2_CALL *Invoke)(void *, HRESULT, void *);  /* errorCode, result */
-} DoneVtbl;
-
-struct Wv2 {
-    int64_t id;
-    HWND    parent;
-    void   *ctl;                 /* ICoreWebView2Controller* */
-    void   *web;                 /* ICoreWebView2*          */
-    hval    cb_nav, cb_load, cb_msg, cb_new;
-    Hnd     h[4];                /* navstart / navdone / newwin / webmsg */
-    int     top;                 /* top inset, logical px */
-    int     dpi;
-    int     last_cw, last_ch;
-    /* the rect we last handed the controller, and where we want it: they
-     * only agree once the fit correction below has converged */
-    RECT    ask;
-    bool    asked;
-    bool    ready;
-    bool    com_init;
-    /* keyboard shortcuts: the Chromium widget owns the focus once a page is
-     * showing, so the parent's WM_KEYDOWN never fires. We subclass the
-     * widget instead and claim the accelerator combinations ourselves. */
-    HWND    wvwnd;
-    WNDPROC old_proc;
-    Wv2Key  keys[WV2_MAX_KEYS];
-    bool    shown;          /* false while the tab is in the background */
-};
-
-static Wv2 *g_tbl = NULL;
-static int g_len = 0, g_cap = 0;
-static int64_t g_next = 1;
-
-static Wv2 *wv2_find(int64_t id) {
-    for (int i = 0; i < g_len; i++) if (g_tbl[i].id == id) return &g_tbl[i];
-    return NULL;
-}
-
-/* creation is synchronous and single threaded, so one stage variable is enough */
-typedef struct Done Done;   /* defined further down, with the completion vtable */
-static volatile int g_stage = 0;      /* 0 = starting, 1 = env, 2 = ctl, -1 = failed */
-/* the environment and the controller complete through two DIFFERENT handler
- * objects; reusing one would make the second completion look like the first
- * and ask for another controller forever */
-static Done *g_ctl_done = NULL;
-static void *g_factory = NULL;
-static char  g_loader_path[MAX_PATH * 2];
-static int   g_have_factory = 0;
-static int   g_searched = 0;
-
-/* ================= small helpers ================= */
-static char *utf8_of(const wchar_t *w) {
-    if (!w) return NULL;
-    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
-    if (n <= 1) return NULL;
-    char *out = (char *)malloc((size_t)n);
-    if (!out) return NULL;
-    if (WideCharToMultiByte(CP_UTF8, 0, w, -1, out, n, NULL, NULL) <= 0) {
-        free(out);
-        return NULL;
-    }
-    return out;
-}
-
-static wchar_t *wide_of(const char *s) {
-    if (!s) return NULL;
-    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
-    if (n <= 0) return NULL;
-    wchar_t *out = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
-    if (!out) return NULL;
-    if (MultiByteToWideChar(CP_UTF8, 0, s, -1, out, n) <= 0) {
-        free(out);
-        return NULL;
-    }
-    return out;
-}
-
-static bool starts_with_ci(const char *s, const char *pfx) {
-    if (!s) return false;
-    for (size_t i = 0; pfx[i]; i++) {
-        char a = s[i], b = pfx[i];
-        if (a == 0) return false;
-        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
-        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
-        if (a != b) return false;
-    }
-    return true;
-}
-
-/* ---- loader discovery ------------------------------------------------ */
-static int file_exists(const char *p) {
-    DWORD a = GetFileAttributesA(p);
-    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-static void loader_try(const char *path) {
-    if (g_have_factory || !path || !path[0] || !file_exists(path)) return;
     HMODULE h = LoadLibraryA(path);
-    if (!h) return;
-    void *fn = (void *)GetProcAddress(h, "CreateCoreWebView2EnvironmentWithOptions");
-    if (!fn) { FreeLibrary(h); return; }
-    g_factory = fn;
-    g_have_factory = 1;
-    lstrcpynA(g_loader_path, path, sizeof g_loader_path);
+    if (!h) {
+        /* libcef.dll and chrome_elf.dll live next to the shim, and a plain
+         * LoadLibrary searches the *executable's* directory first. This flag
+         * starts the search at the directory of the file being loaded. */
+        h = LoadLibraryExA(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    }
+    if (!h) {
+        char why[64];
+        snprintf(why, sizeof why, "load failed, error %lu",
+                 (unsigned long)GetLastError());
+        tried_add(path, why);
+        return;
+    }
+    /* One export is enough to prove this is the shim and not something else. */
+    if (!GetProcAddress(h, "cefsh_create")) {
+        tried_add(path, "loaded, but it is not the CEF shim");
+        FreeLibrary(h);
+        return;
+    }
+    g_shim.dll = h;
+    lstrcpynA(g_shim_path, path, sizeof g_shim_path);
+#define BIND(field, name) \
+    *(void **)(&g_shim.field) = (void *)GetProcAddress(h, name)
+    BIND(init,      "cefsh_init");
+    BIND(shutdown,  "cefsh_shutdown");
+    BIND(pump,      "cefsh_pump");
+    BIND(create,    "cefsh_create");
+    BIND(destroy,   "cefsh_destroy");
+    BIND(ident,     "cefsh_ident");
+    BIND(fit,       "cefsh_fit");
+    BIND(go,        "cefsh_go");
+    BIND(html,      "cefsh_html");
+    BIND(back,      "cefsh_back");
+    BIND(forward,   "cefsh_forward");
+    BIND(reload,    "cefsh_reload");
+    BIND(stop,      "cefsh_stop");
+    BIND(can_back,    "cefsh_can_back");
+    BIND(can_forward, "cefsh_can_forward");
+    BIND(url,       "cefsh_url");
+    BIND(title,     "cefsh_title");
+    BIND(favicon,   "cefsh_favicon");
+    BIND(zoom,      "cefsh_zoom");
+    BIND(zoom_get,  "cefsh_zoom_get");
+    BIND(devtools,  "cefsh_devtools");
+    BIND(devtools_ready, "cefsh_devtools_ready");
+    BIND(devtools_fit,   "cefsh_devtools_fit");
+    BIND(print,     "cefsh_print");
+    BIND(post,      "cefsh_post");
+    BIND(visible,   "cefsh_visible");
+    BIND(available, "cefsh_available");
+    BIND(closing,   "cefsh_closing");
+#undef BIND
+    if (!g_shim.create || !g_shim.available) {
+        g_shim.dll = NULL;
+        FreeLibrary(h);
+        tried_add(path, "loaded, but cefsh_create/cefsh_available missing");
+    }
 }
 
-/* newest <root>\<version>\WebView2Loader.dll; versions sort lexicographically */
-static void loader_scan_version_dir(const char *root) {
-    char dir[MAX_PATH * 4];
-    snprintf(dir, sizeof dir, "%.500s\\*", root);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(dir, &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    char best[MAX_PATH];
-    best[0] = 0;
-    do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
-        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
-        if (strcmp(fd.cFileName, best) > 0) lstrcpynA(best, fd.cFileName, MAX_PATH);
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
-    if (!best[0]) return;
+/* Relative sub-paths probed beside the executable, nearest first. cef_runtime
+ * is where build_cefshim.bat stages the runtime, so an app sitting in build/
+ * or in the repository root both find it. */
+static const char *RELPATHS[] = {
+    "cefshim.dll",
+    "cef\\cefshim.dll",
+    "cef_runtime\\cefshim.dll",
+    "..\\cef_runtime\\cefshim.dll",
+    "..\\build\\cef_runtime\\cefshim.dll",
+    "..\\..\\build\\cef_runtime\\cefshim.dll",
+    "..\\..\\cef_runtime\\cefshim.dll",
+};
+
+static int shim_debug(void);
+
+static void shim_probe_base(const char *base) {
     char p[MAX_PATH * 4];
-    snprintf(p, sizeof p, "%.400s\\%.100s\\WebView2Loader.dll", root, best);
-    loader_try(p);
+    for (size_t i = 0; i < sizeof RELPATHS / sizeof RELPATHS[0]; i++) {
+        snprintf(p, sizeof p, "%s\\%s", base, RELPATHS[i]);
+        shim_try(p);
+        if (g_shim.dll) return;
+    }
 }
 
-static void exe_dir(char *out, size_t n) {
-    DWORD k = GetModuleFileNameA(NULL, out, (DWORD)n);
-    if (!k || k >= n) { out[0] = 0; return; }
-    char *slash = strrchr(out, '\\');
-    if (slash) *slash = 0;
-}
-
-static void loader_search(void) {
+static void shim_search(void) {
     if (g_searched) return;
     g_searched = 1;
+    snprintf(g_tried, sizeof g_tried,
+             "Put cef_runtime/ beside the executable, or set HOLYCEF_SHIM.");
 
-    const char *env = getenv("HOLYWEBVIEW2_LOADER");
-    if (env) loader_try(env);
+    const char *env = getenv("HOLYCEF_SHIM");
+    if (env && env[0]) shim_try(env);
+    if (g_shim.dll) return;
 
-    char p[MAX_PATH * 4], d[MAX_PATH * 2];
-    exe_dir(d, sizeof d);
-    if (d[0]) {
-        snprintf(p, sizeof p, "%s\\WebView2Loader.dll", d);
-        loader_try(p);
-        snprintf(p, sizeof p, "%s\\webview2\\x64\\WebView2Loader.dll", d);
-        loader_try(p);
-        snprintf(p, sizeof p, "%s\\..\\webview2\\x64\\WebView2Loader.dll", d);
-        loader_try(p);
+    char d[MAX_PATH * 2];
+    DWORD k = GetModuleFileNameA(NULL, d, (DWORD)sizeof d);
+    if (k && k < sizeof d) {
+        char *slash = strrchr(d, '\\');
+        if (slash) *slash = 0;
+        if (d[0]) shim_probe_base(d);
     }
-    /* installed fixed-version runtimes, newest first */
-    char roots[3][MAX_PATH * 2];
-    int  n = 0;
-    const char *pf86 = getenv("ProgramFiles(x86)");
-    const char *pf64 = getenv("ProgramFiles");
-    const char *la   = getenv("LOCALAPPDATA");
-    if (pf86) snprintf(roots[n++], MAX_PATH * 2, "%s\\Microsoft\\EdgeWebView\\Application", pf86);
-    if (pf64) snprintf(roots[n++], MAX_PATH * 2, "%s\\Microsoft\\EdgeWebView\\Application", pf64);
-    if (la)   snprintf(roots[n++], MAX_PATH * 2, "%s\\Microsoft\\EdgeWebView\\Application", la);
-    for (int i = 0; i < n; i++) loader_scan_version_dir(roots[i]);
+    if (g_shim.dll) return;
+
+    /* Also probe the working directory, so launching from elsewhere still
+     * finds a runtime unpacked beside the shell's cwd. */
+    char cwd[MAX_PATH * 2];
+    if (GetCurrentDirectoryA((DWORD)sizeof cwd, cwd)) shim_probe_base(cwd);
+
+    if (!g_shim.dll && shim_debug()) {
+        fprintf(stderr, "[cef] cefshim.dll not found. Tried:%s\n", g_tried);
+        fflush(stderr);
+    }
+}
+
+static int shim_debug(void) {
+    const char *e = getenv("HOLYCEF_DEBUG");
+    return e && e[0] && e[0] != '0';
+}
+
+static void wverr(const char *msg, long code) {
+    fprintf(stderr, "[cef] %s (%ld)\n", msg, code);
+    fflush(stderr);
 }
 
 /* ================= guarded callbacks into HolyPHP ================= */
+
 typedef struct Wv2Job {
-    hval  cb;
-    char *arg;
+    hval    cb;
+    char   *arg;
     int64_t num;
 } Wv2Job;
 
@@ -423,21 +240,6 @@ static hval wv2_body(void *env, hval exv) {
     return hp_call_value(j->cb, 1, a);
 }
 
-static void fire(hval cb, const char *s) {
-    if (!s || cb.tag != HV_CLO || !cb.u.c) return;
-    Wv2Job j;
-    j.cb = cb;
-    j.arg = (char *)s;
-    hval r = hp_try_run(wv2_body, NULL, &j);
-    if (r.tag != HV_NULL) {
-        hstr *m = (r.tag == HV_STR) ? r.u.s : hp_val_to_str(r);
-        hstr *full = hp_str_concat2(hp_str_lit("[holybrowser] uncaught in event handler: "),
-                                    m ? m : hp_str_lit(""));
-        fprintf(stderr, "%s\n", full ? full->data : "");
-        fflush(stderr);
-    }
-}
-
 static hval wv2_int_body(void *env, hval exv) {
     (void)exv;
     Wv2Job *j = (Wv2Job *)env;
@@ -446,582 +248,375 @@ static hval wv2_int_body(void *env, hval exv) {
     return hp_call_value(j->cb, 1, a);
 }
 
+static void report(hval r) {
+    if (r.tag == HV_NULL) return;
+    hstr *m = (r.tag == HV_STR) ? r.u.s : hp_val_to_str(r);
+    hstr *full = hp_str_concat2(hp_str_lit("[browser] uncaught in event handler: "),
+                                m ? m : hp_str_lit(""));
+    fprintf(stderr, "%s\n", full ? full->data : "");
+    fflush(stderr);
+}
+
+static void fire(hval cb, const char *s) {
+    if (!s || cb.tag != HV_CLO || !cb.u.c) return;
+    Wv2Job j;
+    j.cb = cb;
+    j.arg = (char *)s;
+    j.num = 0;
+    report(hp_try_run(wv2_body, NULL, &j));
+}
+
 static void fire_int(hval cb, int64_t n) {
     if (cb.tag != HV_CLO || !cb.u.c) return;
     Wv2Job j;
     j.cb = cb;
     j.arg = NULL;
-    j.num = (int)n;
-    hval r = hp_try_run(wv2_int_body, NULL, &j);
-    if (r.tag != HV_NULL) {
-        hstr *m = (r.tag == HV_STR) ? r.u.s : hp_val_to_str(r);
-        hstr *full = hp_str_concat2(hp_str_lit("[holybrowser] uncaught in shortcut: "),
-                                    m ? m : hp_str_lit(""));
-        fprintf(stderr, "%s\n", full ? full->data : "");
-        fflush(stderr);
+    j.num = n;
+    report(hp_try_run(wv2_int_body, NULL, &j));
+}
+
+/* ================= instances ================= */
+
+#define WV2_MAX_KEYS 32
+
+typedef struct Wv2Key {
+    int  mod, vk, cmd;
+    bool used;
+    hval cb;
+} Wv2Key;
+
+typedef struct Wv2 {
+    int64_t  id;
+    long long cef_id;        /* CEF's own browser identifier */
+    HWND     parent;
+    int      top;            /* top inset, logical px */
+    bool     shown;          /* false while the tab is in the background */
+    hval     cb_nav, cb_load, cb_msg, cb_new;
+    Wv2Key   keys[WV2_MAX_KEYS];
+} Wv2;
+
+#define WV2_MAX_INSTANCES 32
+static Wv2 g_tbl[WV2_MAX_INSTANCES];
+static int  g_len = 0;
+static int64_t g_next = 1;
+
+static Wv2 *wv2_find(int64_t id) {
+    for (int i = 0; i < g_len; i++)
+        if (g_tbl[i].id == id) return &g_tbl[i];
+    return NULL;
+}
+
+static Wv2 *wv2_by_cef(long long cef_id) {
+    if (!cef_id) return NULL;
+    for (int i = 0; i < g_len; i++)
+        if (g_tbl[i].id && g_tbl[i].cef_id == cef_id) return &g_tbl[i];
+    return NULL;
+}
+
+/* ================= events from the shim ================= */
+
+/* Called by cefshim.dll on the VM thread, after it has drained everything the
+ * CEF thread queued. The signature is fixed by that DLL's import library. */
+__declspec(dllexport) int64_t hpcef_dispatch(int ev, long long id, const char *text) {
+    Wv2 *e = wv2_by_cef(id);
+    if (!e) return 0;
+    switch (ev) {
+    case 1: fire(e->cb_nav, text); break;
+    case 2: fire(e->cb_load, text ? text : "0"); break;
+    case 3: fire(e->cb_msg, text); break;
+    case 4: fire(e->cb_new, text); break;
+    case 5: {
+        /* "mod,vk"; the table and its alias handling live here, exactly as
+         * they did when this arrived on WebView2's accelerator event. */
+        if (!text) break;
+        int mod = 0, vk = 0;
+        if (sscanf(text, "%d,%d", &mod, &vk) != 2) break;
+        int variants[4] = {vk, vk, vk, vk};
+        if (vk == VK_OEM_PLUS)  { variants[1] = VK_ADD;      variants[2] = 187; variants[3] = 107; }
+        if (vk == VK_OEM_MINUS) { variants[1] = VK_SUBTRACT; variants[2] = 189; variants[3] = 109; }
+        for (int i = 0; i < WV2_MAX_KEYS; i++) {
+            Wv2Key *k = &e->keys[i];
+            if (!k->used || k->mod != mod) continue;
+            if (k->vk != variants[0] && k->vk != variants[1] &&
+                k->vk != variants[2] && k->vk != variants[3]) continue;
+            fire_int(k->cb, k->cmd);
+            break;
+        }
+        break;
     }
+    default: break;
+    }
+    return 0;
 }
 
-/* ================= keyboard shortcuts ================= */
-#define WV2_MOD_CTRL  1
-#define WV2_MOD_SHIFT 2
-#define WV2_MOD_ALT   4
-
-/* one subclassed widget per view; HolyBrowser only ever has one */
-#define WV2_MAX_VIEWS 8
-typedef struct Wv2Sub {
-    bool    used;
-    HWND    hwnd;
-    WNDPROC old;
-    Wv2    *owner;
-} Wv2Sub;
-static Wv2Sub g_subs[WV2_MAX_VIEWS];
-
-static int mods_down(void) {
-    int m = 0;
-    if (GetKeyState(VK_CONTROL) < 0) m |= WV2_MOD_CTRL;
-    if (GetKeyState(VK_SHIFT)   < 0) m |= WV2_MOD_SHIFT;
-    if (GetKeyState(VK_MENU)    < 0) m |= WV2_MOD_ALT;
-    return m;
+/* Called from the UI message loop; see hpui_dispatch. */
+void hpwv2_drain_events(void) {
+    /* No search here: the pump runs on every message, so probing for the shim
+     * at this point would load CEF into processes that only wanted to draw a
+     * button. Only drain once something has actually asked for the engine. */
+    if (!g_shim.dll) return;
+    if (g_shim.pump) g_shim.pump();
 }
 
-static LRESULT CALLBACK wv2_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+/* ================= entry points ================= */
 
-static void subclass_widget(Wv2 *e, HWND w) {
-    if (!w || e->wvwnd == w) return;
-    for (int i = 0; i < WV2_MAX_VIEWS; i++) {
-        if (g_subs[i].used) continue;
-        LONG_PTR prev = SetWindowLongPtrW(w, GWLP_WNDPROC, (LONG_PTR)wv2_wndproc);
-        if (!prev) return;
-        g_subs[i].used = true;
-        g_subs[i].hwnd = w;
-        g_subs[i].old = (WNDPROC)prev;
-        g_subs[i].owner = e;
-        e->wvwnd = w;
-        e->old_proc = (WNDPROC)prev;
+/* Bring the engine up exactly once. Called from hpwv2_available() rather than
+ * hpwv2_create(): this app asks "is the engine there?" before it creates any
+ * window, and that is the only place early enough to notice that we are a
+ * Chromium subprocess - the shim ends those processes outright. */
+static void shim_start(void) {
+    if (g_started) return;
+    if (g_shim.init() != 0) {
+        wverr("cefsh_init failed", -1);
         return;
     }
+    g_started = 1;
+    if (shim_debug())
+        fprintf(stderr, "[cef] engine started (pid %lu): %s\n",
+                (unsigned long)GetCurrentProcessId(), g_shim_path);
 }
-
-static LRESULT CALLBACK wv2_wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
-    Wv2Sub *s = NULL;
-    for (int i = 0; i < WV2_MAX_VIEWS; i++)
-        if (g_subs[i].used && g_subs[i].hwnd == h) { s = &g_subs[i]; break; }
-    if (!s) return DefWindowProcW(h, msg, wp, lp);
-
-    if (msg == WM_KEYDOWN && s->owner) {
-        Wv2Key *ks = s->owner->keys;
-        int mod = mods_down();
-        int vk = (int)wp;
-        for (int i = 0; i < WV2_MAX_KEYS; i++) {
-            if (!ks[i].used || ks[i].vk != vk || ks[i].mod != mod) continue;
-            fire_int(ks[i].cb, ks[i].cmd);
-            return 0;   /* claimed: the page never sees it */
-        }
-    }
-    return CallWindowProcW(s->old, h, msg, wp, lp);
-}
-
-/* The WebView2 widget is a real child of our window; find it by class. */
-static HWND find_widget(HWND parent) {
-    HWND first = NULL;
-    for (HWND c = GetWindow(parent, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
-        wchar_t cls[80];
-        GetClassNameW(c, cls, (int)(sizeof cls / sizeof cls[0]));
-        if (wcsncmp(cls, L"Chrome_WidgetWin", 15) == 0) return c;
-        if (!first) first = c;
-    }
-    return first;
-}
-
-/* ================= our COM objects ================= */
-static HRESULT WV2_CALL hnd_QI(void *self, const GUID *id, void **out);
-static ULONG   WV2_CALL hnd_AddRef(void *self);
-static ULONG   WV2_CALL hnd_Release(void *self);
-static HRESULT WV2_CALL hnd_Invoke(void *self, void *sender, void *args);
-
-static const HndVtbl g_hnd_vtbl = { hnd_QI, hnd_AddRef, hnd_Release, hnd_Invoke };
-
-static HRESULT WV2_CALL hnd_QI(void *self, const GUID *id, void **out) {
-    if (!out) return E_POINTER;
-    *out = NULL;
-    Hnd *h = (Hnd *)self;
-    const GUID *mine = NULL;
-    switch (h->kind) {
-    case HND_NAVSTART: mine = &IID_WV2NavStartingH; break;
-    case HND_NAVDONE:  mine = &IID_WV2NavDoneH;    break;
-    case HND_NEWWIN:   mine = &IID_WV2NewWindowH;   break;
-    case HND_WEBMSG:   mine = &IID_WV2WebMsgH;      break;
-    default: return E_NOINTERFACE;
-    }
-    if (IsEqualGUID(id, &IID_IUnknown) || IsEqualGUID(id, mine)) {
-        *out = self;
-        hnd_AddRef(self);
-        return S_OK;
-    }
-    return E_NOINTERFACE;
-}
-
-static ULONG WV2_CALL hnd_AddRef(void *self) {
-    Hnd *h = (Hnd *)self;
-    return (ULONG)(h->ref + 1);
-}
-
-static ULONG WV2_CALL hnd_Release(void *self) {
-    Hnd *h = (Hnd *)self;
-    if (h->ref > 0) h->ref--;
-    return (ULONG)h->ref;
-}
-
-static HRESULT WV2_CALL hnd_Invoke(void *self, void *sender, void *args) {
-    (void)sender;
-    Hnd *h = (Hnd *)self;
-    Wv2 *e = h ? h->owner : NULL;
-    if (!e || !args) return S_OK;
-
-    if (h->kind == HND_NAVSTART) {
-        LPWSTR wuri = NULL;
-        if (FAILED(nav_uri(args, &wuri))) return S_OK;
-        char *uri = utf8_of(wuri);
-        if (wuri) CoTaskMemFree(wuri);
-        if (!uri) return S_OK;
-        /* holybrowser:// never reaches Chromium: cancel it and hand the URL
-         * back to the script, which decides what to show instead. */
-        if (starts_with_ci(uri, "holybrowser://")) nav_cancel(args);
-        fire(e->cb_nav, uri);
-        free(uri);
-        return S_OK;
-    }
-    if (h->kind == HND_NAVDONE) {
-        BOOL ok = FALSE;
-        done_success(args, &ok);
-        fire(e->cb_load, ok ? "1" : "0");
-        return S_OK;
-    }
-    if (h->kind == HND_NEWWIN) {
-        neww_handled(args);   /* tabs are the script's job */
-        LPWSTR wuri = NULL;
-        if (SUCCEEDED(neww_uri(args, &wuri)) && wuri) {
-            char *uri = utf8_of(wuri);
-            if (uri) { fire(e->cb_new, uri); free(uri); }
-        }
-        if (wuri) CoTaskMemFree(wuri);
-        return S_OK;
-    }
-    if (h->kind == HND_WEBMSG) {
-        LPWSTR wj = NULL;
-        if (FAILED(msg_json(args, &wj)) || !wj) return S_OK;
-        char *json = utf8_of(wj);
-        CoTaskMemFree(wj);
-        if (json) { fire(e->cb_msg, json); free(json); }
-        return S_OK;
-    }
-    return S_OK;
-}
-
-/* ---- the two completion handlers ------------------------------------- */
-typedef struct Done {
-    const void *vt;
-    long ref;
-    int  is_env;
-    Wv2 *owner;
-} Done;
-
-static HRESULT WV2_CALL done_QI(void *self, const GUID *id, void **out);
-static ULONG   WV2_CALL done_AddRef(void *self);
-static ULONG   WV2_CALL done_Release(void *self);
-static HRESULT WV2_CALL done_Invoke(void *self, HRESULT hr, void *result);
-
-static const DoneVtbl g_done_vtbl = { done_QI, done_AddRef, done_Release, done_Invoke };
-
-static HRESULT WV2_CALL done_QI(void *self, const GUID *id, void **out) {
-    if (!out) return E_POINTER;
-    *out = NULL;
-    Done *d = (Done *)self;
-    const GUID *mine = d->is_env ? &IID_WV2EnvDoneH : &IID_WV2CtlDoneH;
-    if (IsEqualGUID(id, &IID_IUnknown) || IsEqualGUID(id, mine)) {
-        *out = self;
-        done_AddRef(self);
-        return S_OK;
-    }
-    return E_NOINTERFACE;
-}
-static ULONG WV2_CALL done_AddRef(void *self) {
-    Done *d = (Done *)self;
-    return (ULONG)(d->ref + 1);
-}
-static ULONG WV2_CALL done_Release(void *self) {
-    Done *d = (Done *)self;
-    if (d->ref > 0) d->ref--;
-    return (ULONG)d->ref;
-}
-
-static HRESULT WV2_CALL done_Invoke(void *self, HRESULT hr, void *result) {
-    Done *d = (Done *)self;
-    Wv2 *e = d ? d->owner : NULL;
-    if (!e) return S_OK;
-    if (FAILED(hr) || !result) { g_stage = -1; return S_OK; }
-    if (d->is_env) {
-        if (!g_ctl_done) { g_stage = -1; return S_OK; }
-        if (FAILED(env_create_ctl(result, e->parent, g_ctl_done))) {
-            g_stage = -1;
-            return S_OK;
-        }
-        g_stage = 1;
-        return S_OK;
-    }
-    /* The runtime owns a reference to the controller for the duration of this
-     * callback and drops it as soon as we return. We keep using the pointer
-     * long after that (navigation, bounds, events), so take our own
-     * reference or it dangles and every later call reads freed memory. */
-    ctl_ar_addref(result);
-    e->ctl = result;
-    e->ready = true;
-    g_stage = 2;
-    return S_OK;
-}
-
-/* ================= the public API ================= */
-/* Since WebView2 SDK 1.0.3xxx the factory takes FOUR arguments: the extra
- * `additionalBrowserArguments` string moved into ICoreWebView2EnvironmentOptions.
- * Calling it with the old five argument shape leaves the handler on the stack
- * where the loader never looks, and it answers E_POINTER. */
-typedef HRESULT (WV2_CALL *fn_create_env)(LPCWSTR browserFolder, LPCWSTR userDataFolder,
-                                          void *options, void *handler);
-
-static void pump_until(int timeout_ms) {
-    DWORD t0 = GetTickCount();
-    MSG msg;
-    while (g_stage < 2 && g_stage != -1) {
-        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-        if ((GetTickCount() - t0) > (DWORD)timeout_ms) break;
-        Sleep(8);
-    }
-}
-
-/* Keeps clicks on holybrowser:// links away from Chromium's external protocol
- * handler, and gives pages a postMessage channel back to the host. */
-static const wchar_t *HB_BRIDGE_JS =
-    L"(function(){if(window.__hb)return;window.__hb=1;"
-    L"document.addEventListener('click',function(ev){"
-    L"var a=ev.target&&ev.target.closest?ev.target.closest('a[href]'):null;"
-    L"if(!a)return;var h=a.getAttribute('href')||'';"
-    L"if(h.indexOf('holybrowser:')===0){ev.preventDefault();"
-    L"if(window.chrome&&window.chrome.webview)"
-    L"window.chrome.webview.postMessage(JSON.stringify({hb:'nav',url:h}));}"
-    L"},true);})();";
 
 int64_t hpwv2_available(void) {
-    loader_search();
-    return g_have_factory ? 1 : 0;
+    shim_search();
+    if (!g_shim.dll) return 0;
+    shim_start();
+    return g_started ? 1 : 0;
 }
 
+/* ui_browser_loader() feeds the on-screen report, so when the engine is
+ * missing this hands back what was tried and why, not an empty string. */
 const char *hpwv2_loader_path(void) {
-    loader_search();
-    return g_loader_path;
+    shim_search();
+    return g_shim.dll ? g_shim_path : g_tried;
 }
 
 int64_t hpwv2_create(int64_t parent_hwnd, const char *user_data_dir) {
-    loader_search();
-    if (!g_have_factory) return -1;
+    shim_search();
+    if (!g_shim.dll) { wverr("cefshim.dll not found", -1); return -1; }
     HWND parent = (HWND)(intptr_t)parent_hwnd;
-    if (!parent || !IsWindow(parent)) return -1;
-
-    if (g_len == g_cap) {
-        g_cap = g_cap ? g_cap * 2 : 4;
-        g_tbl = (Wv2 *)realloc(g_tbl, (size_t)g_cap * sizeof(Wv2));
-        if (!g_tbl) return -1;
+    if (!parent || !IsWindow(parent)) {
+        wverr("parent window is not a live HWND", (long)(intptr_t)parent);
+        return -1;
     }
-    Wv2 *e = &g_tbl[g_len++];
+    shim_start();
+    if (!g_started) { wverr("engine not running", -1); return -1; }
+
+    int slot = -1;
+    for (int i = 0; i < g_len; i++)
+        if (g_tbl[i].id == 0) { slot = i; break; }
+    if (slot < 0) {
+        if (g_len >= WV2_MAX_INSTANCES) { wverr("no free browser slot", WV2_MAX_INSTANCES); return -1; }
+        slot = g_len++;
+    }
+    Wv2 *e = &g_tbl[slot];
     memset(e, 0, sizeof *e);
     e->id = g_next++;
     e->parent = parent;
+    e->shown = true;              /* a fresh view is the foreground one */
     e->cb_nav = e->cb_load = e->cb_msg = e->cb_new = hp_null;
-    e->dpi = 96;
-    e->shown = true;   /* a fresh view is the foreground one */
 
-    HMODULE us = GetModuleHandleW(L"user32.dll");
-    typedef UINT (WINAPI *fn_dpi)(HWND);
-    fn_dpi get_dpi = us ? (fn_dpi)(void *)GetProcAddress(us, "GetDpiForWindow") : NULL;
-    if (get_dpi) {
-        UINT d = get_dpi(parent);
-        if (d >= 72 && d <= 480) e->dpi = (int)d;
-    }
-
-    e->com_init = SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED));
-
-    static Done env_done, ctl_done;
-    env_done.vt = &g_done_vtbl; env_done.ref = 1; env_done.is_env = 1; env_done.owner = e;
-    ctl_done.vt = &g_done_vtbl; ctl_done.ref = 1; ctl_done.is_env = 0; ctl_done.owner = e;
-    g_ctl_done = &ctl_done;
-
-    wchar_t *wdir = wide_of(user_data_dir);
-    g_stage = 0;
-
-    /* (browser folder, user data folder, environment options, handler) */
-    HRESULT hr = ((fn_create_env)g_factory)(NULL, wdir, NULL, &env_done);
-    if (wdir) free(wdir);
-    if (FAILED(hr)) return -1;
-
-    /* Bounded: this runs before the app has an event loop, so a runtime that
-     * never answers would otherwise look like a hang. Failing fast lets the
-     * caller show a message and carry on. The first run on a machine also has
-     * to create the profile, which is the slow case. */
-    pump_until(25000);
-    g_ctl_done = NULL;
-    if (!e->ready || !e->ctl) { hpwv2_destroy(e->id); return -1; }
-
-    void *web = NULL;
-    if (FAILED(ctl_web(e->ctl, &web)) || !web) {
-        hpwv2_destroy(e->id);
+    int64_t id = g_shim.create((int64_t)(intptr_t)parent, user_data_dir, 0);
+    if (id <= 0) {
+        wverr("cefsh_create failed", (long)id);
+        e->id = 0;
         return -1;
     }
-    e->web = web;
-
-    void *st = NULL;
-    if (SUCCEEDED(web_get_settings(web, &st)) && st) {
-        set_flag(st, S_SCRIPT,     TRUE);
-        set_flag(st, S_WEBMSG,     TRUE);
-        set_flag(st, S_DEVTOOLS,   TRUE);
-        set_flag(st, S_STATUSBAR,  FALSE);
-        set_flag(st, S_ZOOMCTL,    FALSE);
-    }
-    web_addscript(web, HB_BRIDGE_JS);
-
-    e->h[0].kind = HND_NAVSTART;
-    e->h[1].kind = HND_NAVDONE;
-    e->h[2].kind = HND_NEWWIN;
-    e->h[3].kind = HND_WEBMSG;
-    for (int i = 0; i < 4; i++) {
-        e->h[i].vt = &g_hnd_vtbl;
-        e->h[i].ref = 1;
-        e->h[i].owner = e;
-    }
-    subclass_widget(e, find_widget(e->parent));
-
-    long t1 = 0, t2 = 0, t3 = 0, t4 = 0;
-    web_add_navstart(web, &e->h[0], &t1);
-    web_add_navdone(web, &e->h[1], &t2);
-    web_add_newwin(web, &e->h[2], &t3);
-    web_add_webmsg(web, &e->h[3], &t4);
-
-    return e->id;
+    e->cef_id = g_shim.ident(id);
+    if (shim_debug()) fprintf(stderr, "[cef] tab %lld -> cef browser %lld\n", id, e->cef_id);
+    return id;
 }
 
 int64_t hpwv2_destroy(int64_t id) {
     Wv2 *e = wv2_find(id);
     if (!e) return -1;
-    if (e->ctl) { ctl_close(e->ctl); e->ctl = NULL; }
-    e->web = NULL;
-    if (e->com_init) CoUninitialize();
-    for (int i = 0; i < g_len; i++) {
-        if (&g_tbl[i] == e) {
-            g_tbl[i] = g_tbl[g_len - 1];
-            g_len--;
-            break;
-        }
-    }
+    if (g_shim.destroy) g_shim.destroy(id);
+    e->id = 0;
+    e->cef_id = 0;
     return 0;
 }
 
 /* Re-fits the view to its parent. `top_logical` is the height of the toolbar
- * the script drew above it, in the same logical pixels lib/ui.hphp uses. */
-int64_t hpwv2_fit(int64_t id, int top_logical) {
+ * the script drew above it, in the same logical pixels lib/ui.hphp uses.
+ *
+ * The CEF browser is a real child window of `parent`, so plain client
+ * coordinates are already correct - no DPI round trip is needed. */
+int64_t hpwv2_fit(int64_t id, int top_logical, int width_logical) {
     Wv2 *e = wv2_find(id);
-    if (!e || !e->ctl) return -1;
+    if (!e) return -1;
     e->top = top_logical;
-    /* the widget window appears a moment after the controller does, and
-       Chromium replaces it with a fresh one as the view settles */
-    if (!e->wvwnd || !IsWindow(e->wvwnd)) {
-        e->wvwnd = NULL;
-        subclass_widget(e, find_widget(e->parent));
+    if (!g_shim.fit) return -1;
+
+    if (!e->shown || IsIconic(e->parent)) {
+        g_shim.visible(id, 0);
+        return 0;
     }
     RECT rc;
-    GetClientRect(e->parent, &rc);
-    int cw = rc.right - rc.left, ch = rc.bottom - rc.top;
-    int top = MulDiv(top_logical, e->dpi, 96);
+    if (!GetClientRect(e->parent, &rc)) return -1;
+    int cw = rc.right - rc.left;
+    int ch = rc.bottom - rc.top;
+    /* `top` arrives in the same 96-dpi logical pixels lib/ui.hphp lays out
+     * in, but this process is per-monitor DPI aware, so GetClientRect and
+     * SetWindowPos both work in device pixels. Handing Chromium the unscaled
+     * number put the page window 1.5x too high on a 150% display - it covered
+     * the bottom of the toolbar and swallowed every click meant for the
+     * address bar and the tab strip. */
+    int dpi = (int)hpui_dpi_scale();
+    if (dpi <= 0) dpi = 96;
+    int top = MulDiv(top_logical, dpi, 96);
     if (top < 0) top = 0;
     if (top > ch) top = ch;
-
-    BOOL vis = (e->shown && !IsIconic(e->parent)) ? TRUE : FALSE;
-    ctl_visible(e->ctl, vis);
-    if (!vis) return 0;
-
-    POINT pt;
-    pt.x = 0;
-    pt.y = top;
-    ClientToScreen(e->parent, &pt);
-    RECT want;
-    want.left   = pt.x;
-    want.top    = pt.y;
-    want.right  = pt.x + cw;
-    want.bottom = pt.y + (ch - top);
-
-    int resized = (cw != e->last_cw || ch != e->last_ch);
-    e->last_cw = cw;
-    e->last_ch = ch;
-
-    /* Chromium maps the controller rect through its own DPI space, which is
-     * not always the space GetClientRect reports. On a 150% display we asked
-     * for 1748 physical pixels and the widget turned up 1165 wide and well
-     * down and to the right of where it belonged, so assuming the two agree
-     * puts the page in the wrong corner.
-     *
-     * Rather than guess the conversion, ask, look at where the widget
-     * actually landed, and close the gap: the fixed point of that correction
-     * is the rect we wanted. It settles in a few timer ticks and costs one
-     * GetWindowRect, so there is no pumping and no re-entrancy. */
-    if (!resized && e->asked && e->wvwnd && IsWindow(e->wvwnd)) {
-        RECT got;
-        GetWindowRect(e->wvwnd, &got);
-        int gw = got.right - got.left, gh = got.bottom - got.top;
-        if (gw > 0 && gh > 0) {
-            RECT next = e->ask;
-            next.left   += (want.left   - got.left);
-            next.top    += (want.top    - got.top);
-            next.right  += (want.right  - got.right);
-            next.bottom += (want.bottom - got.bottom);
-            if (next.left != e->ask.left || next.top != e->ask.top ||
-                next.right != e->ask.right || next.bottom != e->ask.bottom) {
-                e->ask = next;
-                ctl_bounds(e->ctl, next);
-                ctl_notify(e->ctl);
-            }
-            return 0;
-        }
+    int w = cw;
+    if (width_logical > 0) {
+        w = MulDiv(width_logical, dpi, 96);
+        if (w > cw) w = cw;
+        if (w < 0) w = 0;
     }
-
-    e->ask = want;
-    e->asked = true;
-    ctl_bounds(e->ctl, want);
-    ctl_notify(e->ctl);
-    return 0;
+    /* The layout tick runs on every message-pump turn, so an unconditional
+     * trace here filled the log with tens of thousands of identical lines and
+     * pushed the interesting events (a navigation, a bridge call) off the end.
+     * Only a change in the geometry is worth a line. */
+    static int last_top = -1, last_w = -1, last_h = -1, last_ch = -1;
+    int h = ch - top;
+    if (shim_debug() && (top != last_top || w != last_w || h != last_h)) {
+        fprintf(stderr, "[cef] fit id=%lld -> %d,%d %dx%d (dpi=%d)\n",
+                (long long)id, 0, top, w, h, dpi);
+        last_top = top;
+        last_w = w;
+        last_h = h;
+    }
+    (void)last_ch;
+    g_shim.visible(id, 1);
+    return g_shim.fit(id, 0, top, w, h);
 }
 
 int64_t hpwv2_navigate(int64_t id, const char *url) {
     Wv2 *e = wv2_find(id);
-    if (!e || !e->web || !url || !url[0]) return -1;
-    wchar_t *w = wide_of(url);
-    if (!w) return -1;
-    HRESULT hr = web_navigate(e->web, w);
-    free(w);
-    return SUCCEEDED(hr) ? 0 : -1;
+    if (!e || !url) return -1;
+    return g_shim.go(id, url);
 }
 
 int64_t hpwv2_html(int64_t id, const char *html) {
     Wv2 *e = wv2_find(id);
-    if (!e || !e->web || !html) return -1;
-    wchar_t *w = wide_of(html);
-    if (!w) return -1;
-    HRESULT hr = web_navstr(e->web, w);
-    free(w);
-    return SUCCEEDED(hr) ? 0 : -1;
+    if (!e || !html) return -1;
+    return g_shim.html(id, html);
 }
 
 int64_t hpwv2_back(int64_t id) {
     Wv2 *e = wv2_find(id);
-    if (!e || !e->web) return -1;
-    BOOL can = FALSE;
-    if (FAILED(web_can_back(e->web, &can)) || !can) return -1;
-    return SUCCEEDED(web_goback(e->web)) ? 0 : -1;
+    return e ? g_shim.back(id) : -1;
 }
 
 int64_t hpwv2_forward(int64_t id) {
     Wv2 *e = wv2_find(id);
-    if (!e || !e->web) return -1;
-    BOOL can = FALSE;
-    if (FAILED(web_can_fwd(e->web, &can)) || !can) return -1;
-    return SUCCEEDED(web_gofwd(e->web)) ? 0 : -1;
+    return e ? g_shim.forward(id) : -1;
 }
 
 int64_t hpwv2_reload(int64_t id) {
     Wv2 *e = wv2_find(id);
-    if (!e || !e->web) return -1;
-    return SUCCEEDED(web_reload(e->web)) ? 0 : -1;
+    return e ? g_shim.reload(id) : -1;
 }
 
 int64_t hpwv2_stop(int64_t id) {
     Wv2 *e = wv2_find(id);
-    if (!e || !e->web) return -1;
-    return SUCCEEDED(web_stop(e->web)) ? 0 : -1;
+    return e ? g_shim.stop(id) : -1;
 }
 
 int64_t hpwv2_can_back(int64_t id) {
     Wv2 *e = wv2_find(id);
-    if (!e || !e->web) return 0;
-    BOOL can = FALSE;
-    web_can_back(e->web, &can);
-    return can ? 1 : 0;
+    return (e && g_shim.can_back(id)) ? 1 : 0;
 }
 
 int64_t hpwv2_can_forward(int64_t id) {
     Wv2 *e = wv2_find(id);
-    if (!e || !e->web) return 0;
-    BOOL can = FALSE;
-    web_can_fwd(e->web, &can);
-    return can ? 1 : 0;
+    return (e && g_shim.can_forward(id)) ? 1 : 0;
 }
 
 int64_t hpwv2_url(int64_t id, char **out) {
     Wv2 *e = wv2_find(id);
     if (out) *out = NULL;
-    if (!e || !e->web) return -1;
-    LPWSTR w = NULL;
-    if (FAILED(web_get_source(e->web, &w)) || !w) return -1;
-    char *u = utf8_of(w);
-    CoTaskMemFree(w);
-    if (!u) return -1;
-    if (out) *out = u; else free(u);
-    return 0;
+    if (!e) return -1;
+    return g_shim.url(id, out);
 }
 
 int64_t hpwv2_title(int64_t id, char **out) {
     Wv2 *e = wv2_find(id);
     if (out) *out = NULL;
-    if (!e || !e->web) return -1;
-    LPWSTR w = NULL;
-    if (FAILED(web_title(e->web, &w)) || !w) return -1;
-    char *t = utf8_of(w);
-    CoTaskMemFree(w);
-    if (!t) return -1;
-    if (out) *out = t; else free(t);
+    if (!e) return -1;
+    return g_shim.title(id, out);
+}
+
+/* The tab's site icon URL, or "" while the page has none. */
+int64_t hpwv2_favicon(int64_t id, char **out) {
+    Wv2 *e = wv2_find(id);
+    if (out) *out = NULL;
+    if (!e || !g_shim.favicon) return -1;
+    char buf[4096];
+    if (g_shim.favicon(id, buf, (int)sizeof buf) <= 0) return -1;
+    if (out) { char *d = (char *)malloc(strlen(buf) + 1); if (d) strcpy(d, buf); *out = d; }
     return 0;
 }
 
 int64_t hpwv2_zoom(int64_t id, double factor) {
     Wv2 *e = wv2_find(id);
-    if (!e || !e->ctl) return -1;
-    if (factor < 0.25) factor = 0.25;
-    if (factor > 3.0) factor = 3.0;
-    return SUCCEEDED(ctl_zoom_put(e->ctl, factor)) ? 0 : -1;
+    if (!e) return -1;
+    return g_shim.zoom(id, factor);
 }
 
 int64_t hpwv2_zoom_get(int64_t id, double *out) {
     Wv2 *e = wv2_find(id);
-    if (!e || !e->ctl) return -1;
-    double z = 1.0;
-    if (FAILED(ctl_zoom_get(e->ctl, &z))) return -1;
-    if (out) *out = z;
-    return 0;
+    if (!e) return -1;
+    return g_shim.zoom_get(id, out);
 }
 
-int64_t hpwv2_devtools(int64_t id) {
+/* `on` opens or closes the docked devtools panel for this view. */
+int64_t hpwv2_devtools(int64_t id, bool on) {
     Wv2 *e = wv2_find(id);
-    if (!e || !e->web) return -1;
-    return SUCCEEDED(web_devtools(e->web)) ? 0 : -1;
+    if (!e || !g_shim.devtools) return -1;
+    return g_shim.devtools(id, on ? 1 : 0);
 }
 
-/* Show or hide this view. Several controllers share one window, one per
- * tab; only the foreground tab is rendered and takes input. */
+/* Where the docked panel goes, in physical client pixels. Called every layout
+ * tick: CEF attaches the window a moment after ShowDevTools returns. */
+int64_t hpwv2_devtools_fit(int64_t id, int x, int y, int w, int hgt) {
+    Wv2 *e = wv2_find(id);
+    if (!e || !g_shim.devtools_fit) return -1;
+    if (g_shim.devtools_ready && !g_shim.devtools_ready(id)) return 0;
+    return g_shim.devtools_fit(id, x, y, w, hgt);
+}
+
+int64_t hpwv2_devtools_ready(int64_t id) {
+    Wv2 *e = wv2_find(id);
+    if (!e || !g_shim.devtools_ready) return 0;
+    return g_shim.devtools_ready(id);
+}
+
+int64_t hpwv2_print(int64_t id) {
+    Wv2 *e = wv2_find(id);
+    if (!e || !g_shim.print) return -1;
+    return g_shim.print(id);
+}
+
+int64_t hpwv2_post(int64_t id, const char *json) {
+    Wv2 *e = wv2_find(id);
+    if (!e || !json) return -1;
+    return g_shim.post(id, json);
+}
+
+/* Show or hide this view. Several browsers share one window, one per tab;
+ * only the foreground tab is rendered and takes input. */
 int64_t hpwv2_visible(int64_t id, bool on) {
     Wv2 *e = wv2_find(id);
-    if (!e || !e->ctl) return -1;
+    if (!e) return -1;
     e->shown = on;
-    ctl_visible(e->ctl, on ? TRUE : FALSE);
-    return 0;
+    return g_shim.visible(id, on ? 1 : 0);
+}
+
+/* How many tabs are still being torn down. A browser that is a child of a
+ * window this runtime owns asks to close by sending WM_CLOSE to that OWNING
+ * window, so without this the window procedure cannot tell "this tab is going"
+ * from "the user closed the app". */
+int hpwv2_closing(void) {
+    return (g_shim.dll && g_shim.closing) ? g_shim.closing() : 0;
 }
 
 /* mod: 1 = Ctrl, 2 = Shift, 4 = Alt (exact combination, no extras allowed).
@@ -1029,6 +624,18 @@ int64_t hpwv2_visible(int64_t id, bool on) {
 int64_t hpwv2_shortcut(int64_t id, int64_t mod, int64_t vk, int64_t cmd, hval cb) {
     Wv2 *e = wv2_find(id);
     if (!e) return -1;
+    for (int i = 0; i < WV2_MAX_KEYS; i++) {
+        Wv2Key *k = &e->keys[i];
+        if (!k->used) continue;
+        bool match_vk = k->vk == (int)vk;
+        if (vk == VK_OEM_PLUS)  match_vk = match_vk || k->vk == VK_ADD || k->vk == 187 || k->vk == 107;
+        if (vk == VK_OEM_MINUS) match_vk = match_vk || k->vk == VK_SUBTRACT || k->vk == 189 || k->vk == 109;
+        if (k->mod == (int)mod && match_vk) {
+            k->cmd = (int)cmd;
+            k->cb = cb;
+            return 0;
+        }
+    }
     for (int i = 0; i < WV2_MAX_KEYS; i++) {
         Wv2Key *k = &e->keys[i];
         if (k->used) continue;
@@ -1057,13 +664,25 @@ int64_t hpwv2_on(int64_t id, int64_t evtype, hval cb) {
     return 0;
 }
 
-#else  /* !_WIN32 — inert stubs so the language still checks on POSIX */
+/* Called when the app is on its way out: let CEF shut down cleanly so the
+ * profile is flushed instead of being left for the next crash. */
+void hpwv2_shutdown(void) {
+    shim_search();
+    if (g_started && g_shim.shutdown) {
+        g_shim.shutdown();
+        g_started = 0;
+    }
+}
+
+#else  /* !_WIN32 - inert stubs so the language still checks on POSIX */
+#include <stdint.h>
+#include <stdbool.h>
 
 int64_t hpwv2_available(void) { return 0; }
 const char *hpwv2_loader_path(void) { return ""; }
 int64_t hpwv2_create(int64_t p, const char *d) { (void)p; (void)d; return -1; }
 int64_t hpwv2_destroy(int64_t i) { (void)i; return -1; }
-int64_t hpwv2_fit(int64_t i, int t) { (void)i; (void)t; return -1; }
+int64_t hpwv2_fit(int64_t i, int t, int w) { (void)i; (void)t; (void)w; return -1; }
 int64_t hpwv2_navigate(int64_t i, const char *u) { (void)i; (void)u; return -1; }
 int64_t hpwv2_html(int64_t i, const char *h) { (void)i; (void)h; return -1; }
 int64_t hpwv2_back(int64_t i) { (void)i; return -1; }
@@ -1074,13 +693,23 @@ int64_t hpwv2_can_back(int64_t i) { (void)i; return 0; }
 int64_t hpwv2_can_forward(int64_t i) { (void)i; return 0; }
 int64_t hpwv2_url(int64_t i, char **o) { (void)i; if (o) *o = NULL; return -1; }
 int64_t hpwv2_title(int64_t i, char **o) { (void)i; if (o) *o = NULL; return -1; }
+int64_t hpwv2_favicon(int64_t i, char **o) { (void)i; if (o) *o = NULL; return -1; }
 int64_t hpwv2_zoom(int64_t i, double z) { (void)i; (void)z; return -1; }
 int64_t hpwv2_zoom_get(int64_t i, double *o) { (void)i; if (o) *o = 1.0; return -1; }
-int64_t hpwv2_devtools(int64_t i) { (void)i; return -1; }
+int64_t hpwv2_devtools(int64_t i, bool on) { (void)i; (void)on; return -1; }
+int64_t hpwv2_devtools_fit(int64_t i, int a, int b, int c, int d) {
+    (void)i; (void)a; (void)b; (void)c; (void)d; return -1;
+}
+int64_t hpwv2_devtools_ready(int64_t i) { (void)i; return 0; }
+int64_t hpwv2_print(int64_t i) { (void)i; return -1; }
+int64_t hpwv2_post(int64_t i, const char *j) { (void)i; (void)j; return -1; }
 int64_t hpwv2_on(int64_t i, int64_t e, hval c) { (void)i; (void)e; (void)c; return -1; }
 int64_t hpwv2_visible(int64_t i, bool on) { (void)i; (void)on; return -1; }
 int64_t hpwv2_shortcut(int64_t i, int64_t m, int64_t v, int64_t c, hval cb) {
     (void)i; (void)m; (void)v; (void)c; (void)cb; return -1;
 }
+void hpwv2_drain_events(void) {}
+void hpwv2_shutdown(void) {}
+int hpwv2_closing(void) { return 0; }
 
 #endif /* _WIN32 */

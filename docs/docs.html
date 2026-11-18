@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script><meta name="description" content="HolyPHP documentation: learn the language, use the compiler, explore libraries and build programs."><title>Documentation — HolyPHP</title><link rel="stylesheet" href="assets/style.css?v=6"></head>
+<body><script src="assets/nav.html.js?v=3"></script><main>
+  <div class="section-kicker">Documentation</div><h1>Everything you need to <span style="color:var(--ember)">build with HolyPHP.</span></h1>
+  <p class="lead">Start with a guided introduction, look up language details, then explore the libraries and tools that ship with the project.</p>
+  <nav class="docs-subnav" aria-label="Documentation topics"><a href="#start">Start here</a><a href="#language">Language</a><a href="#memory">Types &amp; memory</a><a href="#toolchain">Toolchain</a><a href="#libraries">Libraries</a><a href="#packages">Packages</a><a href="#editor">Editor</a></nav>
+  <section id="start"><h2>Start here</h2><div class="hub-grid">
+    <a class="hub-card" href="guide/index.html"><small>Beginner path · 9 chapters</small><h2>Learn HolyPHP</h2><p>From what the language is through installation, variables, types and console input/output.</p></a>
+    <a class="hub-card" href="guide.html"><small>Guided practice · interactive</small><h2>Work through examples</h2><p>Functions, control flow, arrays, classes, memory safety and application libraries.</p></a>
+    <a class="hub-card" href="examples.html"><small>Source code · complete programs</small><h2>Browse examples</h2><p>See working projects and demonstrations from the repository.</p></a>
+  </div></section>
+  <section id="language"><h2>Language reference</h2><div class="hub-grid">
+    <a class="hub-card" href="lang.html"><small>Syntax &amp; semantics</small><h2>Language overview</h2><p>Variables, types, functions, control flow, classes, closures, imports and expressions.</p></a>
+    <a class="hub-card" href="builtins.html"><small>Generated reference</small><h2>Built-in functions</h2><p>Search built-in function names, signatures and descriptions.</p></a>
+    <a class="hub-card" href="cli.html"><small>Commands &amp; options</small><h2>Command line</h2><p>Learn how to check, run, build and inspect HolyPHP programs.</p></a>
+  </div></section>
+  <section id="memory"><h2>Types, ownership and memory</h2><p class="lead">The language combines convenient type inference with optional explicit types and compile-time ownership checks.</p><div class="hub-grid">
+    <a class="hub-card" href="lang.html#types"><small>Type system</small><h2>Types and signatures</h2><p>Primitive and composite types, nullable values, function signatures and inference.</p></a>
+    <a class="hub-card" href="lang.html#memory"><small>Borrow checker</small><h2>Ownership and borrowing</h2><p>Understand moves, shared ownership, references and the boundaries of unsafe code.</p></a>
+    <a class="hub-card" href="guide.html#step7"><small>Hands-on</small><h2>Memory safety lesson</h2><p>Follow examples that show how the compiler reasons about access and mutation.</p></a>
+  </div></section>
+  <section id="toolchain"><h2>Compiler and package workflow</h2><div class="hub-grid">
+    <a class="hub-card" href="cli.html"><small>hphp</small><h2>Check, run and build</h2><p>Compile and execute a file, produce an executable or inspect compiler output.</p></a>
+    <a class="hub-card" href="pkg.html"><small>Package manager</small><h2>Install and publish packages</h2><p>Initialize packages, check entries, pack archives and use the package registry.</p></a>
+    <a class="hub-card" href="playground.html" target="_blank" rel="noopener"><small>Browser IDE ↗</small><h2>Try code online</h2><p>Explore examples, edit a program, check it and run it with live console input.</p></a>
+  </div></section>
+  <section id="libraries"><h2>Libraries</h2><div class="hub-grid">
+    <a class="hub-card" href="lib-ui.html"><small>Desktop</small><h2>ui</h2><p>Build native windows, controls, forms, menus and interactive views.</p></a>
+    <a class="hub-card" href="lib-async.html"><small>Networking &amp; events</small><h2>async</h2><p>Use event-driven timers, sockets, HTTP and cooperative asynchronous work.</p></a>
+    <a class="hub-card" href="lib-thread.html"><small>Parallel work</small><h2>thread</h2><p>Use OS threads, channels, synchronization tools and a worker pool.</p></a>
+    <a class="hub-card" href="lib-websocket.html"><small>Real-time connections</small><h2>websocket</h2><p>Exchange messages using the WebSocket protocol.</p></a>
+    <a class="hub-card" href="lib-html.html"><small>Document rendering</small><h2>html</h2><p>Parse HTML and CSS, calculate layout and paint document content.</p></a>
+    <a class="hub-card" href="lib-ide.html"><small>Developer tools</small><h2>ide</h2><p>Explore HolyIDE, a project explorer, editor, palette, terminal and runner.</p></a>
+  </div></section>
+  <section id="packages"><h2>Packages</h2><p>Use <code>hphp pkg</code> to search and install packages from the configured registry. The compiler also embeds the libraries shipped in the repository build. The exact set depends on the compiler binary you installed.</p><pre><code>hphp pkg help
+hphp pkg search
+hphp pkg install &lt;name&gt;</code></pre><a href="pkg.html">Read the package manager guide →</a></section>
+  <section id="editor"><h2>Editor support</h2><p>The VS Code extension provides HolyPHP syntax highlighting, completions and compiler diagnostics. See the repository’s <a href="https://github.com/Elifoxcoder/holyphp/tree/main/packages/extension/hphp" target="_blank" rel="noopener">extension package ↗</a> for installation and development details.</p></section>
+  <p class="release-note">HolyPHP is actively developed. Some library APIs and platform details may change; use the source and compiler version that match your installed build.</p>
+</main><script src="assets/site.js?v=4"></script><script src="assets/theme.js?v=1"></script>
+</body></html>

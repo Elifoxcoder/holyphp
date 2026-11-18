@@ -18,12 +18,13 @@
 #                               handled by the manifest's appExecutionAlias)
 #   assets/icon.png
 #
-# Libraries (lib/ui.hphp, lib/websocket.hphp) are deliberately NOT in the
-# package -- users install them with `hphp pkg install ui` etc.
+# The libraries are compiled into hphp.exe itself (lib/<name>/), so the
+# package needs nothing beside the binary. `hphp pkg install <name>` remains
+# for community packages and for installing a bundled library on purpose.
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)   # repo root
-$version = '1.0.0'
+$version = '1.0.2'
 
 # 1. stage the package layout
 $stage = Join-Path $PSScriptRoot 'stage'

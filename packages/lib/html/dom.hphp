@@ -1,0 +1,533 @@
+// =====================================================================
+//  HolyHTML — dom: the document tree and a tolerant HTML parser
+// =====================================================================
+//
+//  Part of lib/html/html.hphp (import "html"). Nothing here knows about layout
+//  or drawing; this file turns text into a tree.
+//
+//  Two decisions are worth knowing about, because the rest of the library
+//  depends on them:
+//
+//  1. Attributes and inline styles are stored as PARALLEL TYPED ARRAYS
+//     (`$ak`/`$av`, `$ipk`/`$ipv`) rather than one mixed map. A PHP-style
+//     `$attrs[$k]` reads back as `mixed`, and HolyPHP then refuses member
+//     access on it - so the whole engine would have to be written against
+//     untyped values. Parallel `[string]` arrays keep every lookup a string.
+//
+//  2. The tree is built by a parser object whose stack is a typed field,
+//     not a local. A local `[HNode]` cannot be initialised from `[]` (the
+//     empty literal is `[mixed]`), so collections live in fields.
+//
+//  The parser is deliberately forgiving: unclosed tags, stray close tags,
+//  attributes without quotes and void elements all parse. A UI library is
+//  not the place to reject a document over a missing </div>.
+// =====================================================================
+
+class HNode {
+    pub int $kind = 0;              // 0 element, 1 text
+    pub string $tag = "";           // lowercased tag name, "#text" for text
+    pub string $text = "";          // text content
+    pub [string] $ak = [];          // attribute names
+    pub [string] $av = [];          // attribute values (parallel to $ak)
+    pub [string] $ipk = [];         // inline style property names
+    pub [string] $ipv = [];         // inline style values (parallel)
+    pub [HNode] $kids = [];
+    pub HNode $up = null;
+    pub [string] $classes = [];     // split-out class list
+    pub string $id = "";            // id attribute
+    pub int $order = 0;             // document order, for stable sorting
+
+    pub function __construct(int $kind, string $tag) {
+        $this->kind = $kind;
+        $this->tag = $tag;
+    }
+
+    /** An attribute value, "" when absent. */
+    pub function attr(string $name): string {
+        for ($i = 0; $i < count($this->ak); $i++) {
+            if ($this->ak[$i] == $name) { return $this->av[$i]; }
+        }
+        return "";
+    }
+
+    pub function hasAttr(string $name): bool {
+        for ($i = 0; $i < count($this->ak); $i++) {
+            if ($this->ak[$i] == $name) { return true; }
+        }
+        return false;
+    }
+
+    /** Add or replace an attribute in place. */
+    pub function setAttr(string $name, string $value) {
+        for ($i = 0; $i < count($this->ak); $i++) {
+            if ($this->ak[$i] == $name) { $this->av[$i] = $value; return; }
+        }
+        $this->ak[] = $name;
+        $this->av[] = $value;
+    }
+
+    pub function removeAttr(string $name) {
+        $i = 0;
+        while ($i < count($this->ak)) {
+            if ($this->ak[$i] == $name) {
+                array_splice($this->ak, $i, 1);
+                array_splice($this->av, $i, 1);
+                continue;
+            }
+            $i = $i + 1;
+        }
+    }
+
+    /** An inline style value, "" when the property is not set inline. */
+    pub function inline(string $prop): string {
+        for ($i = 0; $i < count($this->ipk); $i++) {
+            if ($this->ipk[$i] == $prop) { return $this->ipv[$i]; }
+        }
+        return "";
+    }
+
+    pub function hasClass(string $c): bool {
+        for ($i = 0; $i < count($this->classes); $i++) {
+            if ($this->classes[$i] == $c) { return true; }
+        }
+        return false;
+    }
+
+    /** Add/remove a class, keeping the split-out list in sync with the
+     *  attribute - the IDE toggles `.active` on state changes and both views
+     *  of the class list have to agree or the selector stops matching. */
+    pub function addClass(string $c) {
+        if ($this->hasClass($c)) { return; }
+        $this->classes[] = $c;
+        $cur = $this->attr("class");
+        $this->setAttr("class", $cur == "" ? $c : $cur . " " . $c);
+    }
+
+    pub function removeClass(string $c) {
+        $out = "";
+        for ($i = 0; $i < count($this->classes); $i++) {
+            if ($this->classes[$i] == $c) { continue; }
+            $out = $out == "" ? $this->classes[$i] : $out . " " . $this->classes[$i];
+        }
+        /* in-place clear: an empty `[]` literal is [mixed] and cannot be
+         * assigned to a [string] field */
+        array_splice($this->classes, 0, count($this->classes));
+        split_classes($this, $out);
+        if ($out == "") { $this->removeAttr("class"); }
+        else { $this->setAttr("class", $out); }
+    }
+
+    pub function toggleClass(string $c) {
+        if ($this->hasClass($c)) { $this->removeClass($c); }
+        else { $this->addClass($c); }
+    }
+
+    /** Set replacement text and rebuild the class list from `class=`. */
+    pub function textOf(string $t) {
+        $this->text = $t;
+    }
+
+    /** First descendant (self included) with this id, or null. */
+    pub function find(string $want): HNode {
+        if ($this->id == $want) { return $this; }
+        for ($i = 0; $i < count($this->kids); $i++) {
+            $hit = $this->kids[$i]->find($want);
+            if ($hit != null) { return $hit; }
+        }
+        return null;
+    }
+
+    /** Depth-first walk; `first` gives the deepest hit. */
+    pub function findByClass(string $c): HNode {
+        if ($this->hasClass($c)) { return $this; }
+        for ($i = 0; $i < count($this->kids); $i++) {
+            $hit = $this->kids[$i]->findByClass($c);
+            if ($hit != null) { return $hit; }
+        }
+        return null;
+    }
+
+    /** All descendants matching a tag (used for tab strips, list items). */
+    pub function allByClass(string $c, [HNode] $into): [HNode] {
+        if ($this->hasClass($c)) { $into[] = $this; }
+        for ($i = 0; $i < count($this->kids); $i++) {
+            $this->kids[$i]->allByClass($c, $into);
+        }
+        return $into;
+    }
+
+    pub function isText(): bool { return $this->kind == 1; }
+}
+
+/** Split a `style="a: b; c: d"` value into the inline declarations.
+ *
+ *  A stylesheet goes through the CSS parser; an attribute is too small to
+ *  deserve it, but it is the same language and it has to reach the same
+ *  cascade - `style="color: red"` is the strongest declaration there is.
+ *  Parsed with the same tolerance: a pair without a colon is skipped. */
+function split_inline_style(HNode $n) {
+    array_splice($n->ipk, 0, count($n->ipk));
+    array_splice($n->ipv, 0, count($n->ipv));
+    $raw = $n->attr("style");
+    if ($raw == "") { return; }
+    $parts = explode(";", $raw);
+    foreach ($parts as $part) {
+        $at = strpos($part, ":");
+        if ($at === false) { continue; }
+        $k = strtolower(trim(substr($part, 0, $at)));
+        $v = trim(substr($part, $at + 1));
+        if ($k == "" || $v == "") { continue; }
+        $n->ipk[] = $k;
+        $n->ipv[] = $v;
+    }
+}
+
+/** Split a `class="a b c"` value into a node's class list. */
+function split_classes(HNode $n, string $v) {
+    array_splice($n->classes, 0, count($n->classes));
+    $parts = explode(" ", $v);
+    foreach ($parts as $p) {
+        $t = trim($p);
+        if ($t == "") { continue; }
+        $n->classes[] = $t;
+    }
+}
+
+class HDoc {
+    pub HNode $root = null;
+    pub string $css = "";             // everything the <style> tags carried
+    pub string $title = "";
+    pub [string] $errors = [];
+}
+
+/** Decode the entities a UI stylesheet or label realistically contains. */
+function html_entity(string $e): string {
+    if ($e == "amp") { return "&"; }
+    if ($e == "lt") { return "<"; }
+    if ($e == "gt") { return ">"; }
+    if ($e == "quot") { return "\""; }
+    if ($e == "apos" || $e == "#39") { return "'"; }
+    if ($e == "nbsp") { return " "; }
+    if ($e == "hellip") { return "..."; }
+    if ($e == "times") { return "x"; }
+    if ($e == "middot") { return "."; }
+    if ($e == "check") { return "v"; }
+    if ($e == "bull") { return "*"; }
+    if ($e == "raquo") { return ">"; }
+    if ($e == "laquo") { return "<"; }
+    if ($e == "mdash" || $e == "ndash") { return "-"; }
+    if ($e == "copy") { return "(c)"; }
+    if ($e == "#x2714" || $e == "#10003" || $e == "#10004") { return "v"; }
+    if (substr($e, 0, 1) == "#") {
+        $code = intval(substr($e, 1));
+        if ($code >= 32 && $code < 0x2000) { return chr($code); }
+        return "?";
+    }
+    if (strlen($e) >= 2 && substr($e, 0, 2) == "#x") {
+        $code = hexdec(substr($e, 2));
+        if ($code >= 32 && $code < 0x2000) { return chr($code); }
+        return "?";
+    }
+    return "&" . $e . ";";
+}
+
+function html_decode(string $s): string {
+    if (strpos($s, "&") === false) { return $s; }
+    $out = "";
+    $i = 0;
+    $n = strlen($s);
+    while ($i < $n) {
+        $c = substr($s, $i, 1);
+        if ($c != "&") { $out .= $c; $i = $i + 1; continue; }
+        $end = strpos($s, ";", $i);
+        if ($end === false || $end - $i > 12) { $out .= $c; $i = $i + 1; continue; }
+        $ent = substr($s, $i + 1, $end - $i - 1);
+        $out .= html_entity($ent);
+        $i = $end + 1;
+    }
+    return $out;
+}
+
+/** Tags that never have children and never need a close tag. */
+function html_void_tag(string $t): bool {
+    if ($t == "br") { return true; }
+    if ($t == "hr") { return true; }
+    if ($t == "img") { return true; }
+    if ($t == "input") { return true; }
+    if ($t == "link") { return true; }
+    if ($t == "meta") { return true; }
+    if ($t == "source") { return true; }
+    if ($t == "wbr") { return true; }
+    if ($t == "area") { return true; }
+    if ($t == "base") { return true; }
+    if ($t == "col") { return true; }
+    return false;
+}
+
+/** Opening $t closes an already-open one of these, chain-style. */
+function html_autoclose(string $open, string $candidate): bool {
+    if ($candidate == "li" && $open == "li") { return true; }
+    if ($candidate == "p" && $open == "p") { return true; }
+    if ($candidate == "tr" && ($open == "tr" || $open == "td" || $open == "th")) { return true; }
+    if (($candidate == "td" || $candidate == "th") && ($open == "td" || $open == "th")) { return true; }
+    if ($candidate == "option" && $open == "option") { return true; }
+    return false;
+}
+
+/** Elements whose text content is not HTML (no tags inside). */
+function html_raw_text(string $t): bool {
+    return $t == "style" || $t == "script" || $t == "textarea" || $t == "pre";
+}
+
+// ---------------------------------------------------------------------
+// The parser. One object, because its state is a stack of open elements
+// that has to be a typed field (see the header note).
+// ---------------------------------------------------------------------
+
+class HParser {
+    pub string $src = "";
+    pub int $i = 0;
+    pub int $n = 0;
+    pub [HNode] $stack = [];
+    pub int $order = 0;
+    pub string $css = "";
+    pub [string] $errors = [];
+    pub string $pending = "";         // text seen since the last tag
+
+    pub function __construct(string $src) {
+        $this->src = $src;
+        $this->n = strlen($src);
+    }
+
+    pub function top(): HNode {
+        return $this->stack[count($this->stack) - 1];
+    }
+
+    /** Turn the accumulated text into a text child of the open element. */
+    pub function flushText() {
+        if ($this->pending == "") { return; }
+        $t = new HNode(1, "#text");
+        $t->text = html_decode($this->pending);
+        $t->up = $this->top();
+        $this->order = $this->order + 1;
+        $t->order = $this->order;
+        $this->top()->kids[] = $t;
+        $this->pending = "";
+    }
+
+    pub function push(HNode $e) {
+        $this->flushText();
+        $e->up = $this->top();
+        $this->order = $this->order + 1;
+        $e->order = $this->order;
+        $this->top()->kids[] = $e;
+        $this->stack[] = $e;
+    }
+
+    /** Close down to (and including) the nearest open $tag. */
+    pub function closeTag(string $tag) {
+        $this->flushText();
+        for ($k = count($this->stack) - 1; $k >= 1; $k--) {
+            if ($this->stack[$k]->tag == $tag) {
+                $this->stack = array_slice($this->stack, 0, $k);
+                return;
+            }
+        }
+        /* a stray close tag: ignore it rather than unwinding the document */
+        $this->errors[] = "stray </" . $tag . ">";
+    }
+
+    /** The raw text between an open tag and its close tag (style/script). */
+    pub function rawUntil(string $tag): string {
+        $close = "</" . $tag;
+        $end = strpos($this->src, $close, $this->i);
+        if ($end === false) {
+            $out = substr($this->src, $this->i);
+            $this->i = $this->n;
+            return $out;
+        }
+        $out = substr($this->src, $this->i, $end - $this->i);
+        $gt = strpos($this->src, ">", $end);
+        $this->i = ($gt === false) ? $this->n : $gt + 1;
+        return $out;
+    }
+
+    /** Parse one tag starting at '<'; returns the attributes via $e. */
+    pub function parseTag(): HNode {
+        $e = new HNode(0, "");
+        $i = $this->i + 1;
+        $nameEnd = $i;
+        while ($nameEnd < $this->n) {
+            $c = substr($this->src, $nameEnd, 1);
+            if ($c == " " || $c == "\t" || $c == "\n" || $c == "\r" ||
+                $c == ">" || $c == "/") { break; }
+            $nameEnd = $nameEnd + 1;
+        }
+        $e->tag = strtolower(substr($this->src, $i, $nameEnd - $i));
+        $i = $nameEnd;
+        /* attributes */
+        while ($i < $this->n) {
+            while ($i < $this->n) {
+                $c = substr($this->src, $i, 1);
+                if ($c == " " || $c == "\t" || $c == "\n" || $c == "\r") { $i = $i + 1; continue; }
+                break;
+            }
+            if ($i >= $this->n) { break; }
+            $c = substr($this->src, $i, 1);
+            if ($c == ">") { $i = $i + 1; break; }
+            if ($c == "/") { $i = $i + 1; continue; }
+            /* name */
+            $as = $i;
+            while ($i < $this->n) {
+                $c = substr($this->src, $i, 1);
+                if ($c == "=" || $c == ">" || $c == " " || $c == "\t" ||
+                    $c == "\n" || $c == "\r" || $c == "/") { break; }
+                $i = $i + 1;
+            }
+            $an = strtolower(substr($this->src, $as, $i - $as));
+            $av = "";
+            while ($i < $this->n && (substr($this->src, $i, 1) == " " ||
+                                     substr($this->src, $i, 1) == "\t" ||
+                                     substr($this->src, $i, 1) == "\n" ||
+                                     substr($this->src, $i, 1) == "\r")) { $i = $i + 1; }
+            if ($i < $this->n && substr($this->src, $i, 1) == "=") {
+                $i = $i + 1;
+                while ($i < $this->n && (substr($this->src, $i, 1) == " " ||
+                                         substr($this->src, $i, 1) == "\t" ||
+                                         substr($this->src, $i, 1) == "\n" ||
+                                         substr($this->src, $i, 1) == "\r")) { $i = $i + 1; }
+                $q = $i < $this->n ? substr($this->src, $i, 1) : "";
+                if ($q == "\"" || $q == "'") {
+                    $i = $i + 1;
+                    $vend = strpos($this->src, $q, $i);
+                    if ($vend === false) { $vend = $this->n; }
+                    $av = substr($this->src, $i, $vend - $i);
+                    $i = ($vend < $this->n) ? $vend + 1 : $this->n;
+                } else {
+                    $vs = $i;
+                    while ($i < $this->n) {
+                        $c = substr($this->src, $i, 1);
+                        if ($c == " " || $c == ">" || $c == "\t" || $c == "\n" || $c == "\r") { break; }
+                        $i = $i + 1;
+                    }
+                    $av = substr($this->src, $vs, $i - $vs);
+                }
+            }
+            if ($an != "") {
+                $e->ak[] = $an;
+                $e->av[] = html_decode($av);
+            }
+        }
+        $this->i = $i;
+        return $e;
+    }
+
+    pub function parse(): HDoc {
+        $doc = new HDoc();
+        $root = new HNode(0, "html");
+        $this->stack[] = $root;
+        /* A fragment (`<div>...</div>` with no <html>) is the common case for
+         * a UI definition, so the implicit root is simply the container. */
+        if (strpos(strtolower(substr($this->src, 0, 400)), "<html") !== false) {
+            $root->tag = "html";
+        }
+        $lower = strtolower($this->src);
+        while ($this->i < $this->n) {
+            $c = substr($this->src, $this->i, 1);
+            if ($c != "<") {
+                $this->pending .= $c;
+                $this->i = $this->i + 1;
+                continue;
+            }
+            /* comment */
+            if (substr($this->src, $this->i, 4) == "<!--") {
+                $end = strpos($this->src, "-->", $this->i + 4);
+                $this->i = ($end === false) ? $this->n : $end + 3;
+                continue;
+            }
+            /* doctype / declaration */
+            if (substr($this->src, $this->i, 2) == "<!" || substr($this->src, $this->i, 2) == "<?") {
+                $end = strpos($this->src, ">", $this->i);
+                $this->i = ($end === false) ? $this->n : $end + 1;
+                continue;
+            }
+            /* close tag */
+            if (substr($this->src, $this->i, 2) == "</") {
+                $end = strpos($this->src, ">", $this->i);
+                if ($end === false) { $this->i = $this->n; continue; }
+                $name = strtolower(trim(substr($this->src, $this->i + 2, $end - $this->i - 2)));
+                $this->i = $end + 1;
+                if ($name != "") { $this->closeTag($name); }
+                continue;
+            }
+            /* open tag */
+            $save = $this->i;
+            $e = $this->parseTag();
+            if ($e->tag == "") {           /* a bare "<" in text */
+                $this->pending .= "<";
+                $this->i = $save + 1;
+                continue;
+            }
+            /* auto-close chains (li/li, p/p, tr/tr, td/td, option/option) */
+            while (count($this->stack) > 1 &&
+                   html_autoclose($this->top()->tag, $e->tag)) {
+                $this->stack = array_slice($this->stack, 0, count($this->stack) - 1);
+            }
+            if (html_raw_text($e->tag)) {
+                $this->flushText();
+                if ($e->tag == "style") {
+                    $raw = $this->rawUntil("style");
+                    $this->css .= "\n" . $raw . "\n";
+                } else if ($e->tag == "title") {
+                    $doc->title = trim($this->rawUntil("title"));
+                } else {
+                    /* script/textarea/pre: keep the text, no children */
+                    $raw = $this->rawUntil($e->tag);
+                    $this->pending .= ($e->tag == "pre") ? $raw : "";
+                    if ($e->tag == "pre") { $this->flushText(); }
+                }
+                if (html_void_tag($e->tag)) { continue; }
+                continue;
+            }
+            $this->push($e);
+            split_classes($e, $e->attr("class"));
+            split_inline_style($e);
+            $e->id = $e->attr("id");
+            if (html_void_tag($e->tag)) {
+                $this->stack = array_slice($this->stack, 0, count($this->stack) - 1);
+            }
+        }
+        $this->flushText();
+        /* anything still open closes at EOF */
+        $doc->root = $root;
+        $doc->css = $this->css;
+        $doc->errors = $this->errors;
+        return $doc;
+    }
+}
+
+/** Parse a document (or a fragment). */
+function html_parse(string $src): HDoc {
+    $p = new HParser($src);
+    return $p->parse();
+}
+
+/** Replace a node's content with a single text node.
+ *  The old children are dropped - the text node takes the element's own
+ *  document order, so hover and focus keep pointing at the same place. */
+function html_set_text(HNode $n, string $text) {
+    array_splice($n->kids, 0, count($n->kids));
+    $t = new HNode(1, "#text");
+    $t->text = $text;
+    $t->up = $n;
+    $t->order = $n->order;
+    $n->kids[] = $t;
+}
+
+/** Rebuild the class list + id of a node after the HTML was edited. */
+function html_refresh_node(HNode $n) {
+    split_classes($n, $n->attr("class"));
+    split_inline_style($n);
+    $n->id = $n->attr("id");
+    for ($i = 0; $i < count($n->kids); $i++) { html_refresh_node($n->kids[$i]); }
+}

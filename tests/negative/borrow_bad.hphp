@@ -1,7 +1,8 @@
-// borrow_bad.hphp — must FAIL sema: mutating an immutably borrowed value
-function bump(int $n): int {
-    $r = &$n;
-    $n += 1;        // error: $n is immutably borrowed by $r
-    return $r;
+// borrow_bad.hphp — mutation while a later use keeps the shared borrow live.
+function bump(): int {
+    let mut $n: int = 1;
+    let $r = &$n;
+    $n += 1;        // error: $r will still be used below
+    return *$r;
 }
-echo bump(1);
+echo bump();

@@ -1,0 +1,20 @@
+// early_return_write.hphp — must FAIL sema: the branch that survived an
+// early return may have written the variable itself, and then the fact the
+// condition proved is about a value that is gone.
+//
+// The then branch returns, so the else branch's facts would normally hold
+// below the if - but the else writes $x = null, so $x is a ?string again
+// when need_string($x) is called.
+function need_string(string $s): int {
+    return strlen($s);
+}
+
+function f(?string $s): int {
+    $x: ?string = $s;
+    if ($x === null) {
+        return 0;
+    } else {
+        $x = null;
+    }
+    return need_string($x);   /* error: $x may be null again */
+}

@@ -1,0 +1,10 @@
+class BorrowEscapeWidget {
+    pub int $value = 0;
+    pub function touch(): void { $this->value = $this->value + 1; }
+}
+function invoke_widget(callable $callback, BorrowEscapeWidget $widget): void {
+    $callback($widget);
+    $widget->touch();
+}
+$callback = function(BorrowEscapeWidget $widget): void {};
+invoke_widget($callback, new BorrowEscapeWidget());

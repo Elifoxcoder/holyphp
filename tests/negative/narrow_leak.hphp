@@ -1,0 +1,19 @@
+// narrow_leak.hphp — must FAIL sema: a narrowing must not escape its branch
+//
+// The loop body proves that $b holds a string, but only inside the loop.
+// When the loop is over, $b is a ?string again — and the write to $a inside
+// the body must not carry the proof of $b out of it.
+function need_string(string $s): int {
+    return strlen($s);
+}
+
+$a: ?string = "x";
+$b: ?string = "y";
+
+if ($a !== null) {
+    while ($b !== null) {
+        $a = "z";
+        break;
+    }
+    echo need_string($b);
+}

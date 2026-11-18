@@ -1,0 +1,7 @@
+{
+  "name": "html",
+  "version": "1.0.0",
+  "entry": "html.hphp",
+  "description": "HolyHTML: an HTML/CSS engine for HolyPHP - parse, style, lay out and paint onto a canvas",
+  "author": "HolyPHP"
+}

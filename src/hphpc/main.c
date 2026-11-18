@@ -25,6 +25,7 @@
 #include "sema.h"
 #include "codegen.h"
 #include "builtins.h"
+#include "diag.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -852,7 +853,7 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
                              opt, subsys, objlist, out);
 #else
             /* POSIX: sockets live in libc, the UI layer is inert stubs */
-            char *link = fmt("gcc %s %s -o %s -lm -lpthread",
+            char *link = fmt("gcc %s %s -o %s -lm -lpthread -lsqlite3 -luring",
                              opt, objlist, out);
 #endif
             rc = run_direct(link, !verbose);
@@ -917,12 +918,20 @@ static int spawn_wait(const char *exepath, PtrVec args) {
 #else
     Buf cmdline;
     buf_init(&cmdline);
+    const char *cpu_limit = getenv("HPHP_RUN_CPU_LIMIT");
+    unsigned cpu_soft = 0, cpu_hard = 0;
+    if (cpu_limit && sscanf(cpu_limit, "%u:%u", &cpu_soft, &cpu_hard) == 2 &&
+        cpu_soft > 0 && cpu_hard >= cpu_soft && cpu_hard <= 3600)
+        buf_printf(&cmdline, "/usr/bin/prlimit --cpu=%u:%u -- ", cpu_soft, cpu_hard);
     buf_printf(&cmdline, "\"%s\"", exepath);
     for (size_t i = 0; i < args.len; i++)
         buf_printf(&cmdline, " \"%s\"", (const char *)args.items[i]);
     int rc = system(cmdline.data);
     free(cmdline.data);
-    return rc;
+    if (rc == -1) return 127;
+    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
+    if (WIFSIGNALED(rc)) return 128 + WTERMSIG(rc);
+    return 1;
 #endif
 }
 
@@ -1519,14 +1528,15 @@ int do_check_file(const char *path) {
     builtins_init();
     sema_run(w);
     if (!sema_result_ok()) {
-        fprintf(stderr, "hphp: compilation failed\n");
+        diag_summary(path);
         return 1;
     }
-    fprintf(stderr, "%s: OK (types and borrows check)\n", path);
+    diag_ok(path);
     return 0;
 }
 
 int main(int argc, char **argv) {
+    diag_init();
     if (argc < 2 || strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
         fprintf(stderr,
                 "HolyPHP %s — a low-level, PHP-flavored compiled language\n"
@@ -1591,11 +1601,11 @@ int main(int argc, char **argv) {
     builtins_init();
     sema_run(whole);
     if (!sema_result_ok()) {
-        fprintf(stderr, "hphp: compilation failed\n");
+        diag_summary(file);
         return 1;
     }
     if (do_check) {
-        fprintf(stderr, "%s: OK (types and borrows check)\n", file);
+        diag_ok(file);
         return 0;
     }
 

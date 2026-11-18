@@ -120,8 +120,10 @@ ${rows}
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
 <title>${name}() — HolyPHP built-ins</title>
 <style>${STYLE}</style>
+<link rel="stylesheet" href="../assets/theme.css?v=2">
 </head>
 <body>
 <main>
@@ -135,6 +137,7 @@ ${rows}
   ${seeHtml}
   ${navRow}
 </main>
+<script src="../assets/theme.js?v=1"></script>
 </body>
 </html>
 `;

@@ -1,0 +1,628 @@
+// =====================================================================
+//  HolyHTML — view: the facade an application talks to
+// =====================================================================
+//
+//  Part of lib/html (import "html"). One object:
+//
+//      $view = new HtmlView($canvas, $w, $h, $theme);
+//      $view->load($html, $css);
+//      $view->paint();
+//
+//  Everything below is mechanical (parse, style, layout, draw); this file
+//  is the part that has opinions about *behaviour*:
+//
+//    * HOVER AND FOCUS ARE STATE, NOT CALLBACKS. Moving the pointer or
+//      clicking updates `HState`, which is what `:hover` and `:focus`
+//      match against, and then the frame is redrawn. No widget has to
+//      register anything for the common case.
+//
+//    * EVENTS COME BACK AS DATA. `mouse()` and `key()` do the bookkeeping
+//      (hover, focus, caret, scroll) and return an `HtmlEvent` naming the
+//      node under the pointer. The application decides what that means.
+//      That keeps the whole input path testable without a window: drive
+//      `mouse("click", 40, 12, 1, 0)` and assert on the returned node.
+//
+//    * ONE ELEMENT MAY BE UNDER EDIT. An `<input>` needs a caret and a
+//      buffer, and neither belongs in the document tree. `edit_start()`
+//      hands the view a node and a string; the view owns the caret and
+//      paints it. The application only reads `text` and watches for the
+//      "submit" event.
+//
+//  Layout is re-run whenever something changed. For a UI of a few hundred
+//  boxes that is well under a frame, and it keeps the state machine in
+//  this file from having to reason about what a change invalidated. If a
+//  document ever gets big enough for that to hurt, the fix is a dirty
+//  flag per subtree, not a different design.
+// =====================================================================
+
+class HtmlEvent {
+    pub string $kind = "";       // click|dblclick|down|up|move|wheel|key|char|edit|submit|
+                                 // cancel|focus|blur|resize|scroll
+    pub int $x = 0;
+    pub int $y = 0;
+    pub int $button = 0;
+    pub int $delta = 0;
+    pub int $vk = 0;
+    pub string $ch = "";
+    pub int $mods = 0;
+    pub HNode $node = null;      // the deepest node under the pointer
+    pub bool $state = false;     // hover / focus / scroll changed: repaint
+    pub bool $moved = false;     // the pointer changed node
+}
+
+class HtmlView {
+    pub int $cv = 0;                 // canvas handle (0 = headless)
+    pub HtmlTheme $th = null;
+    pub FontCache $fonts = null;
+    pub HState $hs = null;
+    pub CssSheet $sheet = null;
+    pub [CssSheet] $sheets = [];
+    pub HDoc $doc = null;
+    pub HtmlLayout $lay = null;
+    pub Painter $pnt = null;
+    pub Box $root = null;
+    pub int $w = 0;
+    pub int $h = 0;
+    pub bool $dirty = true;
+
+    // counters, so a test can tell "repainted" from "did nothing"
+    pub int $paints = 0;
+    pub int $relayouts = 0;
+
+    // inline editing
+    pub HNode $edit = null;
+    pub string $text = "";
+    pub int $caret = 0;
+
+    pub function __construct(int $cv, int $w, int $h, HtmlTheme $th) {
+        $this->cv = $cv;
+        $this->w = $w;
+        $this->h = $h;
+        $this->th = $th;
+        $this->fonts = new FontCache();
+        $this->hs = new HState();
+        $this->hs->vw = $w;
+        $this->pnt = new Painter($cv, false);
+        $this->sheet = new CssSheet();
+    }
+
+    /** Parse a document and its stylesheet. The default stylesheet is
+     *  parsed first, so anything the document says wins. */
+    pub function load(string $html, string $css) {
+        $this->doc = html_parse($html);
+        $this->sheet = new CssSheet();
+        css_add($this->sheet, style_default_css($this->th), $this->w);
+        css_add($this->sheet, $css, $this->w);
+        array_splice($this->sheets, 0, count($this->sheets));
+        $this->sheets[] = $this->sheet;
+        $this->hs->vw = $this->w;
+        $this->dirty = true;
+    }
+
+    /** Swap the stylesheet only (a theme change). */
+    pub function set_css(string $css) {
+        css_add($this->sheet, $css, $this->w);
+        $this->dirty = true;
+    }
+
+    /** Replace the document body content (a re-render). */
+    pub function set_html(string $html) {
+        $this->doc = html_parse($html);
+        $this->edit = null;
+        $this->dirty = true;
+    }
+
+    pub function resize(int $w, int $h) {
+        if ($w == $this->w && $h == $this->h) { return; }
+        $this->w = $w;
+        $this->h = $h;
+        $this->hs->vw = $w;
+        $this->dirty = true;
+    }
+
+    // ---- layout & paint ----------------------------------------------
+    /** Lay out if anything changed, then draw the frame. */
+    pub function paint() {
+        $this->ensure();
+        if ($this->root == null) { return; }
+        $this->pnt->paint($this->root, $this->th->bg);
+        $this->paint_edit();
+        $this->paints = $this->paints + 1;
+        if ($this->cv > 0) {
+            ui_canvas_invalidate($this->cv);
+            ui_canvas_flush($this->cv);
+        }
+    }
+
+    /** Just the layout, no ink. */
+    pub function ensure() {
+        if (!$this->dirty && $this->root != null) { return; }
+        if ($this->doc == null) { return; }
+        $this->lay = new HtmlLayout();
+        $this->lay->fonts = $this->fonts;
+        $this->lay->th = $this->th;
+        $this->lay->sheets = $this->sheets;
+        $this->lay->hs = $this->hs;
+        $this->lay->vw = $this->w;
+        $this->lay->vh = $this->h;
+        $this->root = $this->lay->run($this->doc->root);
+        $this->dirty = false;
+        $this->relayouts = $this->relayouts + 1;
+    }
+
+    /** Paint into a draw list instead of a canvas - how the engine is
+     *  tested. Returns the commands; `$this->pnt->log` keeps them too. */
+    pub function draw_list(): [string] {
+        $this->ensure();
+        $dry = $this->pnt->dry;
+        $this->pnt->dry = true;
+        if ($this->root != null) { $this->pnt->paint($this->root, $this->th->bg); }
+        $out: [string];
+        for ($i = 0; $i < count($this->pnt->log); $i++) { $out[] = $this->pnt->log[$i]; }
+        $this->pnt->dry = $dry;
+        return $out;
+    }
+
+    // ---- the tree -----------------------------------------------------
+    /** The box for a node, or null. */
+    pub function box_of(HNode $n): Box {
+        if ($n == null || $this->lay == null) { return null; }
+        $want = $n->order;
+        $tag = $n->tag;
+        for ($i = 0; $i < count($this->lay->all); $i++) {
+            $b = $this->lay->all[$i];
+            if ($b->ord == $want && $b->node != null && $b->node->tag == $tag) { return $b; }
+            if ($b->node != null && $b->node->order == $want) { return $b; }
+        }
+        return null;
+    }
+
+    /** The node at a point, or null when the point is outside any text. */
+    pub function hit(int $x, int $y): HNode {
+        $this->ensure();
+        if ($this->root == null) { return null; }
+        return $this->hit_in($this->root, $x, $y, 0, 0, $this->w, $this->h);
+    }
+
+    /** The deepest box at a point (for scroll targets and debugging). */
+    pub function hit_box(int $x, int $y): Box {
+        $this->ensure();
+        return $this->box_in($this->root, $x, $y, 0, 0, $this->w, $this->h);
+    }
+
+    function inside(Box $b, int $x, int $y, int $cx0, int $cy0, int $cx1, int $cy1): bool {
+        if ($x < $cx0 || $y < $cy0 || $x >= $cx1 || $y >= $cy1) { return false; }
+        return $x >= $b->x && $y >= $b->y && $x < $b->x + $b->w && $y < $b->y + $b->h;
+    }
+
+    function hit_in(Box $b, int $x, int $y, int $cx0, int $cy0, int $cx1, int $cy1): HNode {
+        if (!$this->inside($b, $x, $y, $cx0, $cy0, $cx1, $cy1)) { return null; }
+        $lx0 = $cx0; $ly0 = $cy0; $lx1 = $cx1; $ly1 = $cy1;
+        if ($b->clips()) {
+            if ($b->x > $lx0) { $lx0 = $b->x; }
+            if ($b->y > $ly0) { $ly0 = $b->y; }
+            if ($b->x + $b->w < $lx1) { $lx1 = $b->x + $b->w; }
+            if ($b->y + $b->h < $ly1) { $ly1 = $b->y + $b->h; }
+        }
+        /* children paint after their parent, so they are hit first; the
+         * out-of-flow ones paint last and win over the flow */
+        for ($i = count($b->abs) - 1; $i >= 0; $i--) {
+            $hit = $this->hit_in($b->abs[$i], $x, $y, $lx0, $ly0, $lx1, $ly1);
+            if ($hit != null) { return $hit; }
+        }
+        for ($i = count($b->kids) - 1; $i >= 0; $i--) {
+            $hit = $this->hit_in($b->kids[$i], $x, $y, $lx0, $ly0, $lx1, $ly1);
+            if ($hit != null) { return $hit; }
+        }
+        if (count($b->lines) > 0) {
+            $ox = $b->cx() - $b->scrollX;
+            $oy = $b->cy() - $b->scrollY;
+            for ($i = 0; $i < count($b->lines); $i++) {
+                $l = $b->lines[$i];
+                if ($y < $oy + $l->y || $y >= $oy + $l->y + $l->h) { continue; }
+                $ax = $ox + $l->x;
+                for ($k = 0; $k < count($l->atoms); $k++) {
+                    $a = $l->atoms[$k];
+                    if ($x >= $ax && $x < $ax + $a->w && !$a->space) { return $a->node; }
+                    $ax = $ax + $a->w;
+                }
+                return $b->node;
+            }
+        }
+        return $b->node;
+    }
+
+    function box_in(Box $b, int $x, int $y, int $cx0, int $cy0, int $cx1, int $cy1): Box {
+        if (!$this->inside($b, $x, $y, $cx0, $cy0, $cx1, $cy1)) { return null; }
+        $lx0 = $cx0; $ly0 = $cy0; $lx1 = $cx1; $ly1 = $cy1;
+        if ($b->clips()) {
+            if ($b->x > $lx0) { $lx0 = $b->x; }
+            if ($b->y > $ly0) { $ly0 = $b->y; }
+            if ($b->x + $b->w < $lx1) { $lx1 = $b->x + $b->w; }
+            if ($b->y + $b->h < $ly1) { $ly1 = $b->y + $b->h; }
+        }
+        for ($i = count($b->abs) - 1; $i >= 0; $i--) {
+            $hit = $this->box_in($b->abs[$i], $x, $y, $lx0, $ly0, $lx1, $ly1);
+            if ($hit != null) { return $hit; }
+        }
+        for ($i = count($b->kids) - 1; $i >= 0; $i--) {
+            $hit = $this->box_in($b->kids[$i], $x, $y, $lx0, $ly0, $lx1, $ly1);
+            if ($hit != null) { return $hit; }
+        }
+        return $b;
+    }
+
+    // ---- selectors ----------------------------------------------------
+    /** The first node matching a CSS selector, in document order. */
+    pub function find(string $sel): HNode {
+        if ($this->doc == null) { return null; }
+        $parts = css_sel_parts($sel);
+        if (count($parts) == 0) { return null; }
+        $r = new CssRule();
+        $r->parts = $parts;
+        return $this->scan_first($this->doc->root, $r);
+    }
+
+    function scan_first(HNode $n, CssRule $r): HNode {
+        if (css_match_rule($r, $n, $this->hs)) { return $n; }
+        for ($i = 0; $i < count($n->kids); $i++) {
+            $hit = $this->scan_first($n->kids[$i], $r);
+            if ($hit != null) { return $hit; }
+        }
+        return null;
+    }
+
+    /** Every node matching a CSS selector, in document order. */
+    pub function find_all(string $sel): [HNode] {
+        $out: [HNode];
+        if ($this->doc == null) { return $out; }
+        $parts = css_sel_parts($sel);
+        if (count($parts) == 0) { return $out; }
+        $r = new CssRule();
+        $r->parts = $parts;
+        return $this->scan_all($this->doc->root, $r, $out);
+    }
+
+    function scan_all(HNode $n, CssRule $r, [HNode] $into): [HNode] {
+        $list: [HNode];
+        $list = $into;
+        if (css_match_rule($r, $n, $this->hs)) { $list[] = $n; }
+        for ($i = 0; $i < count($n->kids); $i++) {
+            $list = $this->scan_all($n->kids[$i], $r, $list);
+        }
+        return $list;
+    }
+
+    /** Change a node's text; the next paint layouts it. */
+    pub function set_text(HNode $n, string $text) {
+        if ($n == null) { return; }
+        html_set_text($n, $text);
+        $this->dirty = true;
+    }
+
+    pub function set_attr(HNode $n, string $name, string $value) {
+        if ($n == null) { return; }
+        $n->setAttr($name, $value);
+        html_refresh_node($n);
+        $this->dirty = true;
+    }
+
+    pub function add_class(HNode $n, string $c) {
+        if ($n == null || $n->hasClass($c)) { return; }
+        $n->addClass($c);
+        $this->dirty = true;
+    }
+
+    pub function remove_class(HNode $n, string $c) {
+        if ($n == null || !$n->hasClass($c)) { return; }
+        $n->removeClass($c);
+        $this->dirty = true;
+    }
+
+    // ---- hover, focus, cursor -----------------------------------------
+    /** Track the node under the pointer and report whether it changed. */
+    pub function set_hover(int $order): bool {
+        if ($this->hs->hover == $order) { return false; }
+        $this->hs->hover = $order;
+        $this->dirty = true;
+        return true;
+    }
+
+    /** Focus a node (or nothing with null). Returns true when it moved. */
+    pub function set_focus(HNode $n): bool {
+        $o = ($n == null) ? 0 : $n->order;
+        if ($this->hs->focus == $o) { return false; }
+        $this->hs->focus = $o;
+        if ($this->edit != null && ($n == null || $n->order != $this->edit->order)) {
+            $this->edit = null;
+        }
+        $this->dirty = true;
+        return true;
+    }
+
+    /** Is this node something the keyboard can go to? */
+    pub function focusable(HNode $n): bool {
+        if ($n == null || $n->kind == 1) { return false; }
+        if ($n->hasAttr("tabindex")) { return true; }
+        $t = $n->tag;
+        return $t == "input" || $t == "textarea" || $t == "button" ||
+               $t == "select" || $t == "a";
+    }
+
+    /** Tab and Shift-Tab walk the focusable nodes in document order. */
+    pub function focus_next(bool $back): bool {
+        if ($this->doc == null) { return false; }
+        $list: [HNode];
+        $list = $this->collect_focusable($this->doc->root, $list);
+        if (count($list) == 0) { return false; }
+        $at = -1;
+        for ($i = 0; $i < count($list); $i++) {
+            if ($list[$i]->order == $this->hs->focus) { $at = $i; }
+        }
+        $next = $back ? ($at - 1) : ($at + 1);
+        if ($next < 0) { $next = count($list) - 1; }
+        if ($next >= count($list)) { $next = 0; }
+        return $this->set_focus($list[$next]);
+    }
+
+    function collect_focusable(HNode $n, [HNode] $into): [HNode] {
+        $list: [HNode];
+        $list = $into;
+        if ($this->focusable($n)) { $list[] = $n; }
+        for ($i = 0; $i < count($n->kids); $i++) {
+            $list = $this->collect_focusable($n->kids[$i], $list);
+        }
+        return $list;
+    }
+
+    /** The cursor shape the canvas should show for a node. */
+    pub function cursor_for(HNode $n): int {
+        $c = "default";
+        $p = $n;
+        while ($p != null) {
+            $st = style_of_node($this->lay, $p);
+            if ($st != null) {
+                $c = $st->cursor;
+                break;
+            }
+            $p = $p->up;
+        }
+        return cursor_shape($c);
+    }
+
+    // ---- scrolling ----------------------------------------------------
+    pub function max_scroll_y(Box $b): int {
+        $m = $b->scrollH - $b->ch;
+        return $m > 0 ? $m : 0;
+    }
+
+    pub function max_scroll_x(Box $b): int {
+        $m = $b->scrollW - $b->cw;
+        return $m > 0 ? $m : 0;
+    }
+
+    /** Scroll a box, clamped to its content. Returns true when it moved. */
+    pub function scroll_box(Box $b, int $dx, int $dy): bool {
+        if ($b == null) { return false; }
+        $nx = $b->scrollX + $dx;
+        $ny = $b->scrollY + $dy;
+        $mx = $this->max_scroll_x($b);
+        $my = $this->max_scroll_y($b);
+        if ($nx < 0) { $nx = 0; }
+        if ($ny < 0) { $ny = 0; }
+        if ($nx > $mx) { $nx = $mx; }
+        if ($ny > $my) { $ny = $my; }
+        if ($nx == $b->scrollX && $ny == $b->scrollY) { return false; }
+        $b->scrollX = $nx;
+        $b->scrollY = $ny;
+        $this->dirty = true;
+        return true;
+    }
+
+    /** The nearest scrollable ancestor of a point. */
+    pub function scroll_target(int $x, int $y): Box {
+        $b = $this->hit_box($x, $y);
+        while ($b != null) {
+            if ($b->clips() && ($this->max_scroll_y($b) > 0 || $this->max_scroll_x($b) > 0)) { return $b; }
+            $b = $b->up;
+        }
+        return null;
+    }
+
+    // ---- input --------------------------------------------------------
+    /** Mouse bookkeeping; the returned event names the node hit.
+     *
+     *  `$kind` is one of down/up/click/dbl/move/wheel/leave. The wheel's
+     *  `$delta` is in notches, positive scrolling up. */
+    pub function mouse(string $kind, int $x, int $y, int $button, int $delta): HtmlEvent {
+        $ev = new HtmlEvent();
+        $ev->kind = $kind;
+        $ev->x = $x;
+        $ev->y = $y;
+        $ev->button = $button;
+        $ev->delta = $delta;
+        $n = $this->hit($x, $y);
+        $ev->node = $n;
+
+        if ($kind == "move") {
+            $order = ($n == null) ? 0 : $n->order;
+            $ev->moved = $this->set_hover($order);
+            $ev->state = $ev->moved;
+            if ($this->cv > 0) { ui_cursor($this->cv, $this->cursor_for($n)); }
+            return $ev;
+        }
+        if ($kind == "leave") {
+            $ev->state = $this->set_hover(0);
+            return $ev;
+        }
+        if ($kind == "wheel") {
+            $b = $this->scroll_target($x, $y);
+            if ($b != null && $delta != 0) {
+                $ev->state = $this->scroll_box($b, 0, -$delta * scroll_step($b));
+            }
+            return $ev;
+        }
+        if ($kind == "down") {
+            $this->hs->active = ($n == null) ? 0 : $n->order;
+            $f = $this->focus_target($n);
+            if ($f != null) { $ev->state = $this->set_focus($f); }
+            else if ($n != null && $this->focusable($n)) { $ev->state = $this->set_focus($n); }
+            return $ev;
+        }
+        if ($kind == "up") {
+            if ($this->hs->active != 0) { $this->hs->active = 0; $ev->state = true; }
+            return $ev;
+        }
+        return $ev;
+    }
+
+    /** A click on a `<label>` focuses the control it names, a click on a
+     *  `<div>` does not steal focus from an input being edited. */
+    function focus_target(HNode $n): HNode {
+        $c = $n;
+        while ($c != null) {
+            if ($this->focusable($c)) { return $c; }
+            $c = $c->up;
+        }
+        return null;
+    }
+
+    /** Keyboard: the view keeps the caret when something is being edited,
+     *  and otherwise only handles Tab. Everything else is the app's. */
+    pub function key(int $vk, string $ch, int $mods): HtmlEvent {
+        $ev = new HtmlEvent();
+        $ev->kind = "key";
+        $ev->vk = $vk;
+        $ev->ch = $ch;
+        $ev->mods = $mods;
+        $ev->node = $this->edit;
+        if ($this->edit != null) {
+            $r = $this->edit_key($vk, $ch, $mods);
+            $ev->kind = $r;
+            if ($r == "edit") { $ev->state = true; }
+            return $ev;
+        }
+        if ($vk == 9) {
+            $ev->kind = "focus";
+            $ev->state = $this->focus_next(($mods & 2) != 0);
+            return $ev;
+        }
+        $ev->node = $this->node_by_order($this->hs->focus);
+        return $ev;
+    }
+
+    pub function node_by_order(int $order): HNode {
+        if ($order == 0 || $this->doc == null) { return null; }
+        return html_node_by_order($this->doc->root, $order);
+    }
+
+    // ---- inline editing -----------------------------------------------
+    /** Start editing a node: the view owns the buffer and the caret. */
+    pub function edit_start(HNode $n, string $text) {
+        $this->edit = $n;
+        $this->text = $text;
+        $this->caret = strlen($text);
+        if ($n != null) { $this->hs->focus = $n->order; }
+        $this->dirty = true;
+    }
+
+    pub function edit_end(bool $commit) {
+        if ($this->edit != null && $commit) {
+            $this->set_text($this->edit, $this->text);
+        }
+        $this->edit = null;
+        $this->dirty = true;
+    }
+
+    /** One keystroke inside the edit buffer. */
+    function edit_key(int $vk, string $ch, int $mods): string {
+        $n = strlen($this->text);
+        if ($vk == 27) { return "cancel"; }
+        if ($vk == 13) { return "submit"; }
+        if ($vk == 8) {                       /* backspace */
+            if ($this->caret > 0) {
+                $this->text = substr($this->text, 0, $this->caret - 1) .
+                              substr($this->text, $this->caret);
+                $this->caret = $this->caret - 1;
+            }
+            return "edit";
+        }
+        if ($vk == 46) {                      /* delete */
+            if ($this->caret < $n) {
+                $this->text = substr($this->text, 0, $this->caret) .
+                              substr($this->text, $this->caret + 1);
+            }
+            return "edit";
+        }
+        if ($vk == 37) { if ($this->caret > 0) { $this->caret = $this->caret - 1; } return "edit"; }
+        if ($vk == 39) { if ($this->caret < $n) { $this->caret = $this->caret + 1; } return "edit"; }
+        if ($vk == 36) { $this->caret = 0; return "edit"; }
+        if ($vk == 35) { $this->caret = $n; return "edit"; }
+        if ($ch == "") { return "key"; }
+        $this->text = substr($this->text, 0, $this->caret) . $ch .
+                      substr($this->text, $this->caret);
+        $this->caret = $this->caret + strlen($ch);
+        return "edit";
+    }
+
+    /** The caret and the buffer, drawn over the node being edited. */
+    pub function paint_edit() {
+        if ($this->edit == null || $this->root == null) { return; }
+        $b = $this->box_of($this->edit);
+        if ($b == null) { return; }
+        $st = $b->st;
+        $x = $b->cx() - $b->scrollX;
+        $y = $b->cy() - $b->scrollY;
+        $font = $this->fonts->get($st->family, $st->fontPx, $st->bold, $st->italic);
+        $lh = $this->fonts->line_of($st);
+        $this->pnt->text($x, $y, $b->cw, $lh, $this->text, $st->fg, $font, 2);
+        $cw = $this->fonts->width($font, substr($this->text, 0, $this->caret));
+        $this->pnt->rect($x + $cw, $y + 1, 1, $lh - 2, $st->fg);
+    }
+}
+
+// ---------------------------------------------------------------------
+//  Small helpers the view needs
+// ---------------------------------------------------------------------
+
+/** The computed style of a node in a laid-out document, or null. */
+function style_of_node(HtmlLayout $lay, HNode $n): Style {
+    if ($lay == null || $n == null) { return null; }
+    for ($i = 0; $i < count($lay->all); $i++) {
+        $b = $lay->all[$i];
+        if ($b->node != null && $b->node->order == $n->order &&
+            $b->node->tag == $n->tag && !$b->anon) {
+            return $b->st;
+        }
+    }
+    return null;
+}
+
+/** A CSS cursor name as the canvas shape number. */
+function cursor_shape(string $c): int {
+    if ($c == "text") { return 1; }
+    if ($c == "pointer") { return 2; }
+    if ($c == "ew-resize") { return 3; }
+    if ($c == "ns-resize") { return 4; }
+    if ($c == "move") { return 5; }
+    if ($c == "crosshair") { return 6; }
+    if ($c == "not-allowed") { return 7; }
+    return 0;
+}
+
+/** One wheel notch: about three lines, or a tenth of the box. */
+function scroll_step(Box $b): int {
+    $s = intdiv($b->ch, 10);
+    if ($s < 24) { $s = 24; }
+    return $s;
+}
+
+/** Find a node by its document order. */
+function html_node_by_order(HNode $n, int $order): HNode {
+    if ($n->order == $order) { return $n; }
+    for ($i = 0; $i < count($n->kids); $i++) {
+        $hit = html_node_by_order($n->kids[$i], $order);
+        if ($hit != null) { return $hit; }
+    }
+    return null;
+}

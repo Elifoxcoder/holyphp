@@ -1,0 +1,14 @@
+// literal_narrow_escape.hphp — must FAIL sema: what `=== "abc"` proved lives
+// inside the branch it guards.
+
+function need_string(string $s): int {
+    return strlen($s);
+}
+
+$v: string|int = "abc";
+
+if ($v === "abc") {
+    echo need_string($v);      /* fine: === pinned it to the string member */
+}
+
+echo need_string($v);          /* error: outside the branch $v is string|int */

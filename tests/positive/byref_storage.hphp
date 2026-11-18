@@ -1,0 +1,132 @@
+// byref_storage.hphp — a by-ref parameter must reach whatever slot the caller
+// actually has. Codegen hands the callee a pointer of the parameter's C type,
+// and the caller's variable can live in one of four shapes:
+//
+//    plain local      int64_t v            -> &v
+//    program global   the file-scope slot  -> &v
+//    closure box      hval *v, value (*v)  -> the box, or the matching union
+//                                             member of a coerced box
+//    by-ref param     T *v, value (*v)     -> v
+//
+// and an untyped `&$x` parameter wants an hval slot, so a typed local is boxed
+// on demand. Before this, only "plain local of the same C type" worked:
+// everything else passed an int64_t* where an hval* was expected (or the other
+// way round) and the generated C did not compile.
+//
+// Run: hphp run tests/positive/byref_storage.hphp   (exit 0 = all good)
+
+function check(bool $cond, string $what): void {
+    if ($cond) {
+        echo "OK   " . $what . "\n";
+    } else {
+        echo "FAIL " . $what . "\n";
+        exit(1);
+    }
+}
+
+function bump(int &$x): void { $x = $x + 1; }
+function tag(string &$s): void { $s = $s . "!"; }
+function push(array &$a): void { $a[] = 7; }
+function half(float &$f): void { $f = $f / 2; }
+function annihilate(&$v): void { $v = 99; }
+
+class Counter {
+    public int $n = 0;
+    public function raise(int &$x): void { $x = $x + 10; }
+    public static function leap(int &$x): void { $x = $x + 100; }
+}
+
+/* ---- plain locals ---------------------------------------------------- */
+$n = 1; bump($n);
+check($n == 2, "plain int local");
+
+$s = "a"; tag($s);
+check($s == "a!", "plain string local");
+
+$a = [1]; push($a);
+check(count($a) == 2, "plain array local");
+
+$f = 1.0; half($f);
+check($f == 0.5, "plain float local");
+
+/* ---- a closure box (use (&$x)) --------------------------------------- */
+$b = 5;
+$keep = function() use (&$b) { return $b; };
+bump($b);
+check($b == 6, "boxed int, callee write");
+check($keep() == 6, "boxed int, captured read");
+
+$bs = "b";
+$ks = function() use (&$bs) { return $bs; };
+tag($bs);
+check($bs == "b!", "boxed string");
+
+$ba = [1];
+$ka = function() use (&$ba) { return count($ba); };
+push($ba);
+check(count($ba) == 2, "boxed array");
+check($ka() == 2, "boxed array, captured read");
+
+/* ---- program globals ------------------------------------------------- */
+function bump_globals(): void {
+    global $g, $gs, $ga;
+    bump($g);
+    tag($gs);
+    push($ga);
+}
+$g = 41; $gs = "h"; $ga = [];
+bump_globals();
+check($g == 42, "global int");
+check($gs == "h!", "global string");
+check(count($ga) == 1, "global array");
+
+/* ---- a by-ref parameter forwarded on --------------------------------- */
+function passthru(int &$x): void { bump($x); }
+function forward_int(int &$x): void { passthru($x); }
+function forward_mixed(&$v): void { passthru($v); }
+
+$p = 7; passthru($p);
+check($p == 8, "forward: direct");
+$q = 7; forward_int($q);
+check($q == 8, "forward: typed by-ref param");
+
+/* ---- an untyped &$x parameter takes any variable --------------------- */
+$m = 7; forward_mixed($m);
+check($m == 8, "union: typed local boxed for an untyped by-ref param");
+
+$mb = 7;
+$km = function() use (&$mb) { return $mb; };
+forward_mixed($mb);
+check($mb == 8, "union: box into an untyped by-ref param");
+check($km() == 8, "union: box still shared with its closure");
+
+$mm = "text"; annihilate($mm);
+check($mm == 99, "untyped by-ref param may retype its variable");
+
+/* ---- methods --------------------------------------------------------- */
+$c = new Counter();
+$mn = 1;
+$c->raise($mn);
+check($mn == 11, "method by-ref arg");
+
+$ms = 1;
+$ks2 = function() use (&$ms) { return $ms; };
+Counter::leap($ms);
+check($ms == 101, "static method by-ref arg from a box");
+
+/* ---- two boxes in one call ------------------------------------------- */
+function pair(int &$x, int &$y): void { $x = $x + $y; $y = 0; }
+$p1 = 4; $p2 = 6;
+$k2 = function() use (&$p1, &$p2) { return 0; };
+pair($p1, $p2);
+check($p1 == 10 && $p2 == 0, "two boxed by-ref arguments");
+
+/* ---- a by-value parameter captured by reference ---------------------- */
+function counter_from(mut string $start) {
+    return function() use (&$start) { $start = $start . "x"; return $start; };
+}
+$cf = counter_from("s");
+check($cf() == "sx", "value param captured by ref: first call");
+check($cf() == "sxx", "value param captured by ref: box persists");
+
+echo "byref storage ok\n";

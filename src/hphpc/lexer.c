@@ -246,8 +246,48 @@ static void lex_number(Lexer *lx, Token *t) {
     free(clean);
 }
 
+/* PHP's tags. HolyPHP needs none of them - a file with no tags at all is the
+ * normal case - but every pasted PHP snippet carries them, and dying on a stray
+ * `<` is a terrible first impression. They are skipped here, where whitespace
+ * and comments are skipped, so a tagged file lexes exactly like an untagged one.
+ *
+ *   <?php   open (must be followed by whitespace, as in PHP)
+ *   <?      short open tag (same rule)
+ *   <?=     open + echo; lex_next turns it into the `echo` keyword
+ *   ?>      close tag; the rest of its line goes with it, because past that tag
+ *           PHP would be printing HTML and HolyPHP has nowhere to put it
+ */
+static bool php_open_tag(Lexer *lx) {
+    if (cur(lx) != '<' || peek(lx, 1) != '?') return false;
+    char a = peek(lx, 2), b = peek(lx, 3), c = peek(lx, 4), d = peek(lx, 5);
+    bool php = tolower((unsigned char)a) == 'p' && tolower((unsigned char)b) == 'h' &&
+               tolower((unsigned char)c) == 'p';
+    /* whitespace (or end of file) has to follow, so `<?phpx` stays an error */
+    char after = php ? d : a;
+    if (!(after == ' ' || after == '\t' || after == '\r' || after == '\n' || after == '\0'))
+        return false;
+    adv(lx); adv(lx);                       /* <? */
+    if (php) { adv(lx); adv(lx); adv(lx); } /* php */
+    return true;
+}
+
 static void skip_trivia(Lexer *lx) {
+    /* A UTF-8 BOM is an encoding marker, not source text. Windows editors and
+     * PowerShell write one by default; without this every such file dies on
+     * "unexpected character" at 1:0. It must not shift the first column. */
+    if (lx->pos == 0 && lx->len >= 3 &&
+        (unsigned char)lx->src[0] == 0xEF &&
+        (unsigned char)lx->src[1] == 0xBB &&
+        (unsigned char)lx->src[2] == 0xBF) {
+        lx->pos = 3;
+    }
     for (;;) {
+        if (php_open_tag(lx)) continue;
+        if (cur(lx) == '?' && peek(lx, 1) == '>') {
+            adv(lx); adv(lx); /* ?> */
+            while (!eof(lx) && cur(lx) != '\n') adv(lx);
+            continue;
+        }
         if (cur(lx) == ' ' || cur(lx) == '\t' || cur(lx) == '\r') { adv(lx); continue; }
         if (cur(lx) == '/' && peek(lx, 1) == '/') {
             while (!eof(lx) && cur(lx) != '\n') adv(lx);
@@ -273,6 +313,7 @@ void lex_init(Lexer *lx, const char *src, const char *file) {
     lx->len = strlen(src);
     lx->file = file;
     lx->line = 1;
+    lx->col = 1;   /* columns are 1-based on every line, including the first */
 }
 
 bool lex_next(Lexer *lx, Token *out) {
@@ -441,6 +482,12 @@ bool lex_next(Lexer *lx, Token *out) {
         else k = T_NOT;
         break;
     case '<':
+        /* <?= $x ?> is PHP's echo shorthand */
+        if (cur(lx) == '?' && peek(lx, 1) == '=') {
+            adv(lx); adv(lx);
+            k = T_KW_ECHO;
+            break;
+        }
         if (matchc(lx, '=')) {
             if (matchc(lx, '>')) k = T_SPACESHIP;
             else k = T_LE;

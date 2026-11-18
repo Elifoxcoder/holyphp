@@ -1,0 +1,24 @@
+#!/bin/sh
+# postinst — Debian package install wizard for HolyPHP.
+#
+# The .deb puts the compiler at /usr/bin/hphp (already on PATH for every
+# user — no per-user PATH edits needed). What remains "wizard" work:
+#   * verify the binary actually runs on this machine
+#   * check for gcc (hphp shells out to it when compiling programs)
+#   * explain that ui/websocket libraries come from the package manager
+set -e
+
+BINDIR=/usr/bin
+HPHP="$BINDIR/hphp"
+
+if [ "$1" = "configure" ]; then
+    echo ""
+    echo "HolyPHP installed."
+    /usr/lib/holyphp/common-install-wizard.sh banner || true
+    /usr/lib/holyphp/common-install-wizard.sh verify "$HPHP" || true
+    /usr/lib/holyphp/common-install-wizard.sh gcc    || true
+    /usr/lib/holyphp/common-install-wizard.sh libs   || true
+    /usr/lib/holyphp/common-install-wizard.sh done   || true
+fi
+
+exit 0

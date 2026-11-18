@@ -1,0 +1,2 @@
+# Bekannte Testfehlschläge: ein Testname pro Zeile (wie nach "FAIL " in tests/run.sh).
+# Nur echte, noch offene Fehlschläge. Behobene Einträge löschen (ship.sh erzwingt das).

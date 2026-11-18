@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+<title>html — HolyPHP standard library</title>
+<link rel="stylesheet" href="assets/style.css?v=6">
+</head>
+<body>
+<div class="layout">
+<script src="assets/nav.html.js?v=3"></script>
+<main>
+  <h1>html</h1>
+  <p class="lead">HolyHTML: an HTML/CSS engine written in HolyPHP, for HolyPHP.
+  It parses a document, computes styles, lays the boxes out, paints them onto a
+  canvas and routes input back to the nodes. That is the whole of what a browser
+  does for a desktop UI — without shipping a browser engine.</p>
+
+  <div>
+    <span class="pill e">stdlib — embedded</span>
+    <span class="pill">HTML parser</span>
+    <span class="pill">CSS cascade</span>
+    <span class="pill">block / inline / flex</span>
+    <span class="pill p">events as data</span>
+  </div>
+
+  <h2>One window, one document</h2>
+  <p>The window holds a single canvas. Everything inside it is a box the engine
+  laid out; the script only reacts to the events the view hands back.</p>
+<pre><code class="hphp">import "html";
+import "ui";
+
+$win = ui_window("Hello, HolyHTML", -1, -1, 640, 360);
+$cv  = ui_add($win, 18, "", 0, 0, 640, 360);      // 18 = canvas
+
+$view = new HtmlView($cv, 640, 360, html_theme_dark());
+$view->load(
+    "<div class='card'>Hello, <b>HolyHTML</b></div>",
+    ".card { padding: 16px; background-color: #252526; color: #ffffff; }");
+
+$view->paint();
+ui_run_main();</code></pre>
+
+  <h2>The layers</h2>
+  <p>Each layer is a file, each file is testable on its own, and nothing below
+  <code>view</code> knows that a canvas exists.</p>
+  <table>
+    <tr><th>File</th><th>Responsibility</th></tr>
+    <tr><td><code>html/dom.hphp</code></td><td>the document tree and a tolerant parser (<code>html_parse</code>, <code>html_set_text</code>)</td></tr>
+    <tr><td><code>html/css.hphp</code></td><td>selectors, specificity, the cascade (<code>css_parse</code>, <code>css_add</code>)</td></tr>
+    <tr><td><code>html/style.hphp</code></td><td>computed style: colours as ints, lengths as unresolved <code>Dim</code>, the default stylesheet</td></tr>
+    <tr><td><code>html/layout.hphp</code></td><td>block, inline and flex layout, text wrapping (<code>HtmlLayout</code>)</td></tr>
+    <tr><td><code>html/paint.hphp</code></td><td>the box tree as canvas draw calls, clipping, scrolling</td></tr>
+    <tr><td><code>html/view.hphp</code></td><td>the facade: mount, hit-test, events, repaint (<code>HtmlView</code>)</td></tr>
+  </table>
+
+  <h2>Trees, selectors, and text</h2>
+<pre><code class="hphp">import "html";
+
+$view = new HtmlView(0, 640, 360, html_theme_dark());   // 0 = headless
+$view->load(
+    "<div class='list'><div class='row' id='a'>one</div>" .
+    "<div class='row' id='b'>two</div></div>",
+    ".row { height: 24px; }");
+$view->ensure();
+
+$b = $view->find("#b");                 // by id
+$view->set_text($b, "second");          // text is data, not a callback
+$rows = $view->find_all(".row");        // every match, in document order
+echo count($rows);                      // 2</code></pre>
+  <p>The parser is deliberately forgiving: unclosed tags, stray close tags,
+  attributes without quotes and void elements all parse. A missing
+  <code>&lt;/div&gt;</code> is not worth failing a window over.</p>
+
+  <h2>Layout</h2>
+  <ul>
+    <li><b>Block, inline and flex.</b> <code>display: flex</code> with
+      <code>row</code>/<code>column</code>, <code>flex: 1</code> (basis 0, as in
+      CSS), <code>gap</code>, <code>align-items</code>, <code>justify-content</code>,
+      <code>align-self</code>.</li>
+    <li><b><code>box-sizing: border-box</code> is the default.</b> Every desktop
+      UI writes <code>width: 200px</code> meaning "200px including the padding";
+      a window is not a document that has to stay compatible with 1998.</li>
+    <li><b>Lengths stay unresolved until layout</b> — <code>px</code>,
+      <code>%</code>, <code>em</code> and <code>auto</code> — so
+      <code>width: 50%</code> resolves against the real containing block.</li>
+    <li><b><code>position: absolute</code></b> for popups, menus and anything
+      that must sit on top of the flow.</li>
+  </ul>
+
+  <h2>Events are data</h2>
+  <p><code>mouse()</code> and <code>key()</code> do the bookkeeping — hover,
+  focus, caret, scroll — and return an <code>HtmlEvent</code> naming the node
+  under the pointer. The application decides what that means, which is what
+  keeps the whole input path testable without a window.</p>
+<pre><code class="hphp">import "html";
+
+$view = new HtmlView(0, 400, 200, html_theme_dark());
+$view->load("<div class='row' id='a'>open me</div>", ".row { height: 22px; }");
+$view->ensure();
+
+$ev = $view->mouse("click", 10, 10, 1, 0);
+if ($ev->node != null) {
+    $view->add_class($ev->node, "active");
+    echo "clicked " . $ev->node->id;      // a
+}</code></pre>
+
+  <h2>Painting, and testing the paint</h2>
+  <p><code>Painter</code> has a dry run: with <code>$dry</code> set it records
+  every draw call as a string instead of ink. A layout can be wrong and every
+  state test still pass; a draw list (or a pixel read back from the canvas, as
+  <code>examples/holyhtml_demo.hphp</code> does) cannot.</p>
+<pre><code class="hphp">import "html";
+
+$view = new HtmlView(0, 320, 160, html_theme_dark());
+$view->load("<div class='box'>x</div>", ".box { width: 100px; height: 40px; background-color: #007acc; }");
+$view->ensure();
+
+$paint = new Painter(0, true);
+$paint->paint($view->root, $view->th->bg);   // second argument: the clear colour
+echo count($paint->log) . " draw calls";</code></pre>
+
+  <h2>Theming</h2>
+  <p>An <code>HtmlTheme</code> carries the colours, the font families and the
+  base metrics the default stylesheet uses. <code>html_theme_dark()</code> and
+  <code>html_theme_light()</code> are the two starting points; copy one and
+  change the fields you care about.</p>
+<pre><code class="hphp">import "html";
+
+$th = html_theme_light();
+$th->accent = 0xd13438;
+$th->fontPx = 14;
+
+$view = new HtmlView(0, 400, 200, $th);
+$view->load("<div class='card'>red accent</div>", ".card { padding: 8px; }");</code></pre>
+
+  <p class="note"><b>Naming:</b> the layout engine is <code>HtmlLayout</code>, not
+  <code>Layout</code> — the <a href="lib-ui.html">ui</a> library has a
+  <code>Layout</code> of its own (the box a widget stacks in), and a HolyPHP
+  program has one namespace. An HTML view inside a desktop window imports both.</p>
+</main>
+</div>
+<script src="assets/site.js?v=4"></script>
+<script src="assets/theme.js?v=1"></script>
+</body>
+</html>

@@ -1,0 +1,252 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "HolyPHP",
+  "scopeName": "source.hphp",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#variables"
+    },
+    {
+      "include": "#classes"
+    },
+    {
+      "include": "#members"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#types"
+    },
+    {
+      "include": "#functions"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#punctuation"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.hphp",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.line.number-sign.hphp",
+          "match": "#(?![\\[]).*$"
+        },
+        {
+          "name": "comment.block.hphp",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "captures": {
+            "0": "comment.block.hphp"
+          }
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.interpolated.hphp",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "include": "#escapes"
+            },
+            {
+              "name": "meta.embedded.variable.hphp",
+              "begin": "\\{\\$",
+              "end": "\\}",
+              "patterns": [
+                {
+                  "name": "variable.other.hphp",
+                  "match": "[A-Za-z_][A-Za-z0-9_]*"
+                }
+              ]
+            },
+            {
+              "name": "variable.simple.hphp",
+              "match": "\\$[A-Za-z_][A-Za-z0-9_]*"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.hphp",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "include": "#escapes"
+            }
+          ]
+        }
+      ]
+    },
+    "escapes": {
+      "name": "constant.character.escape.hphp",
+      "match": "\\\\[nrtvef\\\\$\"']"
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.hphp",
+          "match": "\\b(if|else|elseif|while|for|foreach|as|in|do|switch|case|default|match|return|break|continue|try|catch|finally|throw|yield)\\b"
+        },
+        {
+          "name": "keyword.declaration.hphp",
+          "match": "\\b(class|interface|trait|enum|extends|implements|new|const|use|import|export|let|mut|own|unsafe|this|self|parent|global)\\b"
+        },
+        {
+          "name": "meta.function.declaration.hphp",
+          "match": "\\b(function|fn)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "keyword.declaration.hphp" },
+            "2": { "name": "entity.name.function.hphp" }
+          }
+        },
+        {
+          "name": "keyword.other.hphp",
+          "match": "\\b(echo|print|public|pub|protected|private|static|abstract|final|readonly|and|or|xor|not)\\b"
+        }
+      ]
+    },
+    "classes": {
+      "patterns": [
+        {
+          "name": "meta.class.identifier.hphp",
+          "match": "\\b(class|interface|trait|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.hphp"
+            },
+            "2": {
+              "name": "entity.name.type.class.php"
+            }
+          }
+        },
+        {
+          "name": "meta.class.reference.hphp",
+          "match": "\\b(new|extends|implements|instanceof)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.hphp"
+            },
+            "2": {
+              "name": "entity.name.type.class.php"
+            }
+          }
+        },
+        {
+          "name": "entity.name.type.class.php",
+          "match": "\\b[A-Z][A-Za-z0-9_]*(?=\\s+\\$)"
+        }
+      ]
+    },
+    "members": {
+      "patterns": [
+        {
+          "name": "entity.name.function.member.php",
+          "match": "(?<=->)[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()|(?<=::)[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+        },
+        {
+          "name": "variable.other.property.php",
+          "match": "(?<=->)[A-Za-z_][A-Za-z0-9_]*|(?<=::)[A-Za-z_][A-Za-z0-9_]*"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.hphp",
+          "match": "\\b(true|TRUE|false|FALSE|null|NULL)\\b"
+        },
+        {
+          "name": "constant.other.predefined.hphp",
+          "match": "\\b(?:PHP_FILE_IGNORE_NEW_LINES|PHP_FILE_SKIP_EMPTY_LINES|PHP_FILE_USE_INCLUDE_PATH|JSON_UNESCAPED_SLASHES|PHP_ROUND_HALF_DOWN|PHP_ROUND_HALF_EVEN|JSON_NUMERIC_CHECK|PHP_ROUND_HALF_ODD|JSON_FORCE_OBJECT|JSON_PRETTY_PRINT|PHP_FLOAT_EPSILON|PHP_ROUND_HALF_UP|PHP_FILE_APPEND|BRIGHT_MAGENTA|PHP_INT_DIGITS|BRIGHT_YELLOW|BRIGHT_BLACK|BRIGHT_GREEN|BRIGHT_WHITE|PHP_INT_SIZE|BRIGHT_BLUE|BRIGHT_CYAN|PHP_INT_MAX|PHP_INT_MIN|PHP_VERSION|BRIGHT_RED|PHP_EULER|PHP_FALSE|PHP_UNAME|PHP_NULL|PHP_SAPI|PHP_TRUE|MAGENTA|PHP_EOL|PHP_OS|PHP_PI|YELLOW|BLACK|GREEN|RESET|WHITE|BLUE|CYAN|M_PI|M_E|RED)\\b"
+        }
+      ]
+    },
+    "types": {
+      "name": "support.type.hphp",
+      "match": "\\b(int|i8|i16|i32|i64|u8|u16|u32|u64|usize|isize|float|f32|f64|double|bool|string|str|array|list|mixed|void|Vec|Map|Set|Option|Result)\\b"
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.hphp",
+          "match": "\\b(?:ui_browser_devtools_ready|ui_browser_devtools_fit|ui_browser_can_forward|memory_get_peak_usage|stream_socket_accept2|array_walk_recursive|holy_challenge_start|stream_socket_accept|stream_socket_client|stream_socket_server|ui_canvas_invalidate|stream_set_blocking|ui_browser_can_back|ui_browser_devtools|ui_browser_zoom_get|html_entity_decode|json_encode_pretty|ui_browser_favicon|ui_browser_forward|ui_browser_visible|file_get_contents|file_put_contents|gc_collect_cycles|holy_maxout_start|ui_browser_loader|ui_browser_reload|array_key_exists|htmlspecialchars|http_build_query|memory_get_usage|sys_get_temp_dir|thr_parallel_map|ui_browser_print|ui_browser_ready|ui_browser_title|array_fill_keys|array_intersect|array_key_first|mysql_insert_id|password_verify|proc_get_status|str_starts_with|ui_browser_back|ui_browser_free|ui_browser_html|ui_browser_post|ui_browser_stop|ui_browser_zoom|ui_canvas_flush|ui_canvas_pixel|ui_input_margin|ui_progress_get|array_key_last|preg_match_all|sys_getloadavg|ui_browser_fit|ui_browser_key|ui_browser_new|ui_browser_url|ui_canvas_size|ui_client_size|ui_draw_unclip|ui_font_height|ui_pick_folder|array_combine|array_product|array_replace|array_reverse|array_unshift|base64_decode|base64_encode|chan_try_recv|chan_try_send|mutex_trylock|mysql_connect|number_format|password_hash|php_logo_guid|php_sapi_name|proc_read_err|str_ends_with|thr_cpu_count|ui_browser_go|ui_browser_on|ui_draw_clear|ui_draw_round|ui_font_width|ui_menu_check|ui_pick_color|ui_select_all|ui_slider_get|ui_slider_set|ui_text_lines|array_column|array_filter|array_reduce|array_search|array_splice|array_unique|array_values|barrier_wait|htmlentities|http_request|mutex_unlock|mysql_escape|preg_replace|random_bytes|similar_text|str_contains|stream_close|stream_ready|substr_count|thr_sleep_ms|ui_check_get|ui_check_set|ui_ctrl_show|ui_draw_clip|ui_draw_line|ui_draw_rect|ui_draw_text|ui_item_text|ui_menu_item|ui_open_file|ui_save_file|array_chunk|array_merge|array_shift|array_slice|barrier_new|file_exists|hash_equals|is_infinite|is_readable|is_writable|json_decode|json_encode|levenshtein|mysql_close|mysql_query|str_replace|str_shuffle|stream_peer|stream_recv|stream_send|strncasecmp|thr_current|ui_clip_get|ui_clip_set|ui_dispatch|ui_font_new|ui_menu_sep|ui_progress|ui_run_main|ui_selected|unserialize|array_diff|array_fill|array_flip|array_keys|array_push|array_walk|atomic_add|atomic_cas|atomic_get|atomic_new|atomic_set|chan_close|is_integer|is_numeric|mutex_free|mutex_lock|mysql_exec|phpversion|preg_match|preg_split|proc_alive|proc_close|proc_start|proc_write|random_int|shell_exec|str_repeat|strcasecmp|stream_eof|strip_tags|strtolower|strtoupper|ui_enabled|ui_picture|ui_repaint|ui_text_px|var_export|array_map|array_pad|array_pop|array_sum|chan_recv|chan_send|checkdate|doubleval|hash_hmac|heap_dump|http_post|is_finite|is_string|lcg_value|microtime|mutex_new|parse_url|php_uname|preg_grep|proc_exit|proc_kill|proc_open|proc_read|serialize|str_split|strtotime|thr_spawn|ui_accent|ui_cursor|ui_enable|ui_radius|ui_remove|ui_scroll|ui_select|ui_window|urldecode|urlencode|basename|chan_new|ffi_call|ffi_load|filesize|floatval|http_get|in_array|is_array|is_float|mt_srand|passthru|pathinfo|php_sapi|readline|realpath|thr_join|ui_alive|ui_clear|ui_close|ui_count|ui_focus|ui_items|ui_raise|ui_range|ui_style|ui_theme|ui_timer|ui_title|var_dump|vsprintf|wordwrap|bin2hex|boolval|compact|deg2rad|dirname|explode|gettype|hex2bin|implode|is_bool|is_file|is_null|lcfirst|mt_rand|print_r|println|rad2deg|scandir|shuffle|sprintf|str_pad|strncmp|ucfirst|ucwords|ui_font|ui_hwnd|ui_menu|ui_move|ui_quit|ui_rect|ui_show|ui_size|bindec|decbin|dechex|decoct|fclose|fwrite|getcwd|getenv|hexdec|hrtime|intdiv|intval|is_dir|is_int|is_nan|krsort|malloc|memcpy|memset|mktime|octdec|printf|putenv|rename|sha256|sizeof|strchr|strcmp|strlen|strpos|strrev|strstr|strval|substr|thr_id|uasort|ui_add|ui_get|ui_msg|ui_pos|ui_set|ui_svg|uksort|unlink|usleep|array|asort|atan2|count|crc32|fgetc|fgets|floor|fopen|fread|hypot|input|isset|ksort|log10|ltrim|mkdir|nl2br|print|range|reset|rmdir|round|rsort|rtrim|sleep|split|srand|touch|ui_bg|ui_fg|ui_on|unset|usort|acos|asin|atan|ceil|chop|copy|date|exec|exit|feof|fmod|free|glob|join|log2|rand|sha1|sort|sqrt|time|trim|abs|chr|cos|die|end|exp|log|max|md5|min|ord|pow|sin|tan|pi)\\b\\s*(?=\\()"
+        },
+        {
+          "name": "entity.name.function.php",
+          "match": "(?<![$>])(?<!::)\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+        }
+      ]
+    },
+    "variables": {
+      "patterns": [
+        {
+          "name": "variable.other.hphp",
+          "match": "\\$[A-Za-z_][A-Za-z0-9_]*"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.hphp",
+          "match": "\\b0[xX][0-9a-fA-F_]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.hphp",
+          "match": "\\b0[bB][01_]+\\b"
+        },
+        {
+          "name": "constant.numeric.octal.hphp",
+          "match": "\\b0[oO][0-7_]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.hphp",
+          "match": "\\b\\d[\\d_]*\\.\\d[\\d_]*([eE][+-]?\\d+)?\\b"
+        },
+        {
+          "name": "constant.numeric.integer.hphp",
+          "match": "\\b\\d[\\d_]*\\b"
+        }
+      ]
+    },
+    "operators": {
+      "name": "keyword.operator.hphp",
+      "match": "<=>|===|!==|==|!=|<>|<=|>=|\\*\\*=|\\+\\+|--|\\+=|-=|\\*=|/=|%=|\\.=|&&|\\|\\||\\?\\?|->|=>|::|\\.\\.\\.|\\*\\*|[-+*/%.=<>!&|^~?:]"
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.separator.hphp",
+          "match": "[;,.]"
+        },
+        {
+          "name": "punctuation.bracket.hphp",
+          "match": "[{}()\\[\\]]"
+        }
+      ]
+    }
+  }
+}

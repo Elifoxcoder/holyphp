@@ -1,8 +1,8 @@
 # HolyPHP installers
 
 Self-contained install wizards for the **compiler only**. Every package carries
-the same thing: the single `hphp` binary with the runtime and five standard
-libraries (`ui`, `websocket`, `async`, `thread`, `mathx`) already embedded —
+the same thing: the single `hphp` binary with the runtime and six libraries
+(`ui`, `websocket`, `async`, `thread`, `html`, `ide`) already embedded —
 `import "async";` works offline, no package manager needed. Additional
 libraries come from the public registry (the compiled-in default):
 
@@ -13,11 +13,11 @@ hphp pkg install <name>
 
 | Target | Builder | Result | PATH strategy |
 |---|---|---|---|
-| Windows (MSIX) | `packaging/windows/make-msix.ps1` | `HolyPHP-1.0.0-x64.msix` | App execution alias in `%LOCALAPPDATA%\Microsoft\WindowsApps` (already on PATH); wizard fallback for the no-MSIX route |
-| Windows (setup.exe) | `packaging/windows/make-exe.ps1` | `HolyPHP-1.0.0-x64-setup.exe` | Standard Inno Setup wizard (choose folder, PATH checkbox, Apps & features uninstaller); per-user, no admin |
+| Windows (MSIX) | `packaging/windows/make-msix.ps1` | `HolyPHP-1.0.2-x64.msix` | App execution alias in `%LOCALAPPDATA%\Microsoft\WindowsApps` (already on PATH); wizard fallback for the no-MSIX route |
+| Windows (setup.exe) | `packaging/windows/make-exe.ps1` | `HolyPHP-1.0.2-x64-setup.exe` | Standard Inno Setup wizard (choose folder, PATH checkbox, Apps & features uninstaller); per-user, no admin |
 | Windows (wizard only) | `Install-HolyPHP.ps1` | install to `%LOCALAPPDATA%\HolyPHP` | Appends to the user PATH (`HKCU\Environment`), no admin |
-| Debian/Ubuntu | `packaging/linux/make-deb.sh` | `holyphp_1.0.0_amd64.deb` | `/usr/bin/hphp` — on PATH for all users |
-| Linux (AppImage) | `packaging/linux/make-appimage.sh` | `HolyPHP-1.0.0-x86_64.AppImage` | Zero-install, or `AppImage install` prepends itself to `~/.profile` / `~/.bashrc` |
+| Debian/Ubuntu | `packaging/linux/make-deb.sh` | `holyphp_1.0.2_amd64.deb` | `/usr/bin/hphp` — on PATH for all users |
+| Linux (AppImage) | `packaging/linux/make-appimage.sh` | `HolyPHP-1.0.2-x86_64.AppImage` | Zero-install, or `AppImage install` prepends itself to `~/.profile` / `~/.bashrc` |
 
 Every wizard also verifies the binary runs, warns when `gcc` is missing
 (`hphp run/build` shells out to it to compile your programs), and prints the

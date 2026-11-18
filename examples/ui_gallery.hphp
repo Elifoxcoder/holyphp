@@ -82,7 +82,7 @@ $next->onClick(function() use ($app, $names, &$which, $title) {
 });
 
 // ---- keyboard ----------------------------------------------------------
-$app->onKey(function($key, $ch) use ($app, $names, &$which, $title) {
+$app->onKey(function($key, $ch, $mods) use ($app, $names, &$which, $title) {
     if ($ch == "q" || $ch == "Q") { $app->close(); return; }
     if ($ch == "[" || $ch == "<") {
         $which = $which - 1;

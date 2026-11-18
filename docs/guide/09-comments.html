@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+  <title>Chapter 9: Comments — HolyPHP Guide</title>
+  <link rel="stylesheet" href="../assets/style.css?v=6">
+</head>
+
+<body>
+  <div class="layout">
+    <script src="../assets/nav.html.js?v=3"></script>
+    <main>
+      <div class="breadcrumb">
+        <a href="index.html">Guide</a> » <a href="index.html#part2">Part 2: The Basics</a> » Chapter 9
+      </div>
+
+      <h1>Chapter 9: <span class="ph">Comments</span></h1>
+
+      <p>A comment is a note to a human reader. The compiler throws it away before the program is
+        built, so it costs nothing at runtime and can never change what your code does.</p>
+
+      <h2>Line comments</h2>
+
+      <p>Everything from <code>//</code> to the end of the line is ignored:</p>
+
+      <pre><code class="hphp">$rate = 0.19;   // VAT, as of 2026
+echo $rate;   // this line is not part of the program</code></pre>
+
+      <h2>Block comments</h2>
+
+      <p>For something that spans several lines, wrap it in <code>/* ... */</code>:</p>
+
+      <pre><code class="hphp">/*
+ * This used to charge a flat fee.
+ * Kept for reference until the pricing page is rewritten.
+ */
+$price = 9.99;
+echo $price;</code></pre>
+
+      <p>A block comment cannot nest: the first <code>*/</code> ends it, no matter what is inside.</p>
+
+      <h2>Doc comments</h2>
+
+      <p>A block comment that starts with an extra <code>*</code> is the conventional way to
+        document a function or a class. It means the same thing as a normal comment — the style
+        simply says "this describes the thing below":</p>
+
+      <pre><code class="hphp">/**
+ * Returns the total price including VAT.
+ */
+function total(float $net): float {
+    return $net * 1.19;
+}
+
+echo total(100.0);</code></pre>
+
+      <h2>Turning code off temporarily</h2>
+
+      <p>Comments are the standard way to park a line while you experiment:</p>
+
+      <pre><code class="hphp">echo "before";
+// echo "skipped for now";
+/* echo "also skipped"; */
+echo "after";</code></pre>
+
+      <p>Prefer commenting out to deleting while you are exploring — but delete it again before
+        you commit. A file full of commented-out experiments is noise for whoever reads it next.</p>
+
+      <h2>What is worth commenting</h2>
+
+      <ul>
+        <li><strong>Why</strong>, not what: <code>// 19% VAT, fixed by law</code> beats
+          <code>// set rate to 0.19</code>.</li>
+        <li>Non-obvious constraints: why a number is magic, why something must not be reordered.</li>
+        <li>Markers for unfinished work: <code>// TODO:</code> or <code>// FIXME:</code> are easy to
+          search for later.</li>
+        <li>Not: what the next line obviously does. <code>$i++; // increment i</code> adds noise.</li>
+      </ul>
+
+      <div class="note">
+        <b>Remember:</b> comments are stripped before compilation. They are free — but so is
+        clarity. A short, well-named function often beats three lines of explanation.
+      </div>
+
+      <div class="challenge">
+        <strong>Challenge:</strong> Take any program you have written so far and annotate it: a
+        block comment at the top describing what it does, a <code>TODO</code> for one improvement,
+        and a comment explaining <em>why</em> one line exists.
+      </div>
+
+      <div class="chapter-nav">
+        <a href="08-input-and-output.html" class="nav-prev">← Previous: Input and Output</a>
+        <a href="index.html#part3" class="nav-next">Next: Part 3 — Control Flow →</a>
+      </div>
+
+    </main>
+  </div>
+  <script src="../assets/site.js?v=4"></script>
+<script src="../assets/theme.js?v=1"></script>
+</body>
+
+</html>

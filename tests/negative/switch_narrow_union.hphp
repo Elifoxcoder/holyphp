@@ -1,0 +1,16 @@
+// switch_narrow_union.hphp — must FAIL sema: a union of two non-null members
+// proves nothing in a switch arm. PHP's loose == gives a second way in: the
+// runtime coerces `0 == "a"` through floats (both become 0.0), so the string
+// case can be taken by the int member.
+function need_string(string $s): int {
+    return strlen($s);
+}
+
+function f(string|int $x): int {
+    switch ($x) {
+        case "a":
+            return need_string($x);   /* error: $x may be the int 0 */
+        default:
+            return 0;
+    }
+}

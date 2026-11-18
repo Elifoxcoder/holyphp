@@ -3,12 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
 <title>hphp CLI — HolyPHP</title>
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/style.css?v=6">
 </head>
 <body>
 <div class="layout">
-<script src="assets/nav.html.js"></script>
+<script src="assets/nav.html.js?v=3"></script>
 <main>
   <h1><span class="ph">hphp</span> command line</h1>
   <p class="lead">One binary does everything: check, run, build. The runtime and the whole
@@ -41,7 +42,7 @@ hphp build app.hphp -o app.exe   # ship it</code></pre>
 
   <h2>Editor support</h2>
   <p>A VS Code extension lives in <code>extension/hphp</code>: syntax highlighting,
-  completions for all 235 builtins (generated from the compiler's own table), hover
+  completions for all 305 builtins (generated from the compiler's own table), hover
   signatures, and live diagnostics that run <code>hphp check</code> as you type.</p>
 
   <h2>Under the hood</h2>
@@ -52,6 +53,7 @@ hphp build app.hphp -o app.exe   # ship it</code></pre>
   which is why output exes are a few hundred KB and start instantly.</p>
 </main>
 </div>
-<script src="assets/site.js"></script>
+<script src="assets/site.js?v=4"></script>
+<script src="assets/theme.js?v=1"></script>
 </body>
 </html>

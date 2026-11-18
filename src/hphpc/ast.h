@@ -36,6 +36,9 @@ typedef enum {
     TY_TUPLE,
     TY_OPTION,     /* Option<T> */
     TY_RESULT,     /* Result<T,E> */
+    TY_NULL,       /* the null type */
+    TY_NULLABLE,   /* ?T - T or null (.elem = T) */
+    TY_UNION,      /* A|B (.members) */
     TY_SELF,
 } TypeKind;
 
@@ -45,9 +48,28 @@ struct Type {
     const Type *ok, *err;      /* Result */
     const char *name;          /* struct/class/interface/enum */
     AstClass *decl;            /* declaration, for nominal types */
+    /* union members (TY_UNION) */
+    const Type **members;
+    size_t nmembers;
     /* function types */
     struct { const Type **params; size_t nparams; const Type *ret; bool variadic; } fn;
 };
+
+/* A nullable/union type is stored as an hval slot: the tag says whether the
+ * value is there, the payload carries it. `?T` is the two-member union
+ * {T, null}; TY_UNION is the general case. */
+bool type_is_nullable(TypeKind k);
+bool type_is_union(TypeKind k);
+/* the type of a union with its null member removed (TY_NULLABLE -> T) */
+const Type *type_without_null(const Type *t);
+/* the type left after dropping one member (TY_NULL for the null itself) */
+const Type *type_without_member(const Type *t, TypeKind drop);
+/* do two types name the same member? (the kind, plus the name for the named
+ * ones: Widget and Gadget are both classes, but not the same member) */
+bool type_same_member(const Type *a, const Type *b);
+/* the type left after dropping one member, matched by the member itself:
+ * `Widget|Gadget` without `Widget` is `Gadget`, not an empty union */
+const Type *type_without_type(const Type *t, const Type *drop);
 
 bool type_is_ref(TypeKind k);
 bool type_is_numeric(TypeKind k);
@@ -77,6 +99,7 @@ struct Expr {
     Token tok;
     const Type *type;          /* filled by sema */
     bool is_stmt_value;        /* discardable result */
+    bool is_move_source;       /* this expression moves an own<T> place */
     union {
         struct { long long ival; } i;
         struct { double fval; } f;
@@ -110,6 +133,13 @@ struct Expr {
     bool is_nullcoal;     /* EX_BIN ?? */
     bool discard;         /* result unused (sema) */
     const char *builtin;  /* builtin call name (EX_CALL/EX_METHOD/EX_STATIC) */
+    void *borrow_origin;   /* sema: referent propagated through a borrow-returning call */
+    void *borrow_parent;   /* sema: source reference temporarily reborrowed */
+    const Expr *borrow_place; /* sema: projected place held by this reference */
+    int borrow_param_index;
+    bool has_borrow_param;
+    bool has_borrow_receiver; /* sema: reference result borrows the method receiver */
+    bool borrow_lifetime_deferred; /* sema: return check awaits call summary */
 };
 
 /* ---- Statements ---- */
@@ -167,6 +197,8 @@ struct Param {
     Token name_tok;
     const Type *resolved;      /* sema */
     void *sym;                 /* VarSym* (sema) */
+    bool captures_heap_alias;  /* closure may retain/mutate object argument */
+    bool mutates_heap_alias;   /* borrow analysis: body may mutate object argument */
 };
 
 struct MatchCase {
@@ -202,6 +234,14 @@ struct AstFn {
     AstClass *cls;
     const Type *ftype;         /* filled by sema */
     PtrVec captures;           /* VarSym* — closure captures (sema) */
+    PtrVec borrow_global_writes; /* VarSym* — globals modified directly or by callees */
+    PtrVec borrow_global_escapes; /* VarSym* — globals retained by escaping closures */
+    PtrVec borrow_heap_escapes; /* Type* — unknown heap roots retained by closures */
+    bool borrow_unknown_global_write; /* indirect/external call can mutate hidden global state */
+    void *borrow_return_global; /* VarSym* — stable global returned by a reference-returning fn */
+    const Expr *borrow_return_place; /* receiver-relative projection, when all returns agree */
+    bool borrow_return_place_resolved;
+    bool borrow_mutates_receiver; /* borrow analysis: method may mutate its receiver */
     void *this_sym;            /* VarSym* of implicit $this (sema) */
     bool uses_this;
     AstClass *owner_cls;       /* closures: class of the enclosing method */

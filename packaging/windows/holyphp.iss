@@ -5,14 +5,13 @@
 ; entry with a proper uninstaller. No admin rights needed (per-user install).
 ;
 ; Build (make-exe.ps1 does this for you):
-;   iscc /DAppVersion=1.0.0 packaging\windows\holyphp.iss
+;   iscc /DAppVersion=1.0.2 packaging\windows\holyphp.iss
 ;
-; Ships the compiler only: hphp.exe with runtime + stdlib embedded. No gcc, and
-; no libraries -- install those with the package manager afterwards
-; (`hphp pkg install ui`, `hphp pkg install websocket`).
+; Ships the compiler only: hphp.exe with runtime + bundled libraries embedded.
+; GCC remains a separate build dependency for HolyPHP source programs.
 
 #ifndef AppVersion
-  #define AppVersion "1.0.1"
+  #define AppVersion "1.0.2"
 #endif
 
 [Setup]
@@ -148,9 +147,7 @@ procedure CurPageChanged(CurPageID: Integer);
 begin
   if CurPageID = wpFinished then begin
     WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 +
-      'Libraries are not bundled -- install them with the package manager:' + #13#10 +
-      '    hphp install ui' + #13#10 +
-      '    hphp install websocket';
+      'Bundled libraries: ui, websocket, async, thread, html and ide.';
     if GccMissing then
       WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 +
         'Note: gcc was not found. hphp runs fine, but "hphp build/run" needs it' + #13#10 +

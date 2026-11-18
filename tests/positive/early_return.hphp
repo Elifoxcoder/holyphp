@@ -1,0 +1,90 @@
+/* early_return.hphp — a branch that leaves carries its proof past itself.
+ *
+ *     if ($v === null) { return 0; }
+ *     return strlen($v);        // $v is a string here
+ *
+ * The code below the if is only reached when the condition was false, so the
+ * facts of the branch that survived hold there. That is only sound while the
+ * surviving branch did not write the variable itself - see
+ * tests/negative/early_return_write.hphp for that half.
+ *
+ * A FAIL line here means the proof died with the branch that made it. */
+
+$failures = 0;
+
+function expect(int $got, int $want, string $what): void {
+    global $failures;
+    if ($got === $want) {
+        echo "OK   " . $what . "\n";
+    } else {
+        echo "FAIL " . $what . " (got " . $got . ", want " . $want . ")\n";
+        $failures = $failures + 1;
+    }
+}
+
+/* ---- the basic shape: the null case returns, the rest sees a string ---- */
+function strlen_or_zero(?string $v): int {
+    if ($v === null) {
+        return 0;
+    }
+    /* $v cannot be null here: the branch that allowed it returned */
+    return strlen($v);
+}
+expect(strlen_or_zero("php"), 3, "code after an early return sees the narrowed type");
+expect(strlen_or_zero(null), 0, "and the returning branch still runs");
+
+/* ---- a union slot: the string arm returns, the rest is the int member --- */
+function len_or_val(string|int $x): int {
+    if ($x is string) {
+        return strlen($x);
+    }
+    /* $x is an int here: the string case returned */
+    return $x + 1000;
+}
+expect(len_or_val("ab"), 2, "the guarded arm narrows as before");
+expect(len_or_val(5), 1005, "an early return carries the union proof past it");
+
+/* ---- the else branch can be the one that leaves ------------------------ */
+function else_leaves(string|int $x): int {
+    if ($x is int) {
+        /* nothing to do - this arm falls through */
+    } else {
+        return strlen($x);
+    }
+    /* only the int arm reaches here: the else returned */
+    return $x + 1000;
+}
+expect(else_leaves("ab"), 2, "the else arm narrows as before");
+expect(else_leaves(5), 1005, "an else that returns carries the then-branch proof below the if");
+
+/* ---- a continue is an early exit of the loop body too ------------------ */
+$items = ["a", null, "b"];
+$seen = 0;
+$i = 0;
+while ($i < 3) {
+    $cur: ?string = $items[$i];
+    $i = $i + 1;
+    if ($cur === null) {
+        continue;
+    }
+    $seen = $seen + strlen($cur);   /* the null case continued away */
+}
+expect($seen, 2, "a continue carries the proof past it");
+
+/* ---- and a break ends the loop the same way ---------------------------- */
+$str: ?string = "xy";
+$len = 0;
+while (true) {
+    if ($str === null) {
+        break;
+    }
+    $len = $len + strlen($str);   /* $str is a string until it breaks */
+    $str = null;                  /* the write ends the loop next turn */
+}
+expect($len, 2, "a break carries the proof past it");
+
+if ($failures > 0) {
+    echo "early_return.hphp: " . $failures . " failure(s)\n";
+    exit(1);
+}
+echo "early_return.hphp: all early-exit narrowing checks passed\n";

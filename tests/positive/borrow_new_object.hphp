@@ -1,0 +1,5 @@
+class BorrowNewWidget {
+    pub int $value = 7;
+}
+let $widget: BorrowNewWidget = new BorrowNewWidget();
+echo $widget->value . "\n";

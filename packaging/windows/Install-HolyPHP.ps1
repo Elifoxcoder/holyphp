@@ -14,10 +14,10 @@
 #   3. adds it to the *user* PATH (HKCU\Environment, no admin)
 #   4. broadcasts WM_SETTINGCHANGE so new shells pick up the PATH
 #   5. checks for gcc (compiled programs need it) and prints how to get it
-#   6. notes that ui/websocket libraries come via `hphp pkg install ...`
+#   6. confirms the bundled libraries
 #
-# The installers only contain the toolchain: no gcc, and none of the
-# lib/*.hphp libraries -- those are distributed through the package manager.
+# The installer contains the toolchain and libraries embedded at build time;
+# gcc is separate and needed when HolyPHP compiles source programs.
 
 [CmdletBinding()]
 param(
@@ -32,7 +32,7 @@ try { Start-Transcript -Path (Join-Path $env:TEMP 'holyphp-install.log') -Force 
 
 $InstallDir = Join-Path $env:LOCALAPPDATA 'HolyPHP'
 $ToolchainDir = Join-Path $PackageRoot 'hphp'
-$Version = '1.0.0'
+$Version = '1.0.2'
 
 function Write-Step($n, $msg)  { Write-Host "`n== [$n] $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)        { Write-Host "   OK  $msg" -ForegroundColor Green }
@@ -149,10 +149,7 @@ else {
 }
 
 Write-Step 5 'Libraries'
-Write-Info 'ui and websocket are NOT bundled -- install them with the manager:'
-Write-Host  '      hphp pkg registry http://your-server:8930   # once (optional)' -ForegroundColor White
-Write-Host  '      hphp install ui' -ForegroundColor White
-Write-Host  '      hphp install websocket' -ForegroundColor White
+Write-Info 'Bundled: ui, websocket, async, thread, html and ide.'
 
 Write-Host ''
 Write-Host 'HolyPHP installed.' -ForegroundColor Green

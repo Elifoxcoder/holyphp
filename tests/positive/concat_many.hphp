@@ -1,0 +1,3 @@
+$s = "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x" . "x";
+if ($s !== "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") { exit(1); }
+echo "concat-many: ok\n";

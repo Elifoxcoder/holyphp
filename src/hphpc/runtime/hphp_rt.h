@@ -27,12 +27,18 @@ void hbuf_write(Buf *b, const char *s, size_t n);
 void hbuf_puts(Buf *b, const char *s);
 void hbuf_printf(Buf *b, const char *fmt, ...);
 char *hbuf_take(Buf *b); /* NUL-terminated, transfers ownership */
+const char *hbuf_base(Buf *b);
+size_t hbuf_len(Buf *b);
+void hbuf_free(Buf *b);
 #define buf_init  hbuf_init
 #define buf_putc  hbuf_putc
 #define buf_write hbuf_write
 #define buf_puts  hbuf_puts
 #define buf_printf hbuf_printf
 #define buf_take  hbuf_take
+#define buf_base  hbuf_base
+#define buf_len   hbuf_len
+#define buf_free  hbuf_free
 
 /* ---------- forward types ---------- */
 typedef struct hstr hstr;
@@ -59,6 +65,8 @@ int hp_str_cmp(hstr *a, hstr *b);
 hstr *hp_str_concat2(hstr *a, hstr *b);
 hstr *hp_str_concat_n(int n, const hval *vals); /* array of hvals */
 hstr *hp_str_concat_v(hval a, hval b);          /* PHP '.' on any two values */
+hstr *hp_str_join_v(hval a, hval b);            /* '.' as a value: never mutates a */
+hstr *hp_str_append_v(hval a, hval b);          /* '.=' : lhs may grow in place */
 hstr *hp_str_slice(hstr *s, int64_t start, int64_t end);
 hstr *hp_str_char_at(hstr *s, int64_t idx);
 int64_t hp_str_len(hstr *s);
@@ -163,11 +171,14 @@ hval hp_arr_pop(harr *a);
 hval hp_arr_shift(harr *a);
 void hp_arr_unshift(harr *a, hval v);
 hval hp_arr_get(harr *a, hval idx);
+hval hp_arr_take(harr *a, hval idx); /* remove and transfer one uniquely-owned element */
 hval hp_arr_get_v(hval container, hval idx); /* PHP-style: index any value */
 void hp_arr_set_v(hval container, hval idx, hval v); /* set on hval container */
 void hp_arr_set(harr *a, hval idx, hval v);
 bool hp_arr_has(harr *a, hval key);
 void hp_arr_unset(harr *a, hval key);
+void *hp_move_ptr(void *slot); /* take a pointer-valued slot and clear it */
+hval hp_move_hval(hval *slot); /* take a boxed value and clear its slot */
 int64_t hp_arr_len(harr *a);
 harr *hp_arr_slice(harr *a, int64_t start, int64_t end);
 harr *hp_arr_keys(harr *a);
@@ -295,6 +306,7 @@ struct hobj {
 
 void *hp_alloc(size_t n);
 void hp_echo(hval v);              /* PHP echo: print value */
+void hp_echo_newline(void);        /* HolyPHP echo statement terminator */
 
 /* ---------- builtin function entry points (hphp_std.c) ---------- */
 hval hpbi_strlen(hval s);
@@ -512,12 +524,21 @@ hval hpbi_var_export(hval v);
 hval hpbi_serialize(hval v);
 hval hpbi_unserialize(hval s);
 hval hpbi_readline(hval prompt);
+hval hpbi_readline_color(hval prompt, hval color);
+hval hpbi_print_color(hval text, hval color);
+hval hpbi_println_color(hval text, hval color);
 hval hpbi_rand(hval mn, hval mx);
 hval hpbi_mt_rand(hval mn, hval mx);
 hval hpbi_srand(hval seed);
 hval hpbi_mt_srand(hval seed);
 hval hpbi_random_int(hval mn, hval mx);
 hval hpbi_fgetc(hval stream);
+
+/* unsafe raw-memory builtins */
+hval hpbi_malloc(hval n);
+hval hpbi_free(hval p);
+hval hpbi_memcpy(hval dst, hval src, hval n);
+hval hpbi_memset(hval dst, hval byte, hval n);
 
 /* filesystem helpers */
 hval hpbi_getcwd(void);
@@ -591,9 +612,42 @@ double hp_mt_rand(void);
 #define HPUI_PICTURE 15
 #define HPUI_TIMER 16
 #define HPUI_DIVIDER 17
+#define HPUI_CANVAS 18
+
+/* Canvas input events, passed to hpui_on_event(). 1-5 keep the original
+ * meanings (click / change / action / key / drag); 6 upward are the canvas
+ * ones, which report where the pointer was and which button was used.
+ * A handler always receives (x, y, button_or_delta) for mouse events and
+ * (vk, char, mods) for key events, so one binding table serves both. */
+enum {
+    HPUI_EV_CLICK  = 1,
+    HPUI_EV_CHANGE = 2,
+    HPUI_EV_ACTION = 3,
+    HPUI_EV_KEY    = 4,
+    HPUI_EV_DRAG   = 5,
+    HPUI_EV_DOWN   = 6,   /* (x, y, button)  1 left, 2 right, 3 middle */
+    HPUI_EV_UP     = 7,   /* (x, y, button)                            */
+    HPUI_EV_MOVE   = 8,   /* (x, y, 0)      while inside or captured   */
+    HPUI_EV_WHEEL  = 9,   /* (x, y, delta)  delta is a wheel notch     */
+    HPUI_EV_RESIZE = 10,  /* (w, h, 0)      new logical size           */
+    HPUI_EV_CHAR   = 11,  /* (codepoint, 0, 0) a typed character       */
+    HPUI_EV_DBL    = 12,  /* (x, y, button)                            */
+    HPUI_EV_LEAVE  = 13,  /* (0, 0, 0)                                 */
+    HPUI_EV_ENTER  = 14,  /* (0, 0, 0)                                 */
+    HPUI_EV_FOCUS  = 15,  /* (1 focused / 0 blurred, 0, 0)             */
+    HPUI_EV_NEV    = 16
+};
+
+/* cursor shapes accepted by hpui_cursor_set() */
+enum {
+    HPUI_CUR_ARROW  = 0, HPUI_CUR_IBEAM = 1, HPUI_CUR_HAND = 2,
+    HPUI_CUR_SIZEWE = 3, HPUI_CUR_SIZENS = 4, HPUI_CUR_SIZEALL = 5,
+    HPUI_CUR_CROSS  = 6, HPUI_CUR_NO = 7
+};
 
 void hpui_init(void);
 int64_t hpui_dispatch(int ms);            /* pump events up to ms, 0 = block */
+int64_t hpui_dpi_scale(void);            /* device pixels per 96-dpi logical px */
 void hpui_run_main(void);                 /* blocking GetMessage loop */
 void hpui_quit(void);                     /* post WM_QUIT */
 
@@ -613,6 +667,7 @@ int64_t hpui_ctrl_show(int64_t h, bool visible);
 int64_t hpui_ctrl_enable(int64_t h, bool enabled);
 int64_t hpui_ctrl_move(int64_t h, int x, int y, int w, int hgt);
 int64_t hpui_ctrl_focus(int64_t h);
+int64_t hpui_ctrl_select_all(int64_t h);
 int64_t hpui_list_add(int64_t h, const char *item);
 int64_t hpui_list_clear(int64_t h);
 int64_t hpui_list_remove(int64_t h, int64_t index);
@@ -641,9 +696,39 @@ int64_t hpui_ctrl_style(int64_t h, int64_t role);
 int64_t hpui_ctrl_font(int64_t h, int64_t size, bool bold);
 int64_t hpui_range_set(int64_t h, int64_t lo, int64_t hi);
 int64_t hpui_repaint(int64_t h);
+int64_t hpui_input_margin(int64_t h, int64_t l, int64_t r);
+int64_t hpui_ctrl_svg(int64_t h, const char *source);
+int64_t hpui_picture_load(int64_t h, const char *path);
+int64_t hpui_ctrl_raise(int64_t h);
 int64_t hpui_textw(const char *text, int pt, bool bold);
 int64_t hpui_text_lines(const char *text, int pt, bool bold, int maxw);
+
+/* --- canvas: a surface the script paints (see the HPUI_EV_* block above) ---
+ * Every call takes the canvas handle and logical 96-dpi pixels. Drawing goes
+ * into a backbuffer and reaches the screen on the next paint, or immediately
+ * with hpui_canvas_flush(). Text is drawn with a font from the canvas font
+ * table, whose id is what hpui_font_id() hands back. */
+int64_t hpui_font_id(const char *family, int pt, bool bold, bool italic);
+int64_t hpui_font_w(int64_t font_id, const char *text);
+int64_t hpui_font_h(int64_t font_id);
+int64_t hpui_draw_clear(int64_t canvas, int64_t rgb);
+int64_t hpui_draw_rect(int64_t canvas, int x, int y, int w, int h, int64_t rgb);
+int64_t hpui_draw_round(int64_t canvas, int x, int y, int w, int h, int radius,
+                        int64_t fill, int64_t stroke, int stroke_w);
+int64_t hpui_draw_line(int64_t canvas, int x1, int y1, int x2, int y2,
+                       int64_t rgb, int w);
+/* flags: 1 ellipsis, 2 centre vertically, 4 right align, 8 no clipping */
+int64_t hpui_draw_text(int64_t canvas, int x, int y, int w, int h,
+                       const char *text, int64_t rgb, int64_t font_id, int flags);
+int64_t hpui_draw_clip(int64_t canvas, int x, int y, int w, int h);
+int64_t hpui_draw_unclip(int64_t canvas);
+int64_t hpui_canvas_size(int64_t canvas, int64_t *out_w, int64_t *out_h);
+int64_t hpui_canvas_pixel(int64_t canvas, int x, int y);   /* 0xRRGGBB, -1 outside */
+int64_t hpui_canvas_invalidate(int64_t canvas);
+int64_t hpui_canvas_flush(int64_t canvas);
+int64_t hpui_cursor_set(int64_t canvas, int64_t shape);
 int64_t hpui_hwnd(int64_t win);                 /* raw HWND, for embedding */
+int64_t hpui_client_size(int64_t win, int64_t *out_w, int64_t *out_h);
 int64_t hpui_theme_set(int64_t win, const int64_t *v, int n);
 int64_t hpui_picture_load(int64_t h, const char *path);
 
@@ -679,6 +764,7 @@ hval hpbi_ui_get(hval h);
 hval hpbi_ui_enable(hval h, hval on);
 hval hpbi_ui_move(hval h, hval x, hval y, hval w, hval hgt);
 hval hpbi_ui_focus(hval h);
+hval hpbi_ui_select_all(hval h);
 hval hpbi_ui_items(hval h, hval item);
 hval hpbi_ui_remove(hval h, hval idx);
 hval hpbi_ui_clear(hval h);
@@ -712,8 +798,13 @@ hval hpbi_ui_accent(hval h, hval rgb);
 hval hpbi_ui_radius(hval h, hval r);
 hval hpbi_ui_range(hval h, hval lo, hval hi);
 hval hpbi_ui_repaint(hval h);
+hval hpbi_ui_input_margin(hval h, hval l, hval r);
+hval hpbi_ui_svg(hval h, hval source);
+hval hpbi_ui_picture(hval h, hval path);
+hval hpbi_ui_raise(hval h);
 hval hpbi_ui_enabled(hval h);
 hval hpbi_ui_rect(hval h);
+hval hpbi_ui_client_size(hval win);
 hval hpbi_ui_scroll(hval win, hval dy, hval to);
 hval hpbi_ui_count(hval h);
 hval hpbi_ui_progress_get(hval h);
@@ -724,7 +815,7 @@ hval hpbi_ui_browser_ready(void);
 hval hpbi_ui_browser_loader(void);
 hval hpbi_ui_browser_new(hval parent, hval dir);
 hval hpbi_ui_browser_free(hval b);
-hval hpbi_ui_browser_fit(hval b, hval top);
+hval hpbi_ui_browser_fit(hval b, hval top, hval width);
 hval hpbi_ui_browser_go(hval b, hval url);
 hval hpbi_ui_browser_html(hval b, hval html);
 hval hpbi_ui_browser_back(hval b);
@@ -735,9 +826,14 @@ hval hpbi_ui_browser_can_back(hval b);
 hval hpbi_ui_browser_can_forward(hval b);
 hval hpbi_ui_browser_url(hval b);
 hval hpbi_ui_browser_title(hval b);
+hval hpbi_ui_browser_favicon(hval b);
 hval hpbi_ui_browser_zoom(hval b, hval factor);
 hval hpbi_ui_browser_zoom_get(hval b);
-hval hpbi_ui_browser_devtools(hval b);
+hval hpbi_ui_browser_devtools(hval b, hval on);
+hval hpbi_ui_browser_devtools_fit(hval b, hval x, hval y, hval w, hval h);
+hval hpbi_ui_browser_devtools_ready(hval b);
+hval hpbi_ui_browser_print(hval b);
+hval hpbi_ui_browser_post(hval b, hval json);
 hval hpbi_ui_browser_visible(hval b, hval on);
 hval hpbi_ui_browser_key(hval b, hval mod, hval vk, hval cmd, hval cb);
 hval hpbi_ui_browser_on(hval b, hval ev, hval cb);
@@ -747,7 +843,7 @@ int64_t hpwv2_available(void);
 const char *hpwv2_loader_path(void);
 int64_t hpwv2_create(int64_t parent_hwnd, const char *user_data_dir);
 int64_t hpwv2_destroy(int64_t id);
-int64_t hpwv2_fit(int64_t id, int top_logical);
+int64_t hpwv2_fit(int64_t id, int top_logical, int width_logical);
 int64_t hpwv2_navigate(int64_t id, const char *url);
 int64_t hpwv2_html(int64_t id, const char *html);
 int64_t hpwv2_back(int64_t id);
@@ -758,12 +854,23 @@ int64_t hpwv2_can_back(int64_t id);
 int64_t hpwv2_can_forward(int64_t id);
 int64_t hpwv2_url(int64_t id, char **out);
 int64_t hpwv2_title(int64_t id, char **out);
+int64_t hpwv2_favicon(int64_t id, char **out);
 int64_t hpwv2_zoom(int64_t id, double factor);
 int64_t hpwv2_zoom_get(int64_t id, double *out);
-int64_t hpwv2_devtools(int64_t id);
+int64_t hpwv2_devtools(int64_t id, bool on);
+int64_t hpwv2_devtools_fit(int64_t id, int x, int y, int w, int hgt);
+int64_t hpwv2_devtools_ready(int64_t id);
+int64_t hpwv2_print(int64_t id);
+int64_t hpwv2_post(int64_t id, const char *json);
 int64_t hpwv2_on(int64_t id, int64_t evtype, hval cb);
 int64_t hpwv2_visible(int64_t id, bool on);
 int64_t hpwv2_shortcut(int64_t id, int64_t mod, int64_t vk, int64_t cmd, hval cb);
+/* Drain the engine's event queue. Called from the UI message loop so script
+ * callbacks run on the VM thread; a no-op when the engine is not loaded. */
+void hpwv2_drain_events(void);
+/* Shut the engine down on the way out, so its profile is flushed. */
+void hpwv2_shutdown(void);
+int hpwv2_closing(void);
 hval hpbi_ui_theme(hval win, hval bg, hval surface, hval elevated, hval text,
                    hval muted, hval accent, hval onAccent, hval border,
                    hval radius, hval fontPt, hval titlePt, hval rowH, hval dark);
@@ -812,6 +919,43 @@ hval hpbi_feof(hval fh);
 /* http client (http:// only) */
 hval hpbi_http_get(hval url);
 hval hpbi_http_request(hval url, hval method, hval body, hval headers);
+
+/* canvas builtins (canvas surface, drawing, fonts, input) */
+hval hpbi_ui_font_new(hval family, hval pt, hval bold, hval italic);
+hval hpbi_ui_font_width(hval font_id, hval text);
+hval hpbi_ui_font_height(hval font_id);
+hval hpbi_ui_draw_clear(hval cv, hval rgb);
+hval hpbi_ui_draw_rect(hval cv, hval x, hval y, hval w, hval h, hval rgb);
+hval hpbi_ui_draw_round(hval cv, hval x, hval y, hval w, hval h, hval radius,
+                        hval fill, hval stroke, hval sw);
+hval hpbi_ui_draw_line(hval cv, hval x1, hval y1, hval x2, hval y2, hval rgb, hval w);
+hval hpbi_ui_draw_text(hval cv, hval x, hval y, hval w, hval h, hval text,
+                       hval rgb, hval font_id, hval flags);
+hval hpbi_ui_draw_clip(hval cv, hval x, hval y, hval w, hval h);
+hval hpbi_ui_draw_unclip(hval cv);
+hval hpbi_ui_canvas_size(hval cv);
+hval hpbi_ui_canvas_pixel(hval cv, hval x, hval y);
+hval hpbi_ui_canvas_invalidate(hval cv);
+hval hpbi_ui_canvas_flush(hval cv);
+hval hpbi_ui_cursor(hval cv, hval shape);
+
+/* child processes (the integrated terminal and the runner): see
+ * hphp_std.c - start, poll, feed and reap a console program */
+hval hpbi_proc_start(hval cmd, hval cwd);
+hval hpbi_proc_read(hval h, hval maxn);
+hval hpbi_proc_read_err(hval h, hval maxn);
+hval hpbi_proc_write(hval h, hval data);
+hval hpbi_proc_alive(hval h);
+hval hpbi_proc_exit(hval h);
+hval hpbi_proc_close(hval h);
+hval hpbi_shell_exec(hval cmd);
+hval hpbi_exec(hval cmd, hval ret);
+hval hpbi_passthru(hval cmd);
+hval hpbi_proc_open(hval cmd, hval cwd);
+hval hpbi_proc_get_status(hval h);
+hval hpbi_proc_kill(hval h);
+hval hpbi_holy_maxout_start(hval port, hval db_path);
+hval hpbi_holy_challenge_start(hval port, hval db_path);
 
 #ifdef __cplusplus
 }

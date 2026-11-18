@@ -1,0 +1,15 @@
+// explode("") splits into single characters — and has to stay UTF-8 safe,
+// otherwise "ü" would come back as two broken bytes.
+$a = explode("", "Hilfe");
+if (count($a) != 5) { echo "FAIL count\n"; exit(1); }
+if (implode("", $a) != "Hilfe") { echo "FAIL roundtrip\n"; exit(1); }
+
+$b = explode("", "Grüße");
+if (count($b) != 5) { echo "FAIL utf8 count\n"; exit(1); }
+if ($b[2] != "ü") { echo "FAIL utf8 char\n"; exit(1); }
+
+// the normal paths must not change
+if (count(explode(",", "a,b,c")) != 3) { echo "FAIL delimiter\n"; exit(1); }
+if (count(explode("", "")) != 0) { echo "FAIL empty input\n"; exit(1); }
+
+echo "explode ok\n";

@@ -3,205 +3,128 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
 <title>Examples — HolyPHP</title>
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/style.css?v=6">
 </head>
 <body>
 <div class="layout">
-<script src="assets/nav.html.js"></script>
+<script src="assets/nav.html.js?v=3"></script>
 <main>
   <h1><span class="ph">Examples</span></h1>
-  <p class="lead">Real programs from the repo — every snippet runs with
-  <code>hphp run examples/&lt;name&gt;.hphp</code>.</p>
+  <p class="lead">Runnable programs from the repo. Everything in the first table
+  runs with <code>hphp run examples/&lt;name&gt;.hphp</code>; the self-tests live in
+  <code>tests/manual/</code> because they need a window, a port or threads.</p>
+  <div style="margin: 16px 0;">
+    <a href="playground.html" style="display: inline-block; padding: 10px 20px; background: var(--ember); color: #000; text-decoration: none; border-radius: 6px; font-weight: 600;">⚡ Try these in the Playground</a>
+    <a href="guide.html" style="display: inline-block; padding: 10px 20px; background: var(--bg3); color: var(--fg); text-decoration: none; border: 1px solid var(--line); border-radius: 6px; margin-left: 8px;">📚 Interactive Guide</a>
+  </div>
+
+  <table>
+    <tr><th>File</th><th>What it shows</th></tr>
+    <tr><td><code>hello.hphp</code></td><td>the classic one-liner</td></tr>
+    <tr><td><code>demo.hphp</code></td><td>the language tour: functions, arrays, classes, closures, match, exceptions</td></tr>
+    <tr><td><code>ui_demo.hphp</code></td><td>UI 2.0: themes, cards, forms, lists, meters, menus, timers</td></tr>
+    <tr><td><code>ui_gallery.hphp</code></td><td>every theme and every control, side by side</td></tr>
+    <tr><td><code>canvas_demo.hphp</code></td><td>a raw canvas: draw calls and pointer/keyboard events as numbers</td></tr>
+    <tr><td><code>holyhtml_demo.hphp</code></td><td>an HTML/CSS surface painted by HolyPHP, verified by reading pixels back</td></tr>
+    <tr><td><code>holyide/holyide.hphp</code></td><td>the IDE: explorer, tabs, editor, palette, terminal, runner</td></tr>
+    <tr><td><code>ws_chat.hphp</code> + <code>ws_chat.html</code></td><td>a browser chat server over RFC 6455</td></tr>
+    <tr><td><code>device_feed.hphp</code></td><td>a WebSocket feed of smart-home JSON, one update per second</td></tr>
+    <tr><td><code>async_demo.hphp</code></td><td>timers, TCP servers, HTTP in one event loop</td></tr>
+    <tr><td><code>thr_demo.hphp</code></td><td>channels, atomics, barriers, parallel map</td></tr>
+    <tr><td><code>websocket_demo.hphp</code></td><td>the WebSocket API without a browser</td></tr>
+    <tr><td><code>bench.hphp</code> / <code>record.hphp</code></td><td>micro-benchmarks, next to their hand-written C twins</td></tr>
+    <tr><td><code>tests/manual/*.hphp</code></td><td>self-tests that open a window, bind a socket or spawn threads</td></tr>
+  </table>
 
   <h2>hello.hphp — the classic</h2>
-<pre><code class="hphp">echo "Hello, HolyPHP!\n";</code></pre>
+<pre><code class="hphp">echo "Hello, HolyPHP!";</code></pre>
 
-  <h2>demo.hphp — the feature tour</h2>
-  <p>Functions, arrays, maps, classes, closures, match, exceptions — the whole tour in 79
-  lines. Highlights:</p>
+  <h2>demo.hphp — the language tour</h2>
+  <p>Functions, arrays, maps, classes, closures, match and exceptions in one
+  file. Highlights:</p>
 <pre><code class="hphp">function fib(int $n): int {
     if ($n &lt; 2) { return $n; }
     return fib($n - 1) + fib($n - 2);
 }
-echo "fib(10) = " . fib(10) . "\n";
+echo "fib(10) = " . fib(10);
 
 $nums = [5, 3, 8, 1, 9];
 $total = 0;
 foreach ($nums as $x) { $total += $x; }
-echo "sum = {$total}, count = " . count($nums) . "\n";
+echo "sum = {$total}, count = " . count($nums);
 
 $user = ["name" =&gt; "Ada", "lang" =&gt; "HolyPHP"];
 foreach ($user as $k =&gt; $v) {
-    echo "  {$k} =&gt; {$v}\n";
-}
-
-class Counter {
-    pub int $count = 0;
-    pub function bump(): void { $this-&gt;count += 1; }
-    pub function get(): int { return $this-&gt;count; }
-}
-
-function classify(int $n): string {
-    return match ($n) {
-        0 =&gt; "zero",
-        1, 2, 3 =&gt; "small",
-        _ =&gt; "big",
-    };
-}
-
-try {
-    throw "boom";
-} catch (string $e) {
-    echo "caught: {$e}\n";
+    echo "  {$k} =&gt; {$v}";
 }</code></pre>
 
-  <h2>showcase.hphp — every builtin, timed</h2>
-  <p>Groups all 235 built-ins thematically, demonstrates the Rust DNA (borrows, unsafe,
-  enums) and prints runtime measurements — including the famous:</p>
-<pre><code class="hphp">$t0 = microtime(true);
-$fib = fib(27);
-$t1 = microtime(true);
-echo "fib(27) = {$fib} in " . round(($t1 - $t0) * 1000, 2) . " ms\n";
-// same machine: PHP 8.5 ~24 ms, Rust ~0.6 ms
-// -&gt; HolyPHP ~25x faster than PHP, &lt;2x slower than Rust</code></pre>
-  <p class="small muted">Rust-DNA section (verbatim from the example):</p>
-<pre><code class="hphp">// immutable borrow: &amp; = read-only, &amp;mut = writable
-function laenge(string $text): int { return strlen($text); }
-$w = "borrowed";
-echo "immutable borrow: laenge($w) = " . laenge($w) . "\n";
+  <h2>holyhtml_demo.hphp — HTML and CSS, painted by HolyPHP</h2>
+  <p>One window, one canvas, and a document the engine parses, styles, lays out
+  and paints. After a few frames the demo reads pixels back out of the surface
+  and asserts that the sidebar is where the CSS says it is — a layout can be
+  wrong while every state test passes; a pixel cannot.</p>
+<pre><code class="hphp">import "html";
+import "ui";
 
-// raw pointers exist ONLY inside unsafe blocks
-unsafe {
-    $geheim: int = 42;
-    $zeiger: &amp;int = &amp;$geheim;
-    echo "unsafe block: deref(&amp;geheim) = " . (*$zeiger) . "\n";
-}
+$W = 760; $H = 460;
+$win = ui_window("HolyHTML", -1, -1, $W, $H);
+$cv  = ui_add($win, 18, "", 0, 0, $W, $H);
 
-// algebraic data types: enum + match
-enum Farbe: int { Rot, Gruen, Blau }</code></pre>
+$view = new HtmlView($cv, $W, $H, html_theme_dark());
+$view->load("<div class='root'><div class='side'>EXPLORER</div>" .
+            "<div class='main'>hello</div></div>",
+            ".root { display: flex; height: 100%; }\n" .
+            ".side { width: 200px; background-color: #252526; }\n" .
+            ".main { flex: 1; background-color: #1e1e1e; }");
+$view->paint();
+ui_run_main();</code></pre>
+<pre><code class="sh">hphp run examples/holyhtml_demo.hphp
+# boxes=… sidebar: 0,0 200x460 … pixels ok</code></pre>
 
-  <h2>word_guess.hphp — playable game</h2>
-  <p>A two-player hangman in 73 lines — readline input, arrays, string building:</p>
-<pre><code class="hphp">function mask_word(string $word, array $found): string {
-    $out = "";
-    $len = strlen($word);
-    for ($i = 0; $i &lt; $len; $i++) {
-        $c = substr($word, $i, 1);
-        if (in_array($c, $found)) { $out .= $c . " "; }
-        else { $out .= "_ "; }
-    }
-    return $out;
-}
-
-$word = strtolower(trim(readline("Geheimes Wort: ")));
-$found = [];
-// ... loop: guess letters until mask_word shows everything</code></pre>
-
-  <h2>ui_demo.hphp &mdash; UI 2.0 showcase</h2>
-  <p>One theme for the whole window, then widgets that lay themselves out: the button
-  roles, a sign-in card, sliders, a theme picker, a list box, a live progress bar,
-  menus and a timer:</p>
-<pre><code class="hphp">import "ui";
-
-$app = new App("HolyPHP UI 2.0", 880, 780);
-$app-&gt;theme("midnight")-&gt;pad(28)-&gt;gap(12)-&gt;radius(12);
-
-$app-&gt;heading("HolyPHP UI 2.0");
-$app-&gt;sub("One theme for everything. Zero pixel maths.");
-
-$roles = $app-&gt;row();                    // a row lays its children out
-$roles-&gt;button("Subtle")-&gt;style("subtle");
-$roles-&gt;button("Primary", "primary");
-$roles-&gt;button("Ghost", "ghost");
-$roles-&gt;button("Danger", "danger");
-
-$cols = $app-&gt;row();                    // two side-by-side columns
-$left = $cols-&gt;column(400);
-$right = $cols-&gt;column(400);
-
-$form = $left-&gt;card(400);
-$form-&gt;label("Sign in")-&gt;font(13, true);
-$email = $form-&gt;input("you@example.com");
-$form-&gt;label("Password");
-$pass = $form-&gt;input("........");
-$form-&gt;checkbox("Remember me", true);
-$actions = $form-&gt;row(370);
-$actions-&gt;button("Cancel", "ghost")-&gt;disable();
-$actions-&gt;button("Sign in", "primary", function() use ($app, $email) {
-    $app-&gt;msg("Welcome, {$email-&gt;content()}!");
-});
-
-$ticks = 0;                              // a timer drives the bar
-$bar = $right-&gt;card(400)-&gt;progress(0);
-$status = $right-&gt;sub("Idle");
-$app-&gt;every(400, function() use (&$ticks, $bar, $status) {
-    $ticks = $ticks + 1;
-    $pct = ($ticks * 5) % 100;
-    $bar-&gt;progress($pct);
-    $status-&gt;text("{$pct}% complete");
-});
-
-$app-&gt;run();</code></pre>
-
-  <h2>ws_chat.hphp — browser chat server</h2>
-  <p>The library showcase: a chat server that any browser joins — no page reloads, no
-  polling, pure WebSockets:</p>
-<pre><code class="hphp">import "websocket";
-
-$server = new WebSocketServer("tcp://127.0.0.1:9500");
-$server-&gt;onOpen = function(int $client) use ($server): void {
-    $server-&gt;broadcast("user " . $client . " joined the chat");
-};
-$server-&gt;onMessage = function(int $client, string $msg) use ($server): void {
-    $server-&gt;broadcast("user " . $client . ": " . $msg);
-};
-
-while ($server-&gt;tick()) { usleep(10000); }</code></pre>
-<pre><code class="hphp">hphp build examples/ws_chat.hphp -o wschat.exe
-./wschat.exe
-# open examples/ws_chat.html in Chrome and start typing</code></pre>
-
-  <h2>ui_selftest.hphp — headless smoke test</h2>
-  <p>Creates a window, binds controls, exercises text get/set and the event pump, then
-  closes — CI-friendly (no human input needed):</p>
-<pre><code class="hphp">hphp run examples/ui_selftest.hphp   # exits 0 when everything worked</code></pre>
+  <h2>holyide/holyide.hphp — the IDE</h2>
+  <p>The workbench from <a href="lib-ide.html">lib/ide</a> in a window: explorer,
+  tabs, a syntax-highlighted editor with undo and completions, a command
+  palette, a terminal and a problems list. <code>--selftest</code> renders a few
+  frames, reads the canvas and exits, so the wiring can be checked without a
+  human.</p>
+<pre><code class="sh">hphp run holyide/holyide.hphp            # open the current folder
+hphp run holyide/holyide.hphp ..         # another one
+hphp build holyide/holyide.hphp -o holyide.exe
+./holyide.exe --selftest                 # ok sidebar bg / status bg / title bg</code></pre>
 
   <h2>async_demo.hphp — event loop, HTTP, threads</h2>
-  <p>The whole async library in one runnable file: timers with cancellation, a
-  line-oriented TCP server with ACK replies, an in-loop HTTP GET that keeps the
-  loop live, a blocking fetch with the server running on a thread, and raw
-  watchers that see data-then-EOF:</p>
+  <p>Timers with cancellation, a line-oriented TCP server with ACK replies, an
+  in-loop HTTP GET, a blocking fetch on a worker thread, and raw watchers that
+  see data-then-EOF:</p>
 <pre><code class="hphp">import "async";
-import "thread";
 
 $loop = async_line_server("tcp://127.0.0.1:8931", function($c, $line) {
-    return "ACK:" . strtoupper($line);        // reply line
+    return "ACK:" . strtoupper($line);
 });
 
 $loop->httpGet("http://127.0.0.1:8932/hello",
-    function($resp) use ($loop) { echo "got " . strlen($resp) . " bytes\n"; $loop->stop(); },
-    function($err)  use ($loop) { echo "failed: $err\n"; $loop->stop(); });
+    function($resp) use ($loop) { echo strlen($resp) . " bytes"; $loop->stop(); },
+    function($err)  use ($loop) { echo "failed: $err"; $loop->stop(); });
 
 $loop->run();</code></pre>
-<pre><code class="hphp">hphp run examples/async_demo.hphp   # prints: ASYNC DEMO: all 5/5 checks passed</code></pre>
+<pre><code class="sh">hphp run examples/async_demo.hphp   # ASYNC DEMO: all 5/5 checks passed</code></pre>
 
-  <h2>thr_demo.hphp — six-thread concurrency tour</h2>
-  <p>Channel rendezvous, an 8-thread atomic counter to exactly 40000, per-thread
-  aggregation, barrier arrival order, order-preserving <code>parallel_map</code>,
-  and close-drain semantics:</p>
+  <h2>thr_demo.hphp — real threads</h2>
 <pre><code class="hphp">import "thread";
 
 $n = thr_parallel_map(function($x) { return $x * $x; },
                       [1,2,3,4,5,6,7,8,9,10]);
-echo implode(" ", $n), "\n";         // 1 4 9 16 25 36 49 64 81 100</code></pre>
-<pre><code class="hphp">hphp run examples/thr_demo.hphp     # prints: ALL THREAD TESTS PASSED</code></pre>
+echo implode(" ", $n);         // 1 4 9 16 25 36 49 64 81 100</code></pre>
+<pre><code class="sh">hphp run examples/thr_demo.hphp     # ALL THREAD TESTS PASSED</code></pre>
 
   <div class="note"><b>Tip:</b> every example compiles to a standalone binary:
-  <code>hphp build examples/word_guess.hphp -o guess.exe</code> — no PHP, no runtime,
-  no DLLs. Double-click and play.</div>
+  <code>hphp build examples/hello.hphp -o hello</code>. The compiler embeds the
+  runtime and the libraries, so the binary has no external dependencies.</div>
 </main>
 </div>
-<script src="assets/site.js"></script>
+<script src="assets/site.js?v=4"></script>
+<script src="assets/theme.js?v=1"></script>
 </body>
 </html>

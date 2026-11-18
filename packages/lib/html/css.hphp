@@ -1,0 +1,821 @@
+// =====================================================================
+//  HolyHTML — css: stylesheets, selectors, the cascade
+// =====================================================================
+//
+//  Part of lib/html (import "html"). This file turns CSS text into rules
+//  and answers one question for the layer above: for this node, which
+//  declarations apply, and which one of them wins?
+//
+//  Three decisions shape everything below:
+//
+//  1. A SELECTOR IS A LIST OF COMPOUNDS. `SelPart` is one compound
+//     (`div.card#x:hover`), and each part carries the combinator that
+//     joins it to the part on its LEFT. `div > .row span` is therefore
+//     three parts: `div`, `.row` (combinator ">"), `span` (combinator " ").
+//     Matching walks the list right to left, which is what lets a
+//     descendant combinator try every ancestor without backtracking the
+//     document.
+//
+//  2. THE CASCADE IS A SORT, NOT AN OVERWRITE RACE. Every matching
+//     declaration is collected together with its priority - (important,
+//     specificity, source order) - and the list is sorted ascending.
+//     Applying the sorted list in order leaves the winner in the computed
+//     style. `!important`, inline styles and "the later rule wins" are
+//     then one comparison instead of three special cases.
+//
+//  3. THE PARSER IS TOLERANT, like the HTML parser next to it. An unknown
+//     @-rule is skipped, a stray `}` is ignored, a missing semicolon is
+//     forgiven. A UI stylesheet is not worth failing a window over.
+//
+//  A note on unknown selectors: a pseudo-class this file does not know
+//  never matches. That keeps a typo in a stylesheet from matching
+//  everything, and `HState` carries exactly the states the engine can
+//  produce - hover, focus, active and a set of "on" nodes (checked,
+//  selected, expanded) addressed by document order.
+// =====================================================================
+
+// ---------------------------------------------------------------------
+//  1. Model
+// ---------------------------------------------------------------------
+
+/** One compound selector, plus how it joins to the compound on its left. */
+class SelPart {
+    pub string $tag = "";           // "" means *
+    pub string $id = "";
+    pub [string] $classes = [];
+    pub string $attr = "";          // attribute that must be present
+    pub string $attrEq = "";        // and equal to this ("[x=y]")
+    pub string $pseudo = "";        // hover, focus, first-child, not, ...
+    pub string $arg = "";           // pseudo-class argument, e.g. nth-child(2)
+    pub string $comb = " ";         // relation to the part on the left: " " or ">"
+    pub bool $pseudoElem = false;   // ::before / ::after - parsed, never matched
+}
+
+class CssRule {
+    pub string $sel = "";           // the selector as written, for the inspector
+    pub [SelPart] $parts = [];
+    pub int $spec = 0;              // specificity: ids*10000 + classes*100 + types
+    pub int $ord = 0;               // source order across all sheets
+    pub int $minW = 0;              // @media (min-width: Npx), 0 = unbounded
+    pub int $maxW = 0;              // @media (max-width: Npx)
+    pub [string] $pk = [];          // property names
+    pub [string] $pv = [];          // values, parallel
+    pub [int] $pi = [];             // 1 when the declaration said !important
+}
+
+/** A parsed set of stylesheets, keeping one running source order. */
+class CssSheet {
+    pub [CssRule] $rules = [];
+    pub int $next = 0;              // next source order to hand out
+    pub [string] $warn = [];        // things that were skipped, for the IDE
+}
+
+/** One declaration taking part in the cascade. */
+class Decl {
+    pub string $p = "";
+    pub string $v = "";
+    pub int $imp = 0;
+    pub int $spec = 0;
+    pub int $ord = 0;
+}
+
+/** The interactive state a selector may depend on.
+ *
+ *  Nodes are addressed by document order (`HNode.order`), an int that is
+ *  unique and cheap to compare - comparing two node objects would ask
+ *  whether they are *equal*, not whether they are the same node. `on` is
+ *  the set of "switched on" nodes: a checked box, a selected row, an
+ *  expanded folder. */
+class HState {
+    pub int $hover = 0;
+    pub int $focus = 0;
+    pub int $active = 0;
+    pub int $vw = 0;                // viewport width, for media queries
+    pub [int] $on = [];
+
+    pub function isOn(int $order): bool {
+        for ($i = 0; $i < count($this->on); $i++) {
+            if ($this->on[$i] == $order) { return true; }
+        }
+        return false;
+    }
+    pub function onSet(int $order, bool $v) {
+        if ($v) {
+            if (!$this->isOn($order)) { $this->on[] = $order; }
+            return;
+        }
+        for ($i = 0; $i < count($this->on); $i++) {
+            if ($this->on[$i] == $order) { array_splice($this->on, $i, 1); return; }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+//  2. Text helpers
+// ---------------------------------------------------------------------
+
+function css_is_ws(string $c): bool {
+    return $c == " " || $c == "\t" || $c == "\n" || $c == "\r" || $c == "\f";
+}
+
+/** Remove /* ... *\/ comments. An unterminated one eats the rest. */
+function css_strip_comments(string $s): string {
+    if (strpos($s, "/*") === false) { return $s; }
+    $out = "";
+    $i = 0;
+    $n = strlen($s);
+    while ($i < $n) {
+        $c = substr($s, $i, 1);
+        if ($c == "/" && $i + 1 < $n && substr($s, $i + 1, 1) == "*") {
+            $end = strpos($s, "*/", $i + 2);
+            $i = ($end === false) ? $n : $end + 2;
+            continue;
+        }
+        if ($c == "\"" || $c == "'") {          /* keep strings intact */
+            $out .= $c;
+            $i = $i + 1;
+            while ($i < $n) {
+                $d = substr($s, $i, 1);
+                $out .= $d;
+                $i = $i + 1;
+                if ($d == $c) { break; }
+            }
+            continue;
+        }
+        $out .= $c;
+        $i = $i + 1;
+    }
+    return $out;
+}
+
+/** Split at `$sep` characters that are at nesting depth zero.
+ *
+ *  Commas inside `:not(a, b)` or brackets inside `[data-x="a,b"]` are the
+ *  reason this cannot be a plain explode. Quotes are copied through, so a
+ *  value may contain the separator. */
+function css_split_top(string $s, string $sep): [string] {
+    $out: [string];
+    $buf = "";
+    $depth = 0;
+    $i = 0;
+    $n = strlen($s);
+    while ($i < $n) {
+        $c = substr($s, $i, 1);
+        if ($c == "\"" || $c == "'") {
+            $buf .= $c;
+            $i = $i + 1;
+            while ($i < $n) {
+                $d = substr($s, $i, 1);
+                $buf .= $d;
+                $i = $i + 1;
+                if ($d == $c) { break; }
+            }
+            continue;
+        }
+        if ($c == "(" || $c == "[") { $depth = $depth + 1; }
+        if ($c == ")" || $c == "]") { if ($depth > 0) { $depth = $depth - 1; } }
+        if ($c == $sep && $depth == 0) { $out[] = trim($buf); $buf = ""; $i = $i + 1; continue; }
+        $buf .= $c;
+        $i = $i + 1;
+    }
+    $out[] = trim($buf);
+    return $out;
+}
+
+/** Index of the `}` matching the `{` at `$open`, or -1. */
+function css_match_brace(string $s, int $open, int $to): int {
+    $depth = 0;
+    $i = $open;
+    while ($i < $to) {
+        $c = substr($s, $i, 1);
+        if ($c == "\"" || $c == "'") {
+            $i = $i + 1;
+            while ($i < $to) {
+                $d = substr($s, $i, 1);
+                $i = $i + 1;
+                if ($d == $c) { break; }
+            }
+            continue;
+        }
+        if ($c == "{") { $depth = $depth + 1; }
+        if ($c == "}") {
+            $depth = $depth - 1;
+            if ($depth == 0) { return $i; }
+        }
+        $i = $i + 1;
+    }
+    return -1;
+}
+
+// ---------------------------------------------------------------------
+//  3. Selector parsing
+// ---------------------------------------------------------------------
+
+/** One compound selector: `div.card#id[x=y]:hover`. */
+function css_compound(string $txt): SelPart {
+    $p = new SelPart();
+    $i = 0;
+    $n = strlen($txt);
+    while ($i < $n) {
+        $c = substr($txt, $i, 1);
+        if ($c == "*") { $i = $i + 1; continue; }
+        if ($c == ".") {
+            $j = $i + 1;
+            while ($j < $n && !css_name_end(substr($txt, $j, 1))) { $j = $j + 1; }
+            if ($j > $i + 1) { $p->classes[] = substr($txt, $i + 1, $j - $i - 1); }
+            $i = $j;
+            continue;
+        }
+        if ($c == "#") {
+            $j = $i + 1;
+            while ($j < $n && !css_name_end(substr($txt, $j, 1))) { $j = $j + 1; }
+            if ($j > $i + 1) { $p->id = substr($txt, $i + 1, $j - $i - 1); }
+            $i = $j;
+            continue;
+        }
+        if ($c == "[") {
+            $end = strpos($txt, "]", $i);
+            if ($end === false) { $end = $n; }
+            $inner = trim(substr($txt, $i + 1, $end - $i - 1));
+            $eq = strpos($inner, "=");
+            if ($eq === false) {
+                $p->attr = strtolower(trim($inner));
+            } else {
+                $k = strtolower(trim(substr($inner, 0, $eq)));
+                $v = trim(substr($inner, $eq + 1));
+                /* [x="y"] and [x=y] are the same selector */
+                $vl = strlen($v);
+                if ($vl >= 2) {
+                    $q0 = substr($v, 0, 1);
+                    if (($q0 == "\"" || $q0 == "'") && substr($v, $vl - 1, 1) == $q0) {
+                        $v = substr($v, 1, $vl - 2);
+                    }
+                }
+                $p->attr = $k;
+                $p->attrEq = $v;
+            }
+            $i = $end + 1;
+            continue;
+        }
+        if ($c == ":") {
+            $dbl = false;
+            $i = $i + 1;
+            if ($i < $n && substr($txt, $i, 1) == ":") { $dbl = true; $i = $i + 1; }
+            $j = $i;
+            while ($j < $n && !css_name_end(substr($txt, $j, 1)) && substr($txt, $j, 1) != "(") { $j = $j + 1; }
+            $name = strtolower(substr($txt, $i, $j - $i));
+            $arg = "";
+            $i = $j;
+            if ($i < $n && substr($txt, $i, 1) == "(") {
+                $end = strpos($txt, ")", $i);
+                if ($end === false) { $end = $n; }
+                $arg = trim(substr($txt, $i + 1, $end - $i - 1));
+                $i = $end + 1;
+            }
+            /* only the first functional pseudo-class is kept; a second one
+             * (`:not(a):not(b)`) would need a list, and the engine's own
+             * stylesheets do not use it */
+            if ($p->pseudo == "") {
+                $p->pseudo = $name;
+                $p->arg = $arg;
+                $p->pseudoElem = $dbl;
+            }
+            continue;
+        }
+        /* a type name */
+        $j = $i;
+        while ($j < $n && !css_name_end(substr($txt, $j, 1))) { $j = $j + 1; }
+        if ($j > $i) {
+            $p->tag = strtolower(substr($txt, $i, $j - $i));
+            $i = $j;
+            continue;
+        }
+        $i = $i + 1;      /* skip anything else silently */
+    }
+    return $p;
+}
+
+/** True for the characters that terminate a name (`.a`, `#a`, `div`). */
+function css_name_end(string $c): bool {
+    if (css_is_ws($c)) { return true; }
+    return $c == "." || $c == "#" || $c == ":" || $c == "[" || $c == ">" ||
+           $c == "+" || $c == "~" || $c == "," || $c == "(" || $c == ")";
+}
+
+/** Split a full selector into compounds with their combinators. */
+function css_sel_parts(string $sel): [SelPart] {
+    $parts: [SelPart];
+    $buf = "";
+    $pending = " ";
+    $i = 0;
+    $n = strlen($sel);
+    while ($i < $n) {
+        $c = substr($sel, $i, 1);
+        if (css_is_ws($c)) {
+            /* whitespace ends a compound - that is the descendant
+             * combinator. It is *not* a separator on its own: the flush
+             * only happens when something was accumulated, so `a > b`
+             * does not turn into two combinators. */
+            if (trim($buf) != "") {
+                $p = css_compound(trim($buf));
+                $p->comb = $pending;
+                $parts[] = $p;
+                $buf = "";
+                $pending = " ";
+            }
+            $i = $i + 1;
+            continue;
+        }
+        if ($c == ">") {
+            if (trim($buf) != "") {
+                $p = css_compound(trim($buf));
+                $p->comb = $pending;
+                $parts[] = $p;
+                $buf = "";
+            }
+            $pending = ">";
+            $i = $i + 1;
+            continue;
+        }
+        if ($c == "+" || $c == "~") {
+            /* the adjacent sibling combinators: not implemented, and rather
+             * than silently matching something wrong the rule is dropped */
+            $pending = "?";
+            $i = $i + 1;
+            continue;
+        }
+        $buf .= $c;
+        $i = $i + 1;
+    }
+    if (trim($buf) != "") {
+        $p = css_compound(trim($buf));
+        $p->comb = $pending;
+        $parts[] = $p;
+    }
+    return $parts;
+}
+
+/** Specificity as one comparable int: ids*10000 + (classes+attrs+pseudos)*100
+ *  + (types+pseudo-elements). The 100s gap is wider than any realistic
+ *  count of one category, which is all CSS's tuple rule needs here. */
+function css_spec_of([SelPart] $parts): int {
+    $ids = 0;
+    $cls = 0;
+    $typ = 0;
+    for ($i = 0; $i < count($parts); $i++) {
+        $p = $parts[$i];
+        if ($p->id != "") { $ids = $ids + 1; }
+        if ($p->tag != "") { $typ = $typ + 1; }
+        $cls = $cls + count($p->classes);
+        if ($p->attr != "") { $cls = $cls + 1; }
+        if ($p->pseudo != "") {
+            if ($p->pseudoElem) { $typ = $typ + 1; }
+            else { $cls = $cls + 1; }
+        }
+    }
+    return $ids * 10000 + $cls * 100 + $typ;
+}
+
+/** Render a rule's selector back to text - the IDE inspector shows this. */
+function css_sel_text(CssRule $r): string {
+    $out = "";
+    for ($i = 0; $i < count($r->parts); $i++) {
+        $p = $r->parts[$i];
+        if ($i > 0) { $out .= $p->comb == ">" ? " > " : " "; }
+        $out .= css_part_text($p);
+    }
+    return trim($out);
+}
+
+function css_part_text(SelPart $p): string {
+    $out = $p->tag == "" ? "" : $p->tag;
+    if ($p->id != "") { $out .= "#" . $p->id; }
+    for ($i = 0; $i < count($p->classes); $i++) { $out .= "." . $p->classes[$i]; }
+    if ($p->attr != "") {
+        $out .= "[" . $p->attr;
+        if ($p->attrEq != "") { $out .= "=" . $p->attrEq; }
+        $out .= "]";
+    }
+    if ($p->pseudo != "") {
+        $out .= $p->pseudoElem ? "::" : ":";
+        $out .= $p->pseudo;
+        if ($p->arg != "") { $out .= "(" . $p->arg . ")"; }
+    }
+    return $out;
+}
+
+// ---------------------------------------------------------------------
+//  4. Matching
+// ---------------------------------------------------------------------
+
+/** Position of $n among its element siblings, 0-based. */
+function css_elem_index(HNode $n): int {
+    $p = $n->up;
+    if ($p == null) { return 0; }
+    $k = 0;
+    for ($i = 0; $i < count($p->kids); $i++) {
+        $c = $p->kids[$i];
+        if ($c->kind == 1) { continue; }
+        if ($c->order == $n->order) { return $k; }
+        $k = $k + 1;
+    }
+    return 0;
+}
+
+/** Number of element children of $n's parent. */
+function css_elem_count(HNode $n): int {
+    $p = $n->up;
+    if ($p == null) { return 1; }
+    $k = 0;
+    for ($i = 0; $i < count($p->kids); $i++) {
+        if ($p->kids[$i]->kind != 1) { $k = $k + 1; }
+    }
+    return $k;
+}
+
+/** Position among siblings that share the node's tag. */
+function css_type_index(HNode $n, bool $fromEnd): int {
+    $p = $n->up;
+    if ($p == null) { return 0; }
+    $k = 0;
+    if (!fromEnd) {
+        for ($i = 0; $i < count($p->kids); $i++) {
+            $c = $p->kids[$i];
+            if ($c->kind == 1 || $c->tag != $n->tag) { continue; }
+            if ($c->order == $n->order) { return $k; }
+            $k = $k + 1;
+        }
+        return 0;
+    }
+    for ($i = count($p->kids) - 1; $i >= 0; $i--) {
+        $c = $p->kids[$i];
+        if ($c->kind == 1 || $c->tag != $n->tag) { continue; }
+        if ($c->order == $n->order) { return $k; }
+        $k = $k + 1;
+    }
+    return 0;
+}
+
+/** True when any element between $n (exclusive) and the root has this order. */
+function css_has_ancestor(HNode $n, int $order): bool {
+    $a = $n->up;
+    while ($a != null) {
+        if ($a->order == $order) { return true; }
+        $a = $a->up;
+    }
+    return false;
+}
+
+/** `:nth-child` argument: an int, or odd/even. -1 when unsupported. */
+function css_nth(string $arg): int {
+    $a = trim(strtolower($arg));
+    if ($a == "odd") { return 1; }
+    if ($a == "even") { return 2; }
+    if (strpos($a, "n") !== false) { return -1; }   /* 2n+1 etc: not supported */
+    if ($a == "") { return -1; }
+    for ($i = 0; $i < strlen($a); $i++) {
+        $c = substr($a, $i, 1);
+        if ($c < "0" || $c > "9") { return -1; }
+    }
+    $v = intval($a);
+    return $v < 1 ? -1 : $v;
+}
+
+function css_space_only(string $s): bool {
+    for ($i = 0; $i < strlen($s); $i++) {
+        if (!css_is_ws(substr($s, $i, 1))) { return false; }
+    }
+    return true;
+}
+
+function css_pseudo_match(SelPart $p, HNode $n, HState $st): bool {
+    $q = $p->pseudo;
+    if ($p->pseudoElem) { return false; }      /* generated content: not painted */
+    if ($q == "hover") { return $st->hover != 0 && $st->hover == $n->order; }
+    if ($q == "active") { return $st->active != 0 && $st->active == $n->order; }
+    if ($q == "focus") { return $st->focus != 0 && $st->focus == $n->order; }
+    if ($q == "focus-visible") { return $st->focus != 0 && $st->focus == $n->order; }
+    if ($q == "focus-within") {
+        if ($st->focus == 0) { return false; }
+        return $st->focus == $n->order || css_has_ancestor($n, $st->focus);
+    }
+    if ($q == "root") { return $n->up == null; }
+    if ($q == "first-child") { return css_elem_index($n) == 0; }
+    if ($q == "last-child") { return css_elem_index($n) == css_elem_count($n) - 1; }
+    if ($q == "only-child") { return css_elem_count($n) == 1; }
+    if ($q == "first-of-type") { return css_type_index($n, false) == 0; }
+    if ($q == "last-of-type") { return css_type_index($n, true) == 0; }
+    if ($q == "nth-child" || $q == "nth-of-type") {
+        $k = css_nth($p->arg);
+        if ($k < 0) { return false; }
+        $idx = ($q == "nth-child") ? css_elem_index($n) : css_type_index($n, false);
+        return ($idx % $k) == ($k - 1) % $k;
+    }
+    if ($q == "empty") {
+        for ($i = 0; $i < count($n->kids); $i++) {
+            $c = $n->kids[$i];
+            if ($c->kind != 1) { return false; }
+            if (!css_space_only($c->text)) { return false; }
+        }
+        return true;
+    }
+    if ($q == "checked" || $q == "selected" || $q == "expanded" || $q == "open") {
+        return $st->isOn($n->order);
+    }
+    if ($q == "disabled") { return $n->hasAttr("disabled"); }
+    if ($q == "enabled") { return !$n->hasAttr("disabled"); }
+    if ($q == "not") {
+        $list = css_split_top($p->arg, ",");
+        for ($i = 0; $i < count($list); $i++) {
+            $sub = css_compound($list[$i]);
+            if (css_part_match($sub, $n, $st)) { return false; }
+        }
+        return true;
+    }
+    if ($q == "is" || $q == "matches" || $q == "where") {
+        $list = css_split_top($p->arg, ",");
+        for ($i = 0; $i < count($list); $i++) {
+            $sub = css_compound($list[$i]);
+            if (css_part_match($sub, $n, $st)) { return true; }
+        }
+        return false;
+    }
+    return false;      /* an unknown pseudo-class never matches */
+}
+
+/** Does one compound selector match one node? */
+function css_part_match(SelPart $p, HNode $n, HState $st): bool {
+    if ($n->kind == 1) { return false; }
+    if ($p->tag != "" && $p->tag != $n->tag) { return false; }
+    if ($p->id != "" && $n->id != $p->id) { return false; }
+    for ($i = 0; $i < count($p->classes); $i++) {
+        if (!$n->hasClass($p->classes[$i])) { return false; }
+    }
+    if ($p->attr != "") {
+        if (!$n->hasAttr($p->attr)) { return false; }
+        if ($p->attrEq != "" && $n->attr($p->attr) != $p->attrEq) { return false; }
+    }
+    if ($p->pseudo != "") { return css_pseudo_match($p, $n, $st); }
+    return true;
+}
+
+/** Walk the compound list right to left, starting at part $i. */
+function css_match_from([SelPart] $ps, int $i, HNode $n, HState $st) {
+    if ($i < 0) { return true; }
+    if ($n == null) { return false; }
+    $p = $ps[$i];
+    if (!css_part_match($p, $n, $st)) { return false; }
+    if ($i == 0) { return true; }
+    if ($p->comb == "?") { return false; }         /* unsupported combinator */
+    if ($p->comb == ">") { return css_match_from($ps, $i - 1, $n->up, $st); }
+    $a = $n->up;
+    while ($a != null) {
+        if (css_match_from($ps, $i - 1, $a, $st)) { return true; }
+        $a = $a->up;
+    }
+    return false;
+}
+
+function css_match_rule(CssRule $r, HNode $n, HState $st): bool {
+    $k = count($r->parts);
+    if ($k == 0) { return false; }
+    return css_match_from($r->parts, $k - 1, $n, $st);
+}
+
+// ---------------------------------------------------------------------
+//  5. The cascade
+// ---------------------------------------------------------------------
+
+function decl_new(string $p, string $v, int $imp, int $spec, int $ord): Decl {
+    $d = new Decl();
+    $d->p = $p;
+    $d->v = $v;
+    $d->imp = $imp;
+    $d->spec = $spec;
+    $d->ord = $ord;
+    return $d;
+}
+
+/** Ascending priority: a later declaration in the sorted list wins. */
+function decl_before(Decl $a, Decl $b): bool {
+    if ($a->imp != $b->imp) { return $a->imp < $b->imp; }
+    if ($a->spec != $b->spec) { return $a->spec < $b->spec; }
+    return $a->ord < $b->ord;
+}
+
+/** Insertion sort, ascending: the last entry is the winner.
+ *
+ * `$x` walks left while the entry before it has HIGHER priority, so a
+ * declaration is only ever shifted after something it has to beat. */
+function css_sort_decls([Decl] $d): [Decl] {
+    $n = count($d);
+    for ($i = 1; $i < $n; $i++) {
+        $x = $d[$i];
+        $j = $i - 1;
+        while ($j >= 0 && decl_before($x, $d[$j])) { $d[$j + 1] = $d[$j]; $j = $j - 1; }
+        $d[$j + 1] = $x;
+    }
+    return $d;
+}
+
+/** Everything that applies to $n, ordered so the winner comes last.
+ *
+ *  The node's own `style="..."` declarations are added last with a
+ *  specificity above any selector, which is exactly the CSS rule: inline
+ *  beats every sheet, and only `!important` beats inline. */
+function css_collect(HNode $n, [CssSheet] $sheets, HState $st): [Decl] {
+    $out: [Decl];
+    for ($s = 0; $s < count($sheets); $s++) {
+        $sh = $sheets[$s];
+        for ($r = 0; $r < count($sh->rules); $r++) {
+            $rule = $sh->rules[$r];
+            if ($rule->maxW > 0 && $st->vw > $rule->maxW) { continue; }
+            if ($rule->minW > 0 && $st->vw < $rule->minW) { continue; }
+            if (!css_match_rule($rule, $n, $st)) { continue; }
+            /* A rule's `ord` only orders it inside its own sheet, so the
+             * sheet index goes in front of it: a later sheet beats an
+             * earlier one at equal specificity, which is how CSS orders
+             * several stylesheets. 1000000 rules per sheet is a ceiling no
+             * UI stylesheet will meet. */
+            $ord = $s * 1000000 + $rule->ord;
+            for ($d = 0; $d < count($rule->pk); $d++) {
+                $out[] = decl_new($rule->pk[$d], $rule->pv[$d], $rule->pi[$d],
+                                  $rule->spec, $ord);
+            }
+        }
+    }
+    for ($k = 0; $k < count($n->ipk); $k++) {
+        $imp = 0;
+        $v = $n->ipv[$k];
+        if (css_has_important($v)) {
+            $imp = 1;
+            $v = css_strip_important($v);
+        }
+        $out[] = decl_new($n->ipk[$k], $v, $imp, 1000000 + $k, 1000000);
+    }
+    return css_sort_decls($out);
+}
+
+// ---------------------------------------------------------------------
+//  6. Parsing
+// ---------------------------------------------------------------------
+
+/** Drop the `!important` marker, however it was capitalised or spaced. */
+function css_strip_important(string $v): string {
+    return trim(preg_replace("/!\\s*important/i", "", $v));
+}
+
+function css_has_important(string $v): bool {
+    return preg_match("/!\\s*important/i", $v) == 1;
+}
+
+/** Add one rule per comma-separated selector in $prelude. */
+function css_rules_from(CssSheet $sh, string $prelude, string $body, int $minW, int $maxW) {
+    $sels = css_split_top($prelude, ",");
+    $decls = css_decl_split($body);
+    if (count($decls) == 0) { return; }
+    for ($s = 0; $s < count($sels); $s++) {
+        $sel = trim($sels[$s]);
+        if ($sel == "") { continue; }
+        if (strpos($sel, "@") !== false) { continue; }
+        $parts = css_sel_parts($sel);
+        if (count($parts) == 0) { continue; }
+        $skipped = false;
+        for ($k = 0; $k < count($parts); $k++) {
+            if ($parts[$k]->comb == "?") { $skipped = true; }
+        }
+        if ($skipped) {
+            $sh->warn[] = "unsupported combinator in '" . $sel . "'";
+            continue;
+        }
+        $r = new CssRule();
+        $r->sel = $sel;
+        $r->parts = $parts;
+        $r->spec = css_spec_of($parts);
+        $r->minW = minW;
+        $r->maxW = maxW;
+        $sh->next = $sh->next + 1;
+        $r->ord = $sh->next;
+        for ($d = 0; $d < count($decls); $d++) {
+            $decl = $decls[$d];
+            $at = strpos($decl, ":");
+            if ($at === false) { continue; }
+            $prop = strtolower(trim(substr($decl, 0, $at)));
+            $val = trim(substr($decl, $at + 1));
+            if ($prop == "" || $val == "") { continue; }
+            $imp = 0;
+            if (css_has_important($val)) {
+                $val = css_strip_important($val);
+                $imp = 1;
+            }
+            $r->pk[] = $prop;
+            $r->pv[] = $val;
+            $r->pi[] = $imp;
+        }
+        if (count($r->pk) > 0) { $sh->rules[] = $r; }
+    }
+}
+
+/** Split a declaration block into `prop: value` strings. */
+function css_decl_split(string $body): [string] {
+    $out: [string];
+    foreach (css_split_top($body, ";") as $part) {
+        if (trim($part) != "") { $out[] = trim($part); }
+    }
+    return $out;
+}
+
+/** A `min-width`/`max-width` condition in an @media prelude; -1 when absent. */
+function css_media_num(string $prelude, string $which): int {
+    $low = strtolower($prelude);
+    $at = strpos($low, $which);
+    if ($at === false) { return -1; }
+    $i = $at + strlen($which);
+    $n = strlen($low);
+    while ($i < $n) {
+        $c = substr($low, $i, 1);
+        if ($c == ":" || $c == " ") { $i = $i + 1; continue; }
+        break;
+    }
+    $num = "";
+    while ($i < $n) {
+        $c = substr($low, $i, 1);
+        if (($c < "0" || $c > "9") && $c != ".") { break; }
+        $num .= $c;
+        $i = $i + 1;
+    }
+    if ($num == "") { return -1; }
+    $v = floatval($num);
+    if ($i < $n && substr($low, $i, 1) == "p") { return intval($v); }
+    /* a plain number is pixels; em/rem are resolved against the root 13pt
+     * default the stylesheet sets, which is honest enough for a desktop UI */
+    if ($i < $n && (substr($low, $i, 1) == "e" || substr($low, $i, 1) == "r")) {
+        return intval($v * 17.0);
+    }
+    return intval($v);
+}
+
+function css_at_rule(CssSheet $sh, string $s, string $prelude, int $bfrom, int $bto,
+                     int $minW, int $maxW, int $depth) {
+    $low = strtolower($prelude);
+    if (strpos($low, "@media") === 0) {
+        if (strpos($low, "print") !== false) {
+            /* print-only rules describe paper, not the window */
+            $sh->warn[] = "skipped " . trim($prelude);
+            return;
+        }
+        $lo = minW;
+        $hi = maxW;
+        $mn = css_media_num($prelude, "min-width");
+        $mx = css_media_num($prelude, "max-width");
+        if ($mn > 0) { $lo = $mn; }
+        if ($mx > 0) { $hi = $mx; }
+        if ($depth > 4) { return; }
+        css_parse_range($sh, $s, $bfrom, $bto, $lo, $hi, $depth + 1);
+        return;
+    }
+    /* @font-face, @keyframes, @import, @supports: recorded, not applied */
+    $sh->warn[] = "skipped " . trim($prelude);
+}
+
+function css_parse_range(CssSheet $sh, string $s, int $from, int $to,
+                         int $minW, int $maxW, int $depth) {
+    $i = $from;
+    while ($i < $to) {
+        while ($i < $to) {
+            $c = substr($s, $i, 1);
+            if (css_is_ws($c) || $c == ";") { $i = $i + 1; continue; }
+            break;
+        }
+        if ($i >= $to) { return; }
+        $ob = strpos($s, "{", $i);
+        if ($ob === false || $ob >= $to) { return; }
+        $cb = strpos($s, "}", $i);
+        if ($cb !== false && $cb < $ob) { $i = $cb + 1; continue; }   /* stray } */
+        $prelude = trim(substr($s, $i, $ob - $i));
+        $end = css_match_brace($s, $ob, $to);
+        $bfrom = $ob + 1;
+        $bto = ($end < 0) ? $to : $end;
+        if (substr($prelude, 0, 1) == "@") {
+            css_at_rule($sh, $s, $prelude, $bfrom, $bto, $minW, $maxW, $depth);
+        } else {
+            css_rules_from($sh, $prelude, substr($s, $bfrom, $bto - $bfrom), $minW, $maxW);
+        }
+        $i = ($end < 0) ? $to : $end + 1;
+    }
+}
+
+/** Parse CSS text into an existing sheet, so several sources share one
+ *  running source order (a later sheet beats an earlier one). */
+function css_add(CssSheet $sh, string $text, int $vw) {
+    if (trim($text) == "") { return; }
+    $s = css_strip_comments($text);
+    css_parse_range($sh, $s, 0, strlen($s), 0, 0, 0);
+}
+
+/** A fresh sheet with one stylesheet in it. */
+function css_parse(string $text, int $vw): CssSheet {
+    $sh = new CssSheet();
+    css_add($sh, $text, $vw);
+    return $sh;
+}

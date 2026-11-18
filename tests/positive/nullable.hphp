@@ -1,0 +1,187 @@
+/* nullable.hphp — nullable types, union types and branch narrowing.
+ *
+ * A nullable slot holds an hval: a tag says whether there is a value, the
+ * payload carries it. A branch that proves which one it is (`!== null`,
+ * `=== null`, `is null`, `is int`) narrows the variable for the rest of
+ * that branch, so the value can be used as a plain string / int there.
+ *
+ * A FAIL line here means narrowing or the hval representation regressed. */
+
+$failures = 0;
+
+function expect(bool $got, bool $want, string $what): void {
+    global $failures;
+    if ($got === $want) {
+        echo "OK   " . $what . "\n";
+    } else {
+        echo "FAIL " . $what . "\n";
+        $failures = $failures + 1;
+    }
+}
+
+/* a function that only takes a string: a narrowed nullable is accepted */
+function need_string(string $s): int {
+    return strlen($s);
+}
+
+/* ---- a nullable slot holds a value or null ----------------------------- */
+$name: ?string = "holy";
+expect($name !== null, true, "a nullable with a value is not null");
+expect($name === null, false, "and is not null either way round");
+
+$empty: ?string = null;
+expect($empty === null, true, "a nullable set to null is null");
+expect($empty !== null, false, "and not-null is false for it");
+
+/* ---- narrowing inside a branch ----------------------------------------- */
+$maybe: ?string = "abc";
+if ($maybe !== null) {
+    /* here $maybe is a plain string */
+    expect(need_string($maybe), 3, "a narrowed nullable is a string");
+    expect(strlen($maybe), 3, "and works with a string function");
+} else {
+    expect(false, true, "the else branch was not taken");
+}
+
+$none: ?string = null;
+if ($none === null) {
+    expect(true, true, "the null branch was taken");
+} else {
+    expect(false, true, "the else branch was not taken");
+}
+
+/* ---- narrowing through a compound condition ---------------------------- */
+$opt: ?int = 40;
+if ($opt !== null && $opt > 3) {
+    expect($opt + 2, 42, "&& narrows the left side for the right side");
+} else {
+    expect(false, true, "the compound else was not taken");
+}
+
+/* ---- a union slot ------------------------------------------------------ */
+$u: int|string = 42;
+expect($u is int, true, "a union member is matched by `is`");
+expect($u is string, false, "and the other member is not");
+
+if ($u is int) {
+    expect($u + 1, 43, "`is int` narrows to the int member");
+} else {
+    expect(false, true, "the union else was not taken");
+}
+
+$su: int|string = "hello";
+if ($su is string) {
+    expect(strlen($su), 5, "`is string` narrows to the string member");
+} else {
+    expect(false, true, "the union string else was not taken");
+}
+
+/* `is null` works on a nullable too */
+$m: ?int = null;
+if ($m is null) {
+    expect(true, true, "`is null` is true for a null nullable");
+} else {
+    expect(false, true, "`is null` is false for a null nullable");
+}
+
+/* ---- a nullable round-trips through a function ------------------------- */
+function maybe_name(string $s, bool $give): ?string {
+    if ($give) { return $s; }
+    return null;
+}
+
+$back = maybe_name("php", true);
+expect($back !== null, true, "a returned nullable keeps its value");
+if ($back !== null) {
+    expect(strlen($back), 3, "and narrows after the call");
+}
+
+$gone = maybe_name("php", false);
+expect($gone === null, true, "a returned null is null");
+
+/* ---- an assignment inside a branch drops the narrowing ----------------- */
+$reassigned: ?string = "abc";
+if ($reassigned !== null) {
+    $reassigned = null;
+    /* the refinement was about the old value, so it is gone here */
+    expect($reassigned === null, true, "an assignment drops the refinement");
+}
+
+/* ---- a narrowing stays inside the branch that made it ------------------ */
+$kept: ?string = "abc";
+if ($kept !== null) {
+    if ($kept is string) {
+        expect(strlen($kept), 3, "the inner branch narrows as well");
+    }
+    /* the inner branch is over. The outer one still holds: $kept is a
+     * string, and the branch inside did not take that away. */
+    expect(need_string($kept), 3, "the outer narrowing survived the inner branch");
+}
+
+/* an assignment that keeps the shape keeps the narrowing too */
+$kept2: ?string = "abc";
+if ($kept2 !== null) {
+    $kept2 = strtoupper($kept2);
+    expect(need_string($kept2), 3, "a write of the same shape keeps the narrowing");
+}
+
+/* ---- a nullable is truthiness-tested like any other value --------------- */
+$nullish: ?string = null;
+if ($nullish) {
+    expect(false, true, "a null nullable is falsy");
+} else {
+    expect(true, true, "a null nullable is falsy");
+}
+$filled: ?string = "x";
+if ($filled) {
+    expect(true, true, "a nullable with a value is truthy");
+} else {
+    expect(false, true, "a nullable with a value is truthy");
+}
+$blank: ?string = "";
+if ($blank) {
+    expect(false, true, "an empty string is falsy");
+} else {
+    expect(true, true, "an empty string is falsy");
+}
+
+/* ---- a nullable slot stores the shape of its member --------------------- */
+$whole = 3;
+$as_float: ?float = $whole;
+if ($as_float !== null) {
+    /* the int was stored as a float, so the narrowed read finds a float */
+    expect($as_float === 3.0, true, "an int in a ?float slot reads back as a float");
+    expect($as_float > 2.5, true, "and compares as a float");
+    expect(intval($as_float), 3, "and holds the same number");
+} else {
+    expect(false, true, "the branch was not taken");
+}
+
+$frac = 3.7;
+$as_int: ?int = $frac;
+if ($as_int !== null) {
+    expect($as_int === 3, true, "a float in a ?int slot reads back as an int");
+    expect($as_int < 4, true, "and compares as an int");
+} else {
+    expect(false, true, "the branch was not taken");
+}
+
+/* the same through an assignment */
+$later: ?float = null;
+$later = 2;
+if ($later !== null) {
+    expect($later === 2.0, true, "an assignment into a ?float keeps the float shape");
+} else {
+    expect(false, true, "the branch was not taken");
+}
+
+/* ---- a null literal is its own type ------------------------------------ */
+$nothing = null;
+expect($nothing === null, true, "a null literal is null");
+expect($nothing is null, true, "and `is null` says so too");
+
+if ($failures > 0) {
+    echo "nullable.hphp: " . $failures . " failure(s)\n";
+    exit(1);
+}
+echo "nullable.hphp: all nullable and union checks passed\n";

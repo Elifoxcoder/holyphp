@@ -1,0 +1,391 @@
+// tcp_raw_server.hphp — HolyPHP port of the Rust `tcp_raw_server`.
+//
+// The server accepts line-oriented TCP connections on 0.0.0.0:1127, decrypts
+// every payload with AES-128-CBC (fixed key, PKCS#7) and publishes the
+// plaintext JSON into the same shared-memory block that the dashboard
+// (`shared_memory_reader.py` / `publisher.py`) already reads.
+//
+// Wire format, one message per line:
+//
+//     base64( IV[16] || AES-128-CBC(PKCS#7(UTF-8 JSON)) )
+//
+//     key: 4cbbd208e9ed39977fe0c309eef09e08  (16 binary bytes, from env.h)
+//
+// Shared-memory layout (512 bytes, little endian):
+//
+//     offset 0   u64  version, incremented after every publish
+//     offset 8   u32  payload length in bytes
+//     offset 12  payload (plaintext JSON, max 500 bytes)
+//
+// Path:
+//     Linux    /dev/shm/tcp_raw_server_shmem
+//     Windows  %TEMP%\shared_memory-rs\tcp_raw_server_shmem
+//
+// Run:
+//     hphp run scratch/tcp_raw_server.hphp
+//
+// Optional environment:
+//     TCP_RAW_PORT   listen port (default 1127)
+//     TCP_RAW_SHM    override the shared-memory path
+
+// Fixed 16-byte key from the ESP32 firmware (`src/bridge/env.h`, AES_KEY).
+// This is a binary key written as hex - not the Flask `ENCRYPTION_KEY` from .env.
+$AES_KEY_HEX = "4cbbd208e9ed39977fe0c309eef09e08";
+
+/* ------------------------------- AES-128 -------------------------------- */
+
+function aes_mul(mut int $a, mut int $b): int {
+    $a = $a & 0xff;
+    $b = $b & 0xff;
+    $p: int = 0;
+    for ($i = 0; $i < 8; $i++) {
+        if (($b & 1) != 0) { $p = $p ^ $a; }
+        $hi: int = $a & 0x80;
+        $a = ($a << 1) & 0xff;
+        if ($hi != 0) { $a = $a ^ 0x1b; }
+        $b = $b >> 1;
+    }
+    return $p & 0xff;
+}
+
+function aes_rotl8(mut int $x, int $n): int {
+    $x = $x & 0xff;
+    return (($x << $n) | ($x >> (8 - $n))) & 0xff;
+}
+
+/* Multiplicative inverse in GF(2^8): a^254. */
+function aes_gf_inv(mut int $a): int {
+    $a = $a & 0xff;
+    if ($a == 0) { return 0; }
+    $r: int = 1;
+    for ($i = 0; $i < 254; $i++) { $r = aes_mul($r, $a); }
+    return $r;
+}
+
+function aes_sbox(): array {
+    $s = [];
+    for ($i = 0; $i < 256; $i++) {
+        $b: int = aes_gf_inv($i);
+        $v: int = ($b ^ aes_rotl8($b, 1) ^ aes_rotl8($b, 2)
+                       ^ aes_rotl8($b, 3) ^ aes_rotl8($b, 4) ^ 0x63) & 0xff;
+        $s[$i] = $v;
+    }
+    return $s;
+}
+
+function aes_inverse_sbox(array $sbox): array {
+    $inv = [];
+    for ($i = 0; $i < 256; $i++) {
+        $v: int = $sbox[$i];
+        $inv[$v] = $i;
+    }
+    return $inv;
+}
+
+/* AES-128 key schedule: 44 words of four bytes. */
+function aes_expand_key(string $key, array $sbox): array {
+    $w = [];
+    for ($i = 0; $i < 4; $i++) {
+        $w[$i] = [
+            ord($key[4 * $i]),
+            ord($key[4 * $i + 1]),
+            ord($key[4 * $i + 2]),
+            ord($key[4 * $i + 3]),
+        ];
+    }
+    $rcon: int = 1;
+    for ($i = 4; $i < 44; $i++) {
+        $t: array = $w[$i - 1];
+        if (($i % 4) == 0) {
+            $t0: int = $t[1];
+            $t1: int = $t[2];
+            $t2: int = $t[3];
+            $t3: int = $t[0];
+            $t = [$t0, $t1, $t2, $t3];
+            $s0: int = $sbox[$t0];
+            $s1: int = $sbox[$t1];
+            $s2: int = $sbox[$t2];
+            $s3: int = $sbox[$t3];
+            $t = [$s0 ^ $rcon, $s1, $s2, $s3];
+            $rcon = aes_mul($rcon, 2);
+        }
+        $p: array = $w[$i - 4];
+        $a0: int = $p[0];
+        $a1: int = $p[1];
+        $a2: int = $p[2];
+        $a3: int = $p[3];
+        $b0: int = $t[0];
+        $b1: int = $t[1];
+        $b2: int = $t[2];
+        $b3: int = $t[3];
+        $w[$i] = [$a0 ^ $b0, $a1 ^ $b1, $a2 ^ $b2, $a3 ^ $b3];
+    }
+    return $w;
+}
+
+function aes_add_round_key(array $s, array $w, int $round): array {
+    for ($c = 0; $c < 4; $c++) {
+        $word: array = $w[$round * 4 + $c];
+        for ($r = 0; $r < 4; $r++) {
+            $i = 4 * $c + $r;
+            $v: int = $s[$i];
+            $k: int = $word[$r];
+            $s[$i] = $v ^ $k;
+        }
+    }
+    return $s;
+}
+
+function aes_inv_shift_rows(array $s): array {
+    $o = [];
+    for ($c = 0; $c < 4; $c++) {
+        for ($r = 0; $r < 4; $r++) {
+            $o[4 * $c + $r] = $s[4 * (($c - $r + 4) % 4) + $r];
+        }
+    }
+    return $o;
+}
+
+function aes_inv_mix_columns(array $s): array {
+    for ($c = 0; $c < 4; $c++) {
+        $b = 4 * $c;
+        $s0: int = $s[$b];
+        $s1: int = $s[$b + 1];
+        $s2: int = $s[$b + 2];
+        $s3: int = $s[$b + 3];
+        $s[$b]     = aes_mul($s0, 14) ^ aes_mul($s1, 11) ^ aes_mul($s2, 13) ^ aes_mul($s3, 9);
+        $s[$b + 1] = aes_mul($s0, 9)  ^ aes_mul($s1, 14) ^ aes_mul($s2, 11) ^ aes_mul($s3, 13);
+        $s[$b + 2] = aes_mul($s0, 13) ^ aes_mul($s1, 9)  ^ aes_mul($s2, 14) ^ aes_mul($s3, 11);
+        $s[$b + 3] = aes_mul($s0, 11) ^ aes_mul($s1, 13) ^ aes_mul($s2, 9)  ^ aes_mul($s3, 14);
+    }
+    return $s;
+}
+
+function aes_decrypt_block(mut array $s, array $w, array $inv): array {
+    $s = aes_add_round_key($s, $w, 10);
+    for ($round = 9; $round >= 1; $round--) {
+        $s = aes_inv_shift_rows($s);
+        for ($i = 0; $i < 16; $i++) {
+            $v: int = $s[$i];
+            $s[$i] = $inv[$v];
+        }
+        $s = aes_add_round_key($s, $w, $round);
+        $s = aes_inv_mix_columns($s);
+    }
+    $s = aes_inv_shift_rows($s);
+    for ($i = 0; $i < 16; $i++) {
+        $v: int = $s[$i];
+        $s[$i] = $inv[$v];
+    }
+    return aes_add_round_key($s, $w, 0);
+}
+
+function aes_bytes(string $s, int $n): array {
+    $b = [];
+    for ($i = 0; $i < $n; $i++) { $b[$i] = ord($s[$i]); }
+    return $b;
+}
+
+function hex_to_bytes(string $hex): string {
+    $out = "";
+    $n: int = strlen($hex);
+    for ($i = 0; $i + 1 < $n; $i += 2) {
+        $out .= chr(hexdec(substr($hex, $i, 2)));
+    }
+    return $out;
+}
+
+/* base64(IV || ciphertext), PKCS#7. Returns "" when the input is invalid. */
+function aes128_cbc_decrypt(string $line, array $w, array $inv): string {
+    $blob: string = base64_decode(trim($line));
+    $n: int = strlen($blob);
+    if ($n < 32 || ($n % 16) != 0) { return ""; }
+
+    $prev: array = aes_bytes(substr($blob, 0, 16), 16);
+    $out = "";
+    for ($off = 16; $off < $n; $off += 16) {
+        $block: array = aes_bytes(substr($blob, $off, 16), 16);
+        $dec: array = aes_decrypt_block($block, $w, $inv);
+        for ($i = 0; $i < 16; $i++) {
+            $x: int = $dec[$i];
+            $y: int = $prev[$i];
+            $out .= chr($x ^ $y);
+        }
+        $prev = $block;
+    }
+
+    $len: int = strlen($out);
+    $pad: int = ord($out[$len - 1]);
+    if ($pad < 1 || $pad > 16 || $pad > $len) { return ""; }
+    for ($i = 1; $i <= $pad; $i++) {
+        $c: int = ord($out[$len - $i]);
+        if ($c != $pad) { return ""; }
+    }
+    return substr($out, 0, $len - $pad);
+}
+
+/* --------------------------- shared memory ------------------------------ */
+
+function shm_path(): string {
+    $override: string = getenv("TCP_RAW_SHM");
+    if ($override != "") { return $override; }
+    if (getenv("OS") == "Windows_NT") {
+        $dir: string = sys_get_temp_dir() . "/shared_memory-rs";
+        if (!is_dir($dir)) { mkdir($dir, true); }
+        return $dir . "/tcp_raw_server_shmem";
+    }
+    return "/dev/shm/tcp_raw_server_shmem";
+}
+
+function u64le(mut int $v): string {
+    $s = "";
+    for ($i = 0; $i < 8; $i++) {
+        $byte: int = $v & 0xff;
+        $s .= chr($byte);
+        $v = $v >> 8;
+    }
+    return $s;
+}
+
+function u32le(mut int $v): string {
+    $s = "";
+    for ($i = 0; $i < 4; $i++) {
+        $byte: int = $v & 0xff;
+        $s .= chr($byte);
+        $v = $v >> 8;
+    }
+    return $s;
+}
+
+function shm_version(string $path): int {
+    if (!file_exists($path)) { return 0; }
+    $data: string = file_get_contents($path);
+    if (strlen($data) < 8) { return 0; }
+    $v: int = 0;
+    for ($i = 7; $i >= 0; $i--) {
+        $b: int = ord($data[$i]);
+        $v = ($v << 8) | $b;
+    }
+    return $v;
+}
+
+/* The Python reader mmaps 512 bytes, so the backing file must not be shorter. */
+function shm_ensure(string $path): bool {
+    if (!file_exists($path)) {
+        return file_put_contents($path, str_repeat("\0", 512)) !== false;
+    }
+    $size: int = filesize($path);
+    if ($size < 512) {
+        return file_put_contents($path, str_repeat("\0", 512 - $size), PHP_FILE_APPEND) !== false;
+    }
+    return true;
+}
+
+/* Write payload, then bump the version. Never truncates the file. */
+function shm_publish(string $path, string $json, int $version): int {
+    $len: int = strlen($json);
+    if ($len > 500) {
+        echo "payload too large ({$len} bytes, max 500) - dropped\n";
+        return $version;
+    }
+
+    $blob: string = u64le($version) . u32le($len) . $json;
+    $pad: int = 512 - strlen($blob);
+    if ($pad > 0) { $blob .= str_repeat("\0", $pad); }
+
+    $fh = fopen($path, "r+b");
+    if ($fh === false) { $fh = fopen($path, "wb"); }
+    if ($fh === false) {
+        echo "cannot open shared memory {$path}\n";
+        return $version;
+    }
+    fwrite($fh, $blob);
+    fclose($fh);
+
+    $next: int = $version + 1;
+    $fh = fopen($path, "r+b");
+    if ($fh !== false) {
+        fwrite($fh, u64le($next));
+        fclose($fh);
+    }
+    return $next;
+}
+
+/* -------------------------------- server -------------------------------- */
+
+$port: string = getenv("TCP_RAW_PORT");
+if ($port == "") { $port = "1127"; }
+
+$shm: string = shm_path();
+if (!shm_ensure($shm)) {
+    echo "cannot create shared memory at {$shm}\n";
+    exit(1);
+}
+
+$srv = stream_socket_server("tcp://0.0.0.0:" . $port);
+if ($srv === false) {
+    echo "cannot listen on 0.0.0.0:{$port}\n";
+    exit(1);
+}
+
+$sbox: array = aes_sbox();
+$inv: array = aes_inverse_sbox($sbox);
+$key: string = hex_to_bytes($AES_KEY_HEX);
+if (strlen($key) != 16) {
+    echo "AES key must be 16 bytes (32 hex characters)\n";
+    exit(1);
+}
+$w: array = aes_expand_key($key, $sbox);
+
+$version: int = shm_version($shm);
+$clients = [];
+$count: int = 0;
+
+echo "Server listening on 0.0.0.0:{$port}\n";
+echo "Shared memory: {$shm}\n";
+
+while (true) {
+    $handles = [$srv];
+    foreach ($clients as $h => $pending) { $handles[] = $h; }
+
+    $ready = stream_ready($handles, 1000);
+    foreach ($ready as $h) {
+        if ($h == $srv) {
+            while (true) {
+                $client = stream_socket_accept2($srv, 0);
+                if ($client === false) { break; }
+                $count++;
+                echo "New connection #{$count} from " . stream_peer($client) . "\n";
+                $clients[$client] = "";
+            }
+            continue;
+        }
+
+        $chunk: string = stream_recv($h, 4096);
+        if ($chunk == "") {
+            if (stream_eof($h)) {
+                echo "Connection ended successfully\n";
+                stream_close($h);
+                unset($clients[$h]);
+            }
+            continue;
+        }
+
+        $pending: string = $clients[$h] . $chunk;
+        while (($nl = strpos($pending, "\n")) !== false) {
+            $line: string = substr($pending, 0, $nl);
+            $pending = substr($pending, $nl + 1);
+            if (trim($line) == "") { continue; }
+
+            $plain: string = aes128_cbc_decrypt($line, $w, $inv);
+            if ($plain == "") {
+                echo "decrypt failed - invalid base64, padding or key\n";
+                continue;
+            }
+            $next: int = shm_publish($shm, $plain, $version);
+            if ($next != $version) { echo "payload: {$plain}\n"; }
+            $version = $next;
+        }
+        $clients[$h] = $pending;
+    }
+}

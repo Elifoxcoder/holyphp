@@ -52,8 +52,24 @@ static void emit(FILE *o, const char *sym, const char *path) {
 }
 
 /* The libraries passed on the command line become bundled libraries: their
- * sources are compiled into hphp, so `import "websocket.hphp";` works on an
- * installed compiler with no files on disk. */
+ * sources are compiled into hphp, so `import "websocket";` works on an
+ * installed compiler with no files on disk.
+ *
+ * They are named by their path INSIDE lib/ ("ui/ui.hphp", "html/dom.hphp"),
+ * not by base name: a multi-file library keeps its parts apart, and two
+ * packages may both have a file called view.hphp. */
+static const char *lib_rel(const char *path) {
+    const char *p = path;
+    if (!strncmp(p, "lib/", 4) || !strncmp(p, "lib\\", 4)) return p + 4;
+    for (const char *s = p; *s; s++) {
+        if ((s[0] == '/' || s[0] == '\\') &&
+            (s[1] == 'l') && (s[2] == 'i') && (s[3] == 'b') &&
+            (s[4] == '/' || s[4] == '\\'))
+            return s + 5;
+    }
+    return p;
+}
+
 static void sanitize(const char *in, char *out, size_t outsz) {
     size_t j = 0;
     for (size_t i = 0; in[i] && j + 1 < outsz; i++) {
@@ -90,8 +106,8 @@ int main(int argc, char **argv) {
     snprintf(p, sizeof p, "%s/hphp_rt.h", argv[2]);
     emit(o, "hp_embed_rt_h", p);
 
-    /* bundled libraries: name -> source */
-    fprintf(o, "/* bundled libraries (lib/*.hphp), by file name */\n"
+    /* bundled libraries: lib-relative name -> source */
+    fprintf(o, "/* bundled libraries (lib/<name>/...), by path inside lib/ */\n"
                "typedef struct { const char *name; const char *src; } HpEmbeddedLib;\n");
     int nlibs = argc > 3 ? argc - 3 : 0;
     for (int i = 0; i < nlibs; i++) {
@@ -100,12 +116,8 @@ int main(int argc, char **argv) {
         emit(o, sym, argv[3 + i]);
     }
     fprintf(o, "static const HpEmbeddedLib hp_embed_libs[] = {\n");
-    for (int i = 0; i < nlibs; i++) {
-        const char *base = strrchr(argv[3 + i], '/');
-        if (!base) base = strrchr(argv[3 + i], '\\');
-        base = base ? base + 1 : argv[3 + i];
-        fprintf(o, "    { \"%s\", hp_embed_lib_%d },\n", base, i);
-    }
+    for (int i = 0; i < nlibs; i++)
+        fprintf(o, "    { \"%s\", hp_embed_lib_%d },\n", lib_rel(argv[3 + i]), i);
     fprintf(o, "    { NULL, NULL }\n};\n");
     fprintf(o, "static const size_t hp_embed_libs_len = %d;\n", nlibs);
     fprintf(o, "#endif\n");

@@ -1,0 +1,25 @@
+// =====================================================================
+//  HolyIDE — a code editor for HolyPHP, written in HolyPHP
+// =====================================================================
+//
+//      import "ide";
+//
+//      $ed = new IdeEditor();
+//      $ed->load("main.hphp");
+//
+//  The library is the model half of an IDE plus the half that describes a
+//  screen as HTML: a text buffer, a caret with a selection, an undo
+//  history, a syntax tokenizer and a completion list on one side; the
+//  explorer, the tabs, the panels, the palette and the runner on the other.
+//  Neither half needs a window, which is what makes the whole IDE testable
+//  without one - holyide/ is then only the window around it.
+//
+//      editor.hphp     buffer, caret, editing keys, undo, syntax, words
+//      workbench.hphp  the chrome: explorer, tabs, panels, status, palette,
+//                      shortcuts and the runner, rendered through HolyHTML
+//
+//  holyide/holyide.hphp opens the workbench in a window.
+// =====================================================================
+
+import "ide/editor.hphp";
+import "ide/workbench.hphp";

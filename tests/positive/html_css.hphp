@@ -1,0 +1,239 @@
+// tests/positive/html_css.hphp — the CSS layer: selectors, specificity,
+// matching, the cascade, media queries and inline styles.
+//
+// The engine decides what a node looks like, so this test checks the
+// decisions rather than the pixels: which rule wins for a property, and
+// why. Every check exits with its own number, so a failure says where.
+
+import "html";
+
+/** The value that survived the cascade for one property, "" if none. */
+function winner([Decl] $d, string $prop): string {
+    $v = "";
+    for ($i = 0; $i < count($d); $i++) {
+        if ($d[$i]->p == $prop) { $v = $d[$i]->v; }
+    }
+    return $v;
+}
+
+function decl_count([Decl] $d, string $prop): int {
+    $k = 0;
+    for ($i = 0; $i < count($d); $i++) {
+        if ($d[$i]->p == $prop) { $k = $k + 1; }
+    }
+    return $k;
+}
+
+function rule_named(CssSheet $sh, string $sel): CssRule {
+    for ($i = 0; $i < count($sh->rules); $i++) {
+        if ($sh->rules[$i]->sel == $sel) { return $sh->rules[$i]; }
+    }
+    return null;
+}
+
+/** The rule with this selector whose first declaration is $prop - two rules
+ *  can share a selector, so a property pins the one we mean. */
+function rule_of(CssSheet $sh, string $sel, string $prop): CssRule {
+    for ($i = 0; $i < count($sh->rules); $i++) {
+        $r = $sh->rules[$i];
+        if ($r->sel == $sel && count($r->pk) > 0 && $r->pk[0] == $prop) { return $r; }
+    }
+    return null;
+}
+
+$css = "
+/* comments carry ; and { } and must not split a rule */
+div, .pane { color: #101014; }
+.pane     { padding: 4px 8px; }
+#one      { color: #ff0000 !important; }
+.pane .a span { color: #0000ff; }
+.wrap > .pane { color: #00ff00; }
+.a:hover  { background-color: #202020; }
+.a:first-child { color: #123456; }
+.a:not(.nope) { color: #654321; }
+.pane:nosuchthing { color: #eeeeee; }
+z + q     { color: #000000; }
+@media (max-width: 600px) { .pane { color: #aaaaaa; } }
+@media print { .pane { color: #bbbbbb; } }
+";
+
+$sheets: [CssSheet];
+$sheets[] = css_parse($css, 1000);
+$sh = $sheets[0];
+
+/* ---- 1. parsing -------------------------------------------------- */
+/* div, .pane -> two rules, then .pane; #one; .pane .a span; .wrap > .pane;
+ * .a:hover; .a:first-child; .a:not(.nope); .pane:nosuchthing; the media
+ * rule. `z + q` is dropped (unsupported combinator) and @media print
+ * with it, so both are reported as warnings instead of matching. */
+if (count($sh->rules) != 11) {
+    echo "FAIL rule count: " . count($sh->rules) . "\n";
+    exit(1);
+}
+if (count($sh->warn) != 2) {
+    echo "FAIL warnings: " . implode(" | ", $sh->warn) . "\n";
+    exit(2);
+}
+
+/* a selector's text survives a round trip, combinators included */
+$desc = rule_named($sh, ".pane .a span");
+if ($desc == null || css_sel_text($desc) != ".pane .a span") {
+    echo "FAIL descendant round trip\n";
+    exit(3);
+}
+$child = rule_named($sh, ".wrap > .pane");
+if ($child == null || css_sel_text($child) != ".wrap > .pane") {
+    echo "FAIL child round trip\n";
+    exit(4);
+}
+
+/* specificity: #id (10000) > two classes + a type (201) > one class (100) */
+if (rule_named($sh, "#one")->spec != 10000) { echo "FAIL spec id\n"; exit(5); }
+if ($desc->spec != 201) { echo "FAIL spec 201: " . $desc->spec . "\n"; exit(6); }
+if ($child->spec != 200) { echo "FAIL spec 200\n"; exit(7); }
+if (rule_named($sh, "div")->spec != 1) { echo "FAIL spec type\n"; exit(8); }
+if (rule_named($sh, ".a:not(.nope)")->spec != 200) {
+    echo "FAIL spec not(): " . rule_named($sh, ".a:not(.nope)")->spec . "\n";
+    exit(9);
+}
+if (rule_named($sh, "div")->parts[0]->tag != "div") { echo "FAIL tag\n"; exit(10); }
+
+/* shorthand values are left intact for the style layer to expand */
+$pad = rule_of($sh, ".pane", "padding");
+if ($pad == null || $pad->pv[0] != "4px 8px") { echo "FAIL shorthand\n"; exit(11); }
+/* !important is recorded, not baked into the value */
+if (rule_named($sh, "#one")->pi[0] != 1) { echo "FAIL important flag\n"; exit(12); }
+if (rule_named($sh, "#one")->pv[0] != "#ff0000") { echo "FAIL important value\n"; exit(13); }
+
+/* ---- 2. matching ------------------------------------------------- */
+
+$doc = html_parse("<div class='wrap'>"
+    . "<span class='a' id='one'>first</span>"
+    . "<span class='b'>second</span>"
+    . "<div class='deep'><div class='pane'>nested</div></div>"
+    . "<div class='pane' style='color: #112233'>pane</div>"
+    . "</div>");
+$a = $doc->root->findByClass("a");
+$b = $doc->root->findByClass("b");
+/* two panes: the nested one, and the direct child that carries the inline
+ * style - the first is what tests the combinator's depth, the second what
+ * tests inline beating a sheet */
+$panes: [HNode];
+$panes = $doc->root->allByClass("pane", $panes);
+if ($a == null || $b == null || count($panes) != 2) { echo "FAIL dom\n"; exit(20); }
+$paneDeep = $panes[0];
+$paneInline = $panes[1];
+
+$st = new HState();
+$st->vw = 1000;
+
+/* the id rule is !important, so it wins over everything else on #one */
+$d = css_collect($a, $sheets, $st);
+if (winner($d, "color") != "#ff0000") {
+    echo "FAIL important wins: " . winner($d, "color") . "\n";
+    exit(21);
+}
+
+/* Three rules colour this node: #one, .a:first-child and .a:not(.nope).
+ * `div`/`.pane` do not match a span, `.pane .a span` has no span inside
+ * the span, and `.pane:nosuchthing` never matches - an unknown
+ * pseudo-class must not turn a rule into a match-all. */
+if (decl_count($d, "color") != 3) {
+    echo "FAIL matching count: " . decl_count($d, "color") . "\n";
+    exit(22);
+}
+
+/* hover: a rule only applies while the state says the node is hovered */
+if (winner($d, "background-color") != "") { echo "FAIL hover off\n"; exit(23); }
+$st->hover = $a->order;
+$d = css_collect($a, $sheets, $st);
+if (winner($d, "background-color") != "#202020") { echo "FAIL hover on\n"; exit(24); }
+$st->hover = $b->order;
+$d2 = css_collect($a, $sheets, $st);
+if (winner($d2, "background-color") != "") { echo "FAIL hover other node\n"; exit(25); }
+$st->hover = 0;
+
+/* #one is coloured by the id rule whatever else matches, and the second
+ * span has no colour rule at all - which is what makes the position rules
+ * in the next section a real test rather than a coincidence. */
+$d = css_collect($a, $sheets, $st);
+if (winner($d, "color") != "#ff0000") { echo "FAIL important setup\n"; exit(26); }
+$d = css_collect($b, $sheets, $st);
+if (winner($d, "color") != "") {
+    echo "FAIL second child: " . winner($d, "color") . "\n";
+    exit(27);
+}
+
+/* the child combinator stops at one level: `.wrap > .pane` matches the
+ * direct child, not the pane nested two levels down */
+$d = css_collect($paneInline, $sheets, $st);
+if (winner($d, "color") != "#112233") {
+    echo "FAIL inline beats sheet: " . winner($d, "color") . "\n";
+    exit(28);
+}
+$d = css_collect($paneDeep, $sheets, $st);
+if (winner($d, "color") != "#101014") {
+    echo "FAIL child combinator depth: " . winner($d, "color") . "\n";
+    exit(29);
+}
+
+/* ---- 2b. child positions ----------------------------------------- */
+$list = html_parse("<ul><li class='x'>a</li><li class='y'>b</li><li class='z'>c</li></ul>");
+$x = $list->root->findByClass("x");
+$y = $list->root->findByClass("y");
+$z = $list->root->findByClass("z");
+if ($x == null || $y == null || $z == null) { echo "FAIL list dom\n"; exit(40); }
+$pos: [CssSheet];
+$pos[] = css_parse("li:first-child { color: #111111; }"
+    . "li:last-child { color: #222222; }"
+    . "li:nth-child(2) { color: #333333; }", 1000);
+if (winner(css_collect($x, $pos, $st), "color") != "#111111") {
+    echo "FAIL first-child\n";
+    exit(41);
+}
+if (winner(css_collect($y, $pos, $st), "color") != "#333333") {
+    echo "FAIL nth-child\n";
+    exit(42);
+}
+if (winner(css_collect($z, $pos, $st), "color") != "#222222") {
+    echo "FAIL last-child\n";
+    exit(43);
+}
+
+/* ---- 3. media queries -------------------------------------------- */
+/* the condition is re-evaluated per collect: the rule is parsed once and
+ * only filters when the viewport is the wrong size */
+$st->vw = 500;
+$d = css_collect($paneDeep, $sheets, $st);
+if (winner($d, "color") != "#aaaaaa") {
+    echo "FAIL media narrow: " . winner($d, "color") . "\n";
+    exit(30);
+}
+/* the inline style still beats a matching media rule */
+$d = css_collect($paneInline, $sheets, $st);
+if (winner($d, "color") != "#112233") {
+    echo "FAIL inline vs media: " . winner($d, "color") . "\n";
+    exit(31);
+}
+$st->vw = 1000;
+$d = css_collect($paneDeep, $sheets, $st);
+if (winner($d, "color") != "#101014") {
+    echo "FAIL media wide: " . winner($d, "color") . "\n";
+    exit(32);
+}
+if (winner($d, "color") == "#bbbbbb") { echo "FAIL print rule applied\n"; exit(35); }
+
+/* ---- 4. two sheets: the later one wins at equal specificity ------- */
+$more: [CssSheet];
+$more[] = $sheets[0];
+$more[] = css_parse(".pane { color: #445566; }", 1000);
+$d = css_collect($paneDeep, $more, $st);
+if (winner($d, "color") != "#445566") {
+    echo "FAIL later sheet: " . winner($d, "color") . "\n";
+    exit(33);
+}
+/* ...but not over an !important declaration in the earlier one */
+$d = css_collect($a, $more, $st);
+if (winner($d, "color") != "#ff0000") { echo "FAIL important vs later sheet\n"; exit(34); }
+
+echo "html_css ok\n";

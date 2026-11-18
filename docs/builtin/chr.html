@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
 <title>chr() — HolyPHP built-ins</title>
 <style>
 :root { --bg: #14151a; --bg2: #1b1c23; --bg3: #22242d; --fg: #e8e6e3; --dim: #9a97a3;
@@ -50,6 +51,7 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
 .nav .mid { color: var(--dim); }
 .muted { color: var(--dim); }
 </style>
+<link rel="stylesheet" href="../assets/theme.css?v=2">
 </head>
 <body>
 <main>
@@ -74,5 +76,6 @@ newline</pre>
   <a href="bin2hex.html">bin2hex() &rarr;</a>
 </div>
 </main>
+<script src="../assets/theme.js?v=1"></script>
 </body>
 </html>

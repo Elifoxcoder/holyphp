@@ -12,6 +12,7 @@ readable.
 |---|---|
 | `server.hphp` | MaxOut benchmark server (drives `holy_maxout_start`) |
 | `server_challenge.hphp` | twelve-dollar-server-challenge entry point (drives `holy_challenge_start`) |
+| `tcp_raw_server.hphp` | HolyPHP port of the AES-128-CBC test server: decrypts line payloads and publishes them to shared memory |
 | `test_hello.hphp`, `test_vps.hphp` | Three-line smoke programs used to check a fresh build |
 | `test_c.c` | Host check: does `io_uring_queue_init` / SQLite link and work here |
 | `build-win.sh` | Builds `hphp.exe` with MSYS2/UCRT64 MinGW; run from the repo root |

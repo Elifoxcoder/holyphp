@@ -1,0 +1,24 @@
+/* Minimal theme variables and control styles for generated builtin pages. */
+html[data-theme="light"] {
+  color-scheme:light;
+  --bg:#f6f4ef; --bg2:#fffefa; --bg3:#eeeae2; --fg:#242331; --dim:#706e79;
+  --line:#dedbd3; --purple:#665ca8; --purple-hi:#53488f; --ember:#d45d35;
+  --green:#34765a; --code-bg:#22232c;
+}
+html[data-theme="dark"] {
+  color-scheme:dark;
+  --bg:#14151a; --bg2:#1b1c23; --bg3:#22242d; --fg:#e8e6e3; --dim:#aaa7b2;
+  --line:#373944; --purple:#8892bf; --purple-hi:#c0c7f1; --ember:#ff8b56;
+  --green:#9bd7ae; --code-bg:#101116;
+}
+html[data-theme] body { background:var(--bg); color:var(--fg); }
+/* Built-in pages intentionally keep code samples on a dark code surface. */
+html[data-theme] pre { color:#f0eee8; }
+html[data-theme] pre.out { color:#9bd7ae; }
+.theme-toggle { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:36px; padding:7px 11px; border:1px solid var(--line); border-radius:8px; background:var(--bg2); color:var(--fg); font:600 12px system-ui,"Segoe UI",sans-serif; cursor:pointer; }
+.theme-toggle:hover { border-color:var(--ember); background:var(--bg3); }
+.theme-toggle:focus-visible { outline:3px solid #8879d0; outline-offset:3px; }
+.theme-toggle-icon { font-size:15px; line-height:1; }
+.theme-toggle-floating { position:fixed; z-index:999; top:14px; right:18px; box-shadow:0 5px 22px rgba(0,0,0,.18); }
+@media(max-width:620px) { .theme-toggle-label { display:none; } }
+@media(prefers-reduced-motion:reduce) { .theme-toggle { transition:none; } }

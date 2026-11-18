@@ -1,3 +1,7 @@
+// thread_lib.hphp — the thread library's classes over real threads:
+// a Pool, a rendezvous Channel, an Atomic, and chunked parallel iteration.
+//
+//   hphp run tests/manual/thread_lib.hphp     # prints LIB THREAD OK
 import "thread";
 $pool = new Pool(4);
 $r = $pool->map(function($x, $i) { return $x * $x + $i; }, [1,2,3,4,5,6,7,8]);

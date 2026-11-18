@@ -1,0 +1,84 @@
+/* switch_narrow.hphp — a switch arm can pin down a nullable subject.
+ *
+ * PHP compares switch cases with ==, so an arm only proves something when
+ * the case value cannot be equal to null: null == "" and null == 0 are true,
+ * but null == "a" is not. A truthy case value on a slot whose only other
+ * member is one scalar therefore means the arm ran for that member.
+ *
+ *   switch ($x) { case "a": ... }   // $x is a string in that arm (?string)
+ *
+ * A FAIL line here means the arm narrowing regressed. */
+
+$failures = 0;
+
+function expect(int $got, int $want, string $what): void {
+    global $failures;
+    if ($got === $want) {
+        echo "OK   " . $what . "\n";
+    } else {
+        echo "FAIL " . $what . " (got " . $got . ", want " . $want . ")\n";
+        $failures = $failures + 1;
+    }
+}
+
+function need_string(string $s): int {
+    return strlen($s);
+}
+
+/* ---- a ?string subject: every truthy case value pins the string member -- */
+function via_switch(?string $x): int {
+    switch ($x) {
+        case "a": return need_string($x);   /* narrowed: null != "a" */
+        case 7:   return need_string($x);   /* narrowed: only "7" == 7 here */
+        case true: return need_string($x);  /* narrowed: only a truthy string */
+        default:  return -1;
+    }
+}
+expect(via_switch("a"), 1, "a string case narrows a ?string subject");
+expect(via_switch("7"), 1, "a number case narrows it too");
+expect(via_switch("z"), 1, "and so does a bool case");
+expect(via_switch(null), -1, "null falls to the default arm");
+expect(via_switch(""), -1, "an empty string is == null, so it lands in default");
+expect(via_switch("0"), -1, "\"0\" is falsy too, so it lands in default as well");
+
+/* ---- a ?int subject: even a string case pins the int member ------------- */
+function intish(?int $x): int {
+    switch ($x) {
+        case "7": return $x + 100;   /* narrowed: "7" == 7 is the only way in */
+        default:  return -1;
+    }
+}
+expect(intish(7), 107, "a numeric-string case narrows a ?int subject");
+expect(intish(5), -1, "and the other ints still fall to default");
+
+/* ---- a case after a breaking one still narrows -------------------------- */
+function with_break(?string $x): int {
+    switch ($x) {
+        case "a":
+            break;                    /* a break leaves the switch body */
+        case "b":
+            return need_string($x);   /* "a" cannot fall into this arm */
+        default:
+            return 0;
+    }
+    return -1;
+}
+expect(with_break("b"), 1, "a case after a breaking case still narrows");
+expect(with_break("a"), -1, "and the breaking case itself runs");
+expect(with_break("c"), 0, "and the default arm still catches the rest");
+
+/* ---- several patterns in one arm: all of them must agree ---------------- */
+function multi(?string $x): int {
+    switch ($x) {
+        case "aa", "bb": return need_string($x);   /* both pin the string */
+        default:         return -1;
+    }
+}
+expect(multi("bb"), 2, "several truthy string patterns still narrow");
+expect(multi("c"), -1, "and the arm misses the other strings");
+
+if ($failures > 0) {
+    echo "switch_narrow.hphp: " . $failures . " failure(s)\n";
+    exit(1);
+}
+echo "switch_narrow.hphp: all switch narrowing checks passed\n";

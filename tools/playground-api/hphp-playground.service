@@ -1,0 +1,58 @@
+[Unit]
+Description=HolyPHP playground API (hphp.ch)
+After=network.target docker.service var-lib-hphp\x2dplayground-jobs.mount
+Requires=docker.service var-lib-hphp\x2dplayground-jobs.mount
+
+[Service]
+Type=simple
+Slice=hphp-playground.slice
+User=hphpplay
+Group=hphpplay
+Environment=HOME=/tmp/hphp-home
+Environment=PHP_CLI_SERVER_WORKERS=4
+ExecStart=/usr/bin/php -S 127.0.0.1:8091 -t /opt/hphp-playground/api /opt/hphp-playground/api/index.php
+ExecStartPre=/usr/bin/install -d -m 0700 /var/lib/hphp-playground/jobs/api
+Restart=always
+RestartSec=2
+
+# The only privileged command is the argument-validating container launcher.
+NoNewPrivileges=no
+# These are only in the bounding set for sudo-rs to enter the root launcher.
+# Nothing is ambient; the container drops all capabilities and sets no-new-privileges.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_READ_SEARCH
+AmbientCapabilities=
+PrivateTmp=no
+PrivateDevices=yes
+TemporaryFileSystem=/tmp:rw,size=128M,nr_inodes=4096,mode=1777,nosuid,nodev
+UMask=0077
+
+ProtectSystem=strict
+ReadWritePaths=
+ReadWritePaths=/run/hphp-playground /var/lib/hphp-playground/jobs
+ProtectHome=yes
+InaccessiblePaths=/var/www /root
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+ProtectProc=invisible
+
+IPAddressDeny=any
+IPAddressAllow=localhost
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+MemoryMax=768M
+CPUQuota=75%
+TasksMax=128
+LimitNOFILE=512
+LimitFSIZE=64M
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,128 @@
+{
+  "name": "holyphp",
+  "displayName": "HolyPHP Language Support",
+  "description": "HolyPHP language tooling: built-in reference, completion, hover, signature help, symbols, definitions, and compiler diagnostics.",
+  "version": "0.3.2",
+  "publisher": "holyphp",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [],
+  "main": "./extension.bundle.js",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "test:host": "node test-host/run.js",
+    "test:all": "npm test && npm run test:host",
+    "bundle": "esbuild extension.js --bundle --platform=node --target=node18 --external:vscode --outfile=extension.bundle.js && esbuild server.js --bundle --platform=node --target=node18 --outfile=server.bundle.js",
+    "vscode:prepublish": "npm run bundle"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "holyphp",
+        "aliases": [
+          "HolyPHP",
+          "hphp"
+        ],
+        "extensions": [
+          ".hphp"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "holyphp",
+        "scopeName": "source.hphp",
+        "path": "./syntaxes/hphp.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "holyphp",
+        "path": "./snippets/hphp.json"
+      }
+    ],
+    "configuration": {
+      "title": "HolyPHP",
+      "properties": {
+        "holyphp.hphpPath": {
+          "type": "string",
+          "default": "hphp",
+          "description": "Path to the hphp compiler binary (used for `hphp check` and Run)."
+        },
+        "holyphp.diagnostics": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run `hphp check` and show errors as squiggles."
+        },
+        "holyphp.diagnosticsMode": {
+          "type": "string",
+          "enum": [
+            "type",
+            "save"
+          ],
+          "default": "type",
+          "description": "Check on every pause in typing (debounced) or only when the file is saved."
+        },
+        "holyphp.diagnosticsDebounce": {
+          "type": "number",
+          "default": 300,
+          "minimum": 0,
+          "maximum": 5000,
+          "description": "Milliseconds to wait after the last keystroke before `hphp check` runs."
+        },
+        "holyphp.maxIndexedFiles": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 100,
+          "maximum": 20000,
+          "description": "Maximum project files to inspect on demand for navigation and references. The project index is built only when needed."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "holyphp.check",
+        "title": "HolyPHP: Check current file"
+      },
+      {
+        "command": "holyphp.run",
+        "title": "HolyPHP: Run current file"
+      },
+      {
+        "command": "holyphp.builtins",
+        "title": "HolyPHP: Browse Built-in Reference"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "holyphp.run",
+        "key": "ctrl+f5",
+        "when": "editorLangId == holyphp"
+      },
+      {
+        "command": "holyphp.check",
+        "key": "ctrl+shift+m",
+        "when": "editorLangId == holyphp"
+      }
+    ]
+  },
+  "README": "README.md",
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "vscode-languageserver": "^9.0.1",
+    "vscode-languageserver-textdocument": "^1.0.16"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.1.1",
+    "esbuild": "^0.25.12",
+    "mocha": "^11.8.0"
+  }
+}

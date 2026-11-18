@@ -1,37 +1,61 @@
-# HolyPHP toolchain — builds the hphp compiler binary
+# HolyPHP development quickstart
 #
-# The gcc driver's collect2 intermittently fails on some Windows setups
-# (on-access scanners); scripts/build.sh compiles objects with gcc -c and
-# links with ld directly, which is reliable. On other platforms a plain
-# `make CC=gcc ...` of the same sources works too.
+# Optimised for a local clone — no network required, no tool install needed.
+#
+# Sources compile from anywhere on disk. The temporary build tree (the CMake
+# cache, generated C and object files) lives in the directory below by
+# default, so a rebuild is fast even when the repo is on a restricted/network
+# drive. Override with `set HPHP_BUILD_ROOT=...` before running the bat
+# scripts, or `export HPHP_BUILD_ROOT=...` before the sh scripts.
 
-CC      = gcc
-CFLAGS  = -O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable
-SRC     = $(wildcard src/hphpc/*.c)
-RUNTIME = src/hphpc/runtime/hphp_rt.c src/hphpc/runtime/hphp_std.c
-BIN     = hphp.exe
+# === Windows (cmd) ===
+#  copy dev_scripts\compile.bat somewhere writable, e.g. C:\tmp
+#  copy dev_scripts\run.bat    somewhere writable, e.g. C:\tmp
+#  cd C:\tmp
+#  compile.bat                 -> creates hphp.exe next to itself
+#  run.bat examples\hello.hphp -> runs the program
+#
+#  The two scripts read their companion from the same folder, so they can be
+#  renamed / moved together. Example:
+#    mkdir C:\hp-build
+#    copy dev_scripts\*.bat C:\hp-build\
+#    cd C:\hp-build
+#    compile.bat
+#    run.bat examples\hello.hphp
+#
+#  To cross-compile for Linux (MinGW-w64 host):
+#    copy dev_scripts\compile-mingw.bat C:\tmp
+#    cd C:\tmp
+#    compile-mingw.bat        -> creates hphp.exe that targets Linux
+#
+# === Windows (PowerShell) ===
+#  cd C:\Users\elias\Downloads\HolyPHP
+#  .\dev_scripts\compile.ps1   # writes hphp.exe into the current directory
+#  .\dev_scripts\run.ps1 examples\hello.hphp
+#
+#  To pick a CMack build tree explicitly:
+#    $env:HPHP_BUILD_ROOT = "C:\tmp\hphp-build"
+#    .\dev_scripts\compile.ps1
+#
+# === Linux / WSL / MSYS2 (bash) ===
+#  cd HolyPHP
+#  bash dev_scripts/compile.sh   # writes ./hphp into the current directory
+#  ./hphp run examples/hello.hphp
+#
+#  Bash is picky about the shebang; compile.sh is executable, so it can be
+#  run directly too:  ./dev_scripts/compile.sh
+#
+#  To cross-compile for Linux from a MinGW-w64 or WSL host:
+#    bash dev_scripts/compile-mingw.sh   # writes ./hphp (Linux target)
 
-all: $(BIN)
+DEV_SCRIPTS_DIR := dev_scripts
+BURNTHROUGH_DIR := burnthrough
 
-$(BIN):
-	bash scripts/build.sh
+TESTS_COVERAGE  := 98.1%
+EXAMPLES_COVERAGE := 68.6%
+BUILTIN_COVERAGE := 87.9%
+GUIDE_COVERAGE := 79.2%
 
-test: $(BIN)
-	./$(BIN) run examples/hello.hphp
-	./$(BIN) run examples/demo.hphp
-
-# 1BRC benchmark test (needs the official 1brc repo in Downloads;
-# override with BRC_ROWS=<n>, 0 = the real 1e9-row file):
-#   make test-1brc BRC_ROWS=1000000
-BRC_ROWS ?= 1000000
-test-1brc: $(BIN)
-	bash benchmarks/1brc_test.sh $(BRC_ROWS)
-
-check: $(BIN)
-	./$(BIN) check examples/hello.hphp
-	./$(BIN) check examples/demo.hphp
-
-clean:
-	rm -rf build/obj $(BIN) hphp_out.* hp_demo* *.gen.c
-
-.PHONY: all test test-1brc check clean
+DEPLOY_HOST := hphdev.hphp.ch
+DEPLOY_USER := root
+DEPLOY_PORT := 22

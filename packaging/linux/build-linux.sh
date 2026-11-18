@@ -17,7 +17,7 @@ OUT=hphp
 # 1. embed the runtime + bundled libraries into a header, like build.sh does
 $CC -O2 -std=c11 scripts/genembed.c -o build/genembed
 mkdir -p src/hphpc
-libs=(lib/*.hphp)
+libs=(packages/lib/*/*.hphp)
 [ -e "${libs[0]}" ] || libs=()
 ./build/genembed src/hphpc/runtime_embed.h src/hphpc/runtime "${libs[@]}"
 
@@ -31,6 +31,6 @@ for src in src/hphpc/*.c src/hphpc/runtime/*.c; do
 done
 
 # 3. link with the gcc driver (native ELF)
-$CC -O2 -o "$OUT" "${objs[@]}" -lpthread -lm
+$CC -O2 -o "$OUT" "${objs[@]}" -lpthread -lm -lsqlite3 -luring
 
 echo "build ok: $OUT ($(stat -c%s "$OUT") bytes, runtime embedded)"

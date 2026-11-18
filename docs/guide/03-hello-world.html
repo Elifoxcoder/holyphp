@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+  <title>Chapter 3: Hello, World! — HolyPHP Guide</title>
+  <link rel="stylesheet" href="../assets/style.css?v=6">
+</head>
+
+<body>
+  <div class="layout">
+    <script src="../assets/nav.html.js?v=3"></script>
+    <main>
+      <div class="breadcrumb">
+        <a href="index.html">Guide</a> » <a href="index.html#part1">Part 1: Getting Started</a> » Chapter 3
+      </div>
+
+      <h1>Chapter 3: Hello, <span class="ph">World!</span></h1>
+
+      <p>Let's write our very first HolyPHP program. It's traditional to start with "Hello, World!".</p>
+
+      <h2>Creating the File</h2>
+      <p>Create a new file called <code>hello.hphp</code> with your favorite text editor.</p>
+
+      <h2>Writing the Code</h2>
+      <pre><code class="hphp">echo "Hello, World!";</code></pre>
+
+      <p>That's it! No imports, no <code>main()</code> function, no boilerplate. You can just start writing code.</p>
+
+      <h2>Running the Program</h2>
+      <p>Open your terminal in the same directory as <code>hello.hphp</code> and run:</p>
+      <pre><code class="bash">hphp run hello.hphp</code></pre>
+
+      <p>You should see:</p>
+      <pre><code class="plain">Hello, World!</code></pre>
+
+      <h2>Understanding the Code</h2>
+      <ul>
+        <li><code>echo</code> - Outputs text to the screen (like in PHP)</li>
+        <li><code>echo</code> adds a line break after its output automatically, so you do not need to append <code>"\n"</code>.</li>
+        <li><code>;</code> - Statement terminator (like in PHP and JavaScript)</li>
+      </ul>
+
+      <h2>Building a Standalone Executable</h2>
+      <p>Want to share your program? Compile it to a standalone executable:</p>
+      <pre><code class="bash">hphp build hello.hphp -o hello</code></pre>
+
+      <p>Now you can run it directly:</p>
+      <pre><code class="bash">./hello        # On Linux/Mac
+hello.exe      # On Windows</code></pre>
+
+      <p>No HolyPHP compiler needed on the target machine!</p>
+
+      <h2>A Slightly More Interesting Example</h2>
+      <pre><code class="hphp">$name = "World";
+echo "Hello, {$name}!";</code></pre>
+
+      <p>Notice the string interpolation with <code>{$name}</code> - just like PHP! Variables start with <code>$</code>.</p>
+
+      <div class="note">
+        <b>Try it yourself!</b> Change the message or add more <code>echo</code> statements. Experiment and see what happens.
+      </div>
+
+      <div class="challenge">
+        <strong>Challenge:</strong> Write a program that prints your name, age, and favorite programming language on separate lines.
+      </div>
+
+      <div class="chapter-nav">
+        <a href="02-installation.html" class="nav-prev">← Previous: Installation & Setup</a>
+        <a href="04-using-the-playground.html" class="nav-next">Next: Using the Playground →</a>
+      </div>
+
+    </main>
+  </div>
+  <script src="../assets/site.js?v=4"></script>
+<script src="../assets/theme.js?v=1"></script>
+</body>
+
+</html>

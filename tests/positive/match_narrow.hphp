@@ -1,0 +1,149 @@
+/* match_narrow.hphp — match compares with ===, and an arm narrows its subject.
+ *
+ * match is strict the way PHP 8 is: only a value of the pattern's own type can
+ * take the arm (`match (0.0) { 0 => ... }` falls through to the default arm).
+ * That is also what lets the checker narrow the subject inside the arm - the
+ * body of `match ($x) { "a" => need_string($x) }` sees a string, because a
+ * string pattern can only ever be equal to a string.
+ *
+ * A FAIL line here means the strict comparison or the narrowing regressed. */
+
+$failures = 0;
+
+function expect_s(string $got, string $want, string $what): void {
+    global $failures;
+    if ($got === $want) {
+        echo "OK   " . $what . "\n";
+    } else {
+        echo "FAIL " . $what . " (got '" . $got . "', want '" . $want . "')\n";
+        $failures = $failures + 1;
+    }
+}
+
+function expect_i(int $got, int $want, string $what): void {
+    expect_s(strval($got), strval($want), $what);
+}
+
+/* functions that only accept one member of a union - calling one with the
+ * narrowed subject is what makes the narrowing visible to the checker */
+function need_string(string $s): int { return strlen($s); }
+function need_int(int $n): int { return $n + 1; }
+
+/* ---- match is strict, like PHP 8 ---------------------------------------- */
+
+function classify(int $n): string {
+    return match ($n) {
+        0 => "zero",
+        1, 2, 3 => "small",
+        _ => "big",
+    };
+}
+expect_s(classify(0), "zero", "an int pattern matches the same int");
+expect_s(classify(2), "small", "an arm with several patterns matches");
+expect_s(classify(42), "big", "the default arm takes the rest");
+
+function by_pattern($v): string {
+    return match ($v) {
+        0 => "int-zero",
+        0.0 => "float-zero",
+        "0" => "str-zero",
+        _ => "other",
+    };
+}
+expect_s(by_pattern(0), "int-zero", "an int 0 matches an int pattern");
+expect_s(by_pattern(0.0), "float-zero", "a float 0.0 is not === 0");
+expect_s(by_pattern("0"), "str-zero", "and the string \"0\" is neither");
+
+/* ---- an arm narrows the subject to the pattern's type ------------------- */
+
+function describe(string|int $x): string {
+    return match ($x) {
+        "a" => "letter:" . strval(need_string($x)),
+        7 => "lucky:" . strval(need_int($x)),
+        _ => "other",
+    };
+}
+expect_s(describe("a"), "letter:1", "a string pattern narrows to the string member");
+expect_s(describe(7), "lucky:8", "an int pattern narrows to the int member");
+expect_s(describe("b"), "other", "another string falls to the default arm");
+expect_s(describe(9), "other", "so does another int");
+
+/* several patterns of the same type still agree on one type */
+function role(string|int $r): string {
+    return match ($r) {
+        "subtle", "secondary" => "same:" . strval(need_string($r)),
+        _ => "other",
+    };
+}
+expect_s(role("secondary"), "same:9", "two string patterns agree on the type");
+
+/* patterns of different types prove nothing about each other */
+function either(string|int $x): string {
+    return match ($x) {
+        "a", 7 => "either",
+        _ => "other",
+    };
+}
+expect_s(either("a"), "either", "an arm with mixed patterns still runs");
+expect_s(either(7), "either", "and takes the other pattern as well");
+
+/* ---- a type test in an arm narrows it too -------------------------------- */
+
+function by_is(string|int $x): string {
+    return match ($x) {
+        $x is string => "str:" . strval(need_string($x)),
+        $x is int => "int:" . strval(need_int($x)),
+        _ => "other",
+    };
+}
+expect_s(by_is("hi"), "str:2", "`is string` narrows the arm body");
+expect_s(by_is(4), "int:5", "`is int` narrows the arm body");
+
+/* ---- === against a value narrows the branch it guards -------------------- */
+
+function via_ident(string|int|bool $v): int {
+    if ($v === "yes") {
+        return need_string($v);
+    }
+    if ($v === 3) {
+        return need_int($v);
+    }
+    return 0;
+}
+expect_i(via_ident("yes"), 3, "`=== \"yes\"` narrows a three-member union");
+expect_i(via_ident(3), 4, "`=== 3` narrows it to the int member");
+expect_i(via_ident(true), 0, "a value that matched no comparison stays unknown");
+
+function via_ne(string|int $v): int {
+    /* the branch that says they are different proves nothing: $v can still
+     * be a string that is not "yes". The else branch is the one where the
+     * comparison was false, so that is where $v is known to be a string. */
+    if ($v !== "yes") {
+        return 0;
+    } else {
+        return need_string($v);
+    }
+}
+expect_i(via_ne("no"), 0, "the `!==` branch assumes nothing");
+expect_i(via_ne("yes"), 3, "the branch where it was false sees a string");
+
+/* the else of `=== 3` may still hold an int (4), so nothing is assumed there */
+$slot: string|int = 4;
+$out = "none";
+if ($slot === 3) { $out = "three"; } else { $out = "other"; }
+expect_s($out, "other", "the else branch runs for a value that did not match");
+
+/* an int member and a float member stay apart */
+$nf: string|float = 1.0;
+if ($nf === 1) {
+    $out = "int";
+} else {
+    $out = "float-or-other";
+}
+expect_s($out, "float-or-other", "=== compares the tag too, not just the number");
+
+if ($failures > 0) {
+    echo "match_narrow.hphp: " . $failures . " failure(s)\n";
+    exit(1);
+}
+echo "match_narrow.hphp: all match and narrowing checks passed\n";

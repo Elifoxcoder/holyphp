@@ -1,0 +1,1136 @@
+// =====================================================================
+//  ide/editor.hphp — the document model of a code editor
+// =====================================================================
+//
+//  This file knows nothing about screens, windows or HTML. It is the part of
+//  an editor that is worth testing on its own:
+//
+//      text .......... IdeBuffer   lines, insert/remove, load and save, dirty
+//      caret ......... row/col plus an anchor, so a selection is two carets
+//      editing ....... the operations a key press means (insert, newline with
+//                      auto-indent, backspace that joins lines, indent,
+//                      comment toggle, cursor movement by glyph/word/page)
+//      history ....... undo/redo as line-slice records, coalesced per run
+//      syntax ........ a line tokenizer that remembers /* */ across lines
+//      words ......... the vocabulary a completion popup offers
+//
+//  The view layer (ide/workbench.hphp) turns rows and columns into HTML, the
+//  HTML engine turns that into pixels; holyide/ is the window around it.
+//  Everything here is deterministic and testable, which is why the editor is
+//  built this way: tests/positive/ide_editor.hphp runs the lot without a
+//  window.
+//
+//  Addressing is 0-based everywhere: row 0 is the first line, column 0 the
+//  first character. A column may sit one past the end of a line (that is
+//  where the caret goes when you press End).
+// =====================================================================
+
+/** One highlighted span of a line, for the painter to colour. */
+class IdeToken {
+    pub string $kind;       // kw ty fn id var str num com op ws
+    pub string $text;
+    pub int $col;           // starting column in the line
+    pub function __construct(string $k, string $t, int $c) {
+        $this->kind = $k;
+        $this->text = $t;
+        $this->col = $c;
+    }
+}
+
+/** A line's tokens plus the lexer state the next line starts in. */
+class IdeScan {
+    pub [IdeToken] $tokens;
+    pub int $state;         // 0 code, 1 inside a /* */ block comment
+}
+
+/** The cached tokens of one line, for a painter that walks the viewport. */
+class IdeRowHl {
+    pub int $row;
+    pub [IdeToken] $tokens;
+    pub function __construct(int $r, [IdeToken] $t) {
+        $this->row = $r;
+        $this->tokens = $t;
+    }
+}
+
+/** The text. Lines are stored without their newline. */
+class IdeBuffer {
+    pub [string] $lines;
+    pub string $path = "";
+    pub bool $dirty = false;
+
+    pub function __construct() {
+        $this->lines = [""];
+    }
+
+    pub function count(): int {
+        return count($this->lines);
+    }
+
+    pub function line(int $row): string {
+        if ($row < 0 || $row >= count($this->lines)) { return ""; }
+        return $this->lines[$row];
+    }
+
+    /** The whole document, newline-terminated the way a file is. */
+    pub function text(): string {
+        return implode("\n", $this->lines) . "\n";
+    }
+
+    pub function set_text(string $s) {
+        $t = str_replace("\r\n", "\n", $s);
+        $t = str_replace("\r", "\n", $t);
+        $this->lines = explode("\n", $t);
+        /* a trailing newline leaves one empty line too many */
+        $n = count($this->lines);
+        if ($n > 1 && $this->lines[$n - 1] == "") { array_pop($this->lines); }
+        $this->dirty = false;
+    }
+
+    pub function load(string $path): bool {
+        $s = file_get_contents($path);
+        if ($s === false) { return false; }
+        $this->set_text($s);
+        $this->path = $path;
+        return true;
+    }
+
+    pub function save(): bool {
+        if ($this->path == "") { return false; }
+        $r = file_put_contents($this->path, $this->text());
+        if ($r === false) { return false; }
+        $this->dirty = false;
+        return true;
+    }
+
+    /** Replace the lines from row..end (inclusive) with `[string] $new`.
+     *
+     *  The list is rebuilt rather than spliced in place: this dialect's
+     *  array_splice takes (array, offset, length) and hands back what it
+     *  removed, so a replacement has to be assembled. */
+    pub function splice(int $row, int $end, [string] $new) {
+        $this->lines = ide_lines_replace($this->lines, $row, $end, $new);
+        if (count($this->lines) == 0) { $this->lines = [""]; }
+        $this->dirty = true;
+    }
+}
+
+/** One edit, small enough to reverse exactly. */
+class IdeEdit {
+    pub int $row;           // first line touched
+    pub int $end;           // last line touched before the change
+    pub [string] $before;   // the lines that were there
+    pub [string] $after;    // the lines that replaced them (`new` is a keyword)
+    pub int $crow;          // caret before
+    pub int $ccol;
+    pub int $erow;          // caret after
+    pub int $ecol;
+    pub function __construct(int $row, int $end, [string] $before, [string] $after,
+                             int $crow, int $ccol, int $erow, int $ecol) {
+        $this->row = $row; $this->end = $end;
+        $this->before = $before; $this->after = $after;
+        $this->crow = $crow; $this->ccol = $ccol;
+        $this->erow = $erow; $this->ecol = $ecol;
+    }
+}
+
+/* ---- syntax ---------------------------------------------------------- */
+
+function ide_keywords(): [string] {
+    return ["function", "class", "pub", "fn", "let", "const", "var", "return",
+            "if", "else", "elseif", "while", "for", "foreach", "in", "as",
+            "switch", "case", "default", "break", "continue", "new", "import",
+            "use", "try", "catch", "finally", "throw", "echo", "print",
+            "match", "enum", "interface", "extends", "implements", "static",
+            "abstract", "readonly", "global", "unsafe", "own", "mut", "ref",
+            "and", "or", "not", "instanceof", "true", "false", "null"];
+}
+
+function ide_types(): [string] {
+    return ["int", "float", "string", "bool", "array", "mixed", "void", "void*",
+            "i8", "i16", "i32", "i64", "f32", "f64", "callable", "self"];
+}
+
+function ide_is_word_char(string $c): bool {
+    if ($c == "") { return false; }
+    if (($c >= "a" && $c <= "z") || ($c >= "A" && $c <= "Z")) { return true; }
+    if ($c >= "0" && $c <= "9") { return true; }
+    return $c == "_";
+}
+
+function ide_is_digit(string $c): bool {
+    return $c >= "0" && $c <= "9";
+}
+
+function ide_starts_word(string $c): bool {
+    if ($c == "") { return false; }
+    if (($c >= "a" && $c <= "z") || ($c >= "A" && $c <= "Z")) { return true; }
+    return $c == "_";
+}
+
+/** In a list? Linear search is fine: the lists are short and read often. */
+function ide_in_list([string] $list, string $s): bool {
+    for ($i = 0; $i < count($list); $i++) {
+        if ($list[$i] == $s) { return true; }
+    }
+    return false;
+}
+
+/**
+ * Tokenize one line of HolyPHP for the painter.
+ *
+ * `$inBlock` is the state the previous line ended in, so a comment that runs
+ * over twenty lines stays a comment on every one of them. The token kinds are
+ * what a theme needs and no more: keyword, type, string, number, comment,
+ * variable, operator, identifier, whitespace.
+ */
+function ide_scan_line(string $line, int $inBlock): IdeScan {
+    $out = new IdeScan();
+    $out->tokens = [];
+    $out->state = 0;
+    $kws = ide_keywords();
+    $tys = ide_types();
+    $n = strlen($line);
+    $i = 0;
+    $block = ($inBlock == 1);
+    while ($i < $n) {
+        $c = substr($line, $i, 1);
+        if ($block) {
+            /* the comment runs until *​/ - and may end on this line */
+            $close = strpos($line, "*/", $i);
+            if ($close === false) {
+                $out->tokens[] = new IdeToken("com", substr($line, $i), $i);
+                $out->state = 1;
+                return $out;
+            }
+            $out->tokens[] = new IdeToken("com", substr($line, $i, $close - $i + 2), $i);
+            $i = $close + 2;
+            $block = false;
+            continue;
+        }
+        if ($c == "#") {
+            /* PHP-style line comment */
+            $out->tokens[] = new IdeToken("com", substr($line, $i), $i);
+            return $out;
+        }
+        if ($c == "/" && $i + 1 < $n) {
+            $d = substr($line, $i + 1, 1);
+            if ($d == "/" || $d == "#") {
+                $out->tokens[] = new IdeToken("com", substr($line, $i), $i);
+                return $out;
+            }
+            if ($d == "*") {
+                $close = strpos($line, "*/", $i + 2);
+                if ($close === false) {
+                    $out->tokens[] = new IdeToken("com", substr($line, $i), $i);
+                    $out->state = 1;
+                    return $out;
+                }
+                $out->tokens[] = new IdeToken("com", substr($line, $i, $close - $i + 2), $i);
+                $i = $close + 2;
+                continue;
+            }
+        }
+        if ($c == "\"" || $c == "'") {
+            $q = $c;
+            $j = $i + 1;
+            $esc = false;
+            while ($j < $n) {
+                $d = substr($line, $j, 1);
+                if ($esc) { $esc = false; $j = $j + 1; continue; }
+                if ($d == "\\") { $esc = true; $j = $j + 1; continue; }
+                if ($d == $q) { $j = $j + 1; break; }
+                $j = $j + 1;
+            }
+            $out->tokens[] = new IdeToken("str", substr($line, $i, $j - $i), $i);
+            $i = $j;
+            continue;
+        }
+        if ($c == "$") {
+            $j = $i + 1;
+            while ($j < $n && ide_is_word_char(substr($line, $j, 1))) { $j = $j + 1; }
+            $out->tokens[] = new IdeToken("var", substr($line, $i, $j - $i), $i);
+            $i = $j;
+            continue;
+        }
+        if (ide_is_digit($c)) {
+            $j = $i;
+            while ($j < $n) {
+                $d = substr($line, $j, 1);
+                if (!ide_is_digit($d) && $d != "." && $d != "x" && $d != "_" &&
+                    !($d >= "a" && $d <= "f") && !($d >= "A" && $d <= "F")) { break; }
+                $j = $j + 1;
+            }
+            $out->tokens[] = new IdeToken("num", substr($line, $i, $j - $i), $i);
+            $i = $j;
+            continue;
+        }
+        if (ide_starts_word($c)) {
+            $j = $i;
+            while ($j < $n && ide_is_word_char(substr($line, $j, 1))) { $j = $j + 1; }
+            $w = substr($line, $i, $j - $i);
+            $kind = "id";
+            if (ide_in_list($kws, $w)) { $kind = "kw"; }
+            else if (ide_in_list($tys, $w)) { $kind = "ty"; }
+            else if ($j < $n && substr($line, $j, 1) == "(") { $kind = "fn"; }
+            else if ($w >= "A" && $w <= "Z") { $kind = "ty"; }
+            $out->tokens[] = new IdeToken($kind, $w, $i);
+            $i = $j;
+            continue;
+        }
+        if ($c == " " || $c == "\t") {
+            $j = $i;
+            while ($j < $n) {
+                $d = substr($line, $j, 1);
+                if ($d != " " && $d != "\t") { break; }
+                $j = $j + 1;
+            }
+            $out->tokens[] = new IdeToken("ws", substr($line, $i, $j - $i), $i);
+            $i = $j;
+            continue;
+        }
+        $out->tokens[] = new IdeToken("op", $c, $i);
+        $i = $i + 1;
+    }
+    return $out;
+}
+
+/* ---- the editor ------------------------------------------------------ */
+
+class IdeEditor {
+    pub IdeBuffer $buf;
+    pub int $row = 0;               // caret
+    pub int $col = 0;
+    pub int $arow = 0;              // selection anchor
+    pub int $acol = 0;
+    pub bool $hasSel = false;
+    pub bool $extend = false;       // shift is down
+    pub int $scrollRow = 0;
+    pub int $scrollCol = 0;
+    pub int $viewRows = 30;         // how many lines fit (set by the view)
+    pub int $viewCols = 100;
+    pub int $tab = 4;
+    pub [IdeEdit] $undo = [];
+    pub [IdeEdit] $redo = [];
+    pub int $undoLimit = 400;
+    pub bool $autoIndent = true;
+    pub bool $autoClose = true;
+    pub [IdeRowHl] $hlWin = [];     // tokens of the visible rows
+    pub int $hlRow = -1;            // first row `hlWin` covers
+    pub [string] $words = [];       // completion vocabulary
+    pub int $now = 0;               // a clock for undo coalescing (ms)
+    pub int $lastRunMs = -1;        // when the last coalescable edit happened
+    pub string $lastKind = "";      // "ins" | "del" | ""
+    pub string $runChar = "";       // the last typed character, for runs
+
+    pub function __construct() {
+        $this->buf = new IdeBuffer();
+    }
+
+    // ---- text -------------------------------------------------------
+    pub function line(int $r): string {
+        return $this->buf->line($r);
+    }
+
+    pub function line_count(): int {
+        return $this->buf->count();
+    }
+
+    pub function text(): string {
+        return $this->buf->text();
+    }
+
+    pub function load(string $path): bool {
+        if (!$this->buf->load($path)) { return false; }
+        $this->row = 0; $this->col = 0; $this->clear_sel();
+        $this->scrollRow = 0; $this->scrollCol = 0;
+        $this->undo = []; $this->redo = [];
+        $this->invalidate();
+        return true;
+    }
+
+    pub function save(): bool {
+        return $this->buf->save();
+    }
+
+    /// Replace everything (a new buffer, a revert).
+    pub function set_text(string $s) {
+        $this->buf->set_text($s);
+        $this->row = 0; $this->col = 0; $this->clear_sel();
+        $this->scrollRow = 0; $this->scrollCol = 0;
+        $this->undo = []; $this->redo = [];
+        $this->invalidate();
+    }
+
+    // ---- selection ---------------------------------------------------
+    pub function clear_sel() {
+        $this->hasSel = false;
+        $this->arow = $this->row;
+        $this->acol = $this->col;
+    }
+
+    pub function anchor() {
+        if (!$this->hasSel) {
+            $this->hasSel = true;
+            $this->arow = $this->row;
+            $this->acol = $this->col;
+        }
+    }
+
+    /// Selection start row, regardless of which end came first.
+    pub function sel_start_row(): int {
+        if (!$this->hasSel) { return $this->row; }
+        if ($this->arow < $this->row) { return $this->arow; }
+        if ($this->row < $this->arow) { return $this->row; }
+        return $this->row;
+    }
+
+    pub function sel_end_row(): int {
+        if (!$this->hasSel) { return $this->row; }
+        if ($this->arow > $this->row) { return $this->arow; }
+        return $this->row;
+    }
+
+    /** Is the character that starts at row/col inside the selection?
+     *  The character *after* the selection end is not, which is what makes a
+     *  selection of "ab" highlight two glyphs and not three. */
+    pub function sel_has(int $r, int $c): bool {
+        if (!$this->hasSel) { return false; }
+        $f = $this->first_end();
+        $l = $this->last_end();
+        if ($r < $f[0] || $r > $l[0]) { return false; }
+        if ($r == $f[0] && $c < $f[1]) { return false; }
+        if ($r == $l[0] && $c >= $l[1]) { return false; }
+        return true;
+    }
+
+    /// The [row, col] of the earlier end of the selection.
+    pub function first_end(): [int] {
+        if (!$this->hasSel) { return [$this->row, $this->col]; }
+        if ($this->arow < $this->row) { return [$this->arow, $this->acol]; }
+        if ($this->row < $this->arow) { return [$this->row, $this->col]; }
+        if ($this->acol <= $this->col) { return [$this->arow, $this->acol]; }
+        return [$this->row, $this->col];
+    }
+
+    /// The [row, col] of the later end of the selection.
+    pub function last_end(): [int] {
+        if (!$this->hasSel) { return [$this->row, $this->col]; }
+        if ($this->arow > $this->row) { return [$this->arow, $this->acol]; }
+        if ($this->row > $this->arow) { return [$this->row, $this->col]; }
+        if ($this->acol > $this->col) { return [$this->arow, $this->acol]; }
+        return [$this->row, $this->col];
+    }
+
+    pub function sel_text(): string {
+        if (!$this->hasSel) { return ""; }
+        $f = $this->first_end();
+        $l = $this->last_end();
+        if ($f[0] == $l[0]) {
+            return substr($this->line($f[0]), $f[1], $l[1] - $f[1]);
+        }
+        $out = substr($this->line($f[0]), $f[1]) . "\n";
+        for ($r = $f[0] + 1; $r < $l[0]; $r++) { $out = $out . $this->line($r) . "\n"; }
+        return $out . substr($this->line($l[0]), 0, $l[1]);
+    }
+
+    pub function select_all() {
+        $this->arow = 0; $this->acol = 0;
+        $this->row = count($this->buf->lines) - 1;
+        $this->col = strlen($this->line($this->row));
+        $this->hasSel = true;
+    }
+
+    // ---- history -----------------------------------------------------
+    function push(IdeEdit $e) {
+        $this->undo[] = $e;
+        if (count($this->undo) > $this->undoLimit) { $this->undo = array_slice($this->undo, 1); }
+        $this->redo = [];
+    }
+
+    /// Record one edit; `$coalesce` folds it into the previous one.
+    function record(int $row, int $end, [string] $old, [string] $new,
+                    int $crow, int $ccol, bool $coalesce) {
+        $this->buf->splice($row, $end, $new);
+        $n = count($this->undo);
+        if ($coalesce && $n > 0) {
+            $u = $this->undo[$n - 1];
+            /* Same run: same line, and the previous edit ended exactly here.
+             * Without the caret check, typing far away folded into the old
+             * entry and one undo threw away both words. */
+            if ($u->row == $row && $u->end == $row && count($new) == 1 &&
+                $u->erow == $crow && $u->ecol == $ccol) {
+                $u->after = $new;
+                $u->erow = $this->row;
+                $u->ecol = $this->col;
+                $this->redo = [];
+                return;
+            }
+        }
+        $this->push(new IdeEdit($row, $end, $old, $new,
+                                $crow, $ccol, $this->row, $this->col));
+    }
+
+    /// Forget the run marker: the next edit starts a fresh undo step.
+    function break_run() {
+        $this->lastKind = "";
+        $this->runChar = "";
+    }
+
+    pub function undo_step(): bool {
+        $n = count($this->undo);
+        if ($n == 0) { return false; }
+        $u = $this->undo[$n - 1];
+        array_pop($this->undo);
+        $this->buf->splice($u->row, $u->end, $u->before);
+        $this->redo[] = $u;
+        $this->row = $u->crow; $this->col = $u->ccol;
+        $this->clear_sel();
+        $this->break_run();
+        $this->invalidate();
+        return true;
+    }
+
+    pub function redo_step(): bool {
+        $n = count($this->redo);
+        if ($n == 0) { return false; }
+        $u = $this->redo[$n - 1];
+        array_pop($this->redo);
+        $this->buf->splice($u->row, $u->end, $u->after);
+        $this->undo[] = $u;
+        $this->row = $u->erow; $this->col = $u->ecol;
+        $this->clear_sel();
+        $this->break_run();
+        $this->invalidate();
+        return true;
+    }
+
+    // ---- editing -----------------------------------------------------
+    /// Delete the selection if there is one; false when there was none.
+    pub function delete_sel(): bool {
+        if (!$this->hasSel) { return false; }
+        $f = $this->first_end();
+        $l = $this->last_end();
+        $old: [string];
+        for ($r = $f[0]; $r <= $l[0]; $r++) { $old[] = $this->line($r); }
+        $merged = substr($this->line($f[0]), 0, $f[1]) . substr($this->line($l[0]), $l[1]);
+        $this->row = $f[0];
+        $this->col = $f[1];
+        $this->clear_sel();
+        $this->record($f[0], $l[0], $old, [$merged], $f[0], $f[1], false);
+        $this->break_run();
+        return true;
+    }
+
+    /// Insert text at the caret (a paste, a key, an auto-closed bracket).
+    pub function insert(string $s) {
+        $this->delete_sel();
+        if ($s == "") { return; }
+        if (strpos($s, "\n") === false) {
+            $line = $this->line($this->row);
+            $at = $this->col;
+            if ($at > strlen($line)) { $at = strlen($line); }
+            $nw = substr($line, 0, $at) . $s . substr($line, $at);
+            $this->col = $at + strlen($s);
+            /* one undo step per word and per run of spaces, not per keystroke */
+            $coalesce = false;
+            if ($this->lastKind == "ins") {
+                $word = (strlen($s) == 1 && ide_is_word_char($s));
+                if ($word && ide_is_word_char($this->runChar)) { $coalesce = true; }
+                if ($s == " " && $this->runChar == " ") { $coalesce = true; }
+            }
+            $this->runChar = $s;
+            $this->record($this->row, $this->row, [$line], [$nw],
+                          $this->row, $at, $coalesce);
+            $this->lastKind = "ins";
+            $this->invalidate();
+            return;
+        }
+        /* multi-line (a paste): the first line keeps the head, the rest are
+         * indented like the line they were pasted into, the last keeps the
+         * tail that followed the caret */
+        $parts = explode("\n", $s);
+        $start = $this->row;
+        $line = $this->line($start);
+        $at = $this->col;
+        if ($at > strlen($line)) { $at = strlen($line); }
+        $head = substr($line, 0, $at);
+        $tail = substr($line, $at);
+        $ind = $this->indent_of($start);
+        $pasted: [string];
+        for ($i = 0; $i < count($parts); $i++) {
+            if ($i == 0) { $pasted[] = $head . $parts[$i]; }
+            else if ($i == count($parts) - 1) { $pasted[] = $ind . $parts[$i] . $tail; }
+            else { $pasted[] = $ind . $parts[$i]; }
+        }
+        $this->row = $start + count($pasted) - 1;
+        $this->col = strlen($ind) + strlen($parts[count($parts) - 1]);
+        $this->record($start, $start, [$line], $pasted, $start, $at, false);
+        $this->break_run();
+        $this->invalidate();
+    }
+
+    /// Enter: split the line, keep the indent, add one level after a brace.
+    pub function newline() {
+        $this->delete_sel();
+        $line = $this->line($this->row);
+        $at = $this->col;
+        if ($at > strlen($line)) { $at = strlen($line); }
+        $head = substr($line, 0, $at);
+        $tail = substr($line, $at);
+        $ind = $this->indent_of($this->row);
+        $extra = "";
+        $trim = ide_trim_end($head);
+        if (strlen($trim) > 0) {
+            $last = substr($trim, strlen($trim) - 1, 1);
+            if ($last == "{" || $last == "(" || $last == "[") { $extra = $this->indent_unit(); }
+        }
+        /* } on the new line un-indents one level, so a closing brace lines up */
+        $tailTrim = ide_trim_start($tail);
+        $closeInd = $ind;
+        if (strlen($tailTrim) > 0) {
+            $c0 = substr($tailTrim, 0, 1);
+            if ($c0 == "}" || $c0 == ")" || $c0 == "]") { $closeInd = $this->outdent($ind); }
+        }
+        $this->record($this->row, $this->row, [$line],
+                      [$head, $ind . $extra . $tail], $this->row, $at, false);
+        $this->row = $this->row + 1;
+        $this->col = strlen($ind . $extra);
+        $this->break_run();
+        $this->invalidate();
+    }
+
+    /// Backspace: delete the selection, or one character, or join two lines.
+    pub function backspace() {
+        if ($this->delete_sel()) { return; }
+        if ($this->col == 0) {
+            if ($this->row == 0) { return; }
+            $prev = $this->line($this->row - 1);
+            $cur = $this->line($this->row);
+            $joined = $prev . $cur;
+            $at = strlen($prev);
+            $this->row = $this->row - 1;
+            $this->col = $at;
+            $this->record($this->row, $this->row + 1, [$prev, $cur], [$joined],
+                          $this->row + 1, 0, false);
+            $this->break_run();
+            $this->invalidate();
+            return;
+        }
+        /* remove a whole indent step when the caret is inside the leading
+         * whitespace - what every editor does, and what makes Tab a toggle */
+        $line = $this->line($this->row);
+        $at = $this->col;
+        $n = 1;
+        $upto = ide_leading_ws($line, $at);
+        if ($upto == $at && $at > 0) { $n = $at % $this->tab; if ($n == 0) { $n = $this->tab; } }
+        $nw = substr($line, 0, $at - $n) . substr($line, $at);
+        $this->col = $at - $n;
+        $this->record($this->row, $this->row, [$line], [$nw],
+                      $this->row, $at, ($this->lastKind == "del" && $this->col > 0));
+        $this->lastKind = "del";
+        $this->invalidate();
+    }
+
+    /// Delete: one character or the line break at the end of the line.
+    pub function delete_forward() {
+        if ($this->delete_sel()) { return; }
+        $line = $this->line($this->row);
+        if ($this->col >= strlen($line)) {
+            if ($this->row + 1 >= count($this->buf->lines)) { return; }
+            $next = $this->line($this->row + 1);
+            $this->record($this->row, $this->row + 1, [$line, $next], [$line . $next],
+                          $this->row, $this->col, false);
+            $this->break_run();
+            $this->invalidate();
+            return;
+        }
+        $at = $this->col;
+        $nw = substr($line, 0, $at) . substr($line, $at + 1);
+        $this->record($this->row, $this->row, [$line], [$nw], $this->row, $at, false);
+        $this->break_run();
+        $this->invalidate();
+    }
+
+    /// Tab: indent the selection (or the block), or insert spaces.
+    pub function tab_key(bool $back) {
+        if ($this->hasSel || $back) {
+            $this->shift_lines($back ? -1 : 1);
+            return;
+        }
+        $line = $this->line($this->row);
+        $at = $this->col;
+        $pad = $this->tab - ($at % $this->tab);
+        $spaces = "";
+        for ($i = 0; $i < $pad; $i++) { $spaces = $spaces . " "; }
+        $nw = substr($line, 0, $at) . $spaces . substr($line, $at);
+        $this->col = $at + $pad;
+        $this->record($this->row, $this->row, [$line], [$nw], $this->row, $at, false);
+        $this->break_run();
+        $this->invalidate();
+    }
+
+    /// Indent (dir 1) or outdent (dir -1) every line in the selection.
+    pub function shift_lines(int $dir) {
+        $first = $this->sel_start_row();
+        $last = $this->sel_end_row();
+        $old: [string];
+        $new: [string];
+        for ($r = $first; $r <= $last; $r++) {
+            $old[] = $this->line($r);
+            if ($dir > 0) {
+                $new[] = $this->indent_unit() . $this->line($r);
+            } else {
+                $new[] = $this->strip_indent($this->line($r), $this->tab);
+            }
+        }
+        $this->record($first, $last, $old, $new, $this->row, $this->col, false);
+        $this->break_run();
+        $this->invalidate();
+    }
+
+    /// Ctrl+/: comment the selected lines, or uncomment them when they are.
+    pub function toggle_comment() {
+        $first = $this->sel_start_row();
+        $last = $this->sel_end_row();
+        $all = true;
+        for ($r = $first; $r <= $last; $r++) {
+            $t = ide_trim_start($this->line($r));
+            if (strlen($t) == 0) { continue; }
+            if (!str_starts_with($t, "//")) { $all = false; }
+        }
+        $old: [string];
+        $new: [string];
+        for ($r = $first; $r <= $last; $r++) {
+            $line = $this->line($r);
+            $old[] = $line;
+            if ($all) {
+                $at = ide_leading_ws($line, strlen($line));
+                $after = substr($line, $at);
+                $drop = 2;
+                if (substr($after, 0, 3) == "// ") { $drop = 3; }
+                $new[] = substr($line, 0, $at) . substr($line, $at + $drop);
+            } else {
+                $at = ide_leading_ws($line, strlen($line));
+                if (strlen(trim($line)) == 0) { $new[] = $line; }
+                else { $new[] = substr($line, 0, $at) . "// " . substr($line, $at); }
+            }
+        }
+        $this->record($first, $last, $old, $new, $this->row, $this->col, false);
+        $this->break_run();
+        $this->invalidate();
+    }
+
+    /// A typed character, with the auto-close and auto-indent niceties.
+    pub function type_char(string $c) {
+        if ($this->autoClose) {
+            if ($c == "}" && $this->caret_on_indent()) {
+                /* Typing } on its own indented line takes the indent back off
+                 * first, so the closing brace lands where the block opened
+                 * (a column that lines up with its `function`). */
+                $line = $this->line($this->row);
+                $stripped = $this->strip_indent($line, $this->tab);
+                $at = strlen($stripped);
+                $nw = $stripped . "}";
+                $this->col = $at + 1;
+                $this->record($this->row, $this->row, [$line], [$nw],
+                              $this->row, $at, false);
+                $this->break_run();
+                $this->invalidate();
+                return;
+            }
+            if ($c == "(" || $c == "[" || $c == "{" || $c == "\"") {
+                $close = ")";
+                if ($c == "[") { $close = "]"; }
+                if ($c == "{") { $close = "}"; }
+                if ($c == "\"") { $close = "\""; }
+                $this->insert($c . $close);
+                $this->col = $this->col - 1;
+                $this->break_run();
+                return;
+            }
+            if ($c == ")" || $c == "]" || $c == "}") {
+                $line = $this->line($this->row);
+                if (substr($line, $this->col, 1) == $c) { $this->col = $this->col + 1; return; }
+            }
+        }
+        $this->insert($c);
+    }
+
+    function caret_on_indent(): bool {
+        $line = $this->line($this->row);
+        return $this->col == strlen($line) && ide_leading_ws($line, strlen($line)) == strlen($line);
+    }
+
+    // ---- whitespace helpers ------------------------------------------
+    pub function indent_unit(): string {
+        $out = "";
+        for ($i = 0; $i < $this->tab; $i++) { $out = $out . " "; }
+        return $out;
+    }
+
+    pub function indent_of(int $r): string {
+        $line = $this->line($r);
+        return substr($line, 0, ide_leading_ws($line, strlen($line)));
+    }
+
+    function outdent(string $ind): string {
+        $drop = $this->tab;
+        if (strlen($ind) < $drop) { $drop = strlen($ind); }
+        return substr($ind, $drop);
+    }
+
+    function strip_indent(string $line, int $n): string {
+        $at = ide_leading_ws($line, strlen($line));
+        $drop = $n;
+        if ($at < $drop) { $drop = $at; }
+        return substr($line, $drop);
+    }
+
+    // ---- movement ----------------------------------------------------
+    /** Move the caret. `$what` is left/right/up/down/home/end/... */
+    pub function move(string $what, bool $ext) {
+        if ($ext) { $this->anchor(); } else { $this->break_run(); }
+        $r = $this->row;
+        $c = $this->col;
+        if ($what == "left") {
+            if (!$ext && $this->hasSel && $this->caret_at_last()) {
+                $f = $this->first_end();
+                $r = $f[0]; $c = $f[1];
+            } else if ($c > 0) { $c = $c - 1; }
+            else if ($r > 0) { $r = $r - 1; $c = strlen($this->line($r)); }
+        } else if ($what == "right") {
+            if (!$ext && $this->hasSel && $this->caret_at_first()) {
+                $l = $this->last_end();
+                $r = $l[0]; $c = $l[1];
+            } else if ($c < strlen($this->line($r))) { $c = $c + 1; }
+            else if ($r + 1 < count($this->buf->lines)) { $r = $r + 1; $c = 0; }
+        } else if ($what == "up") {
+            if ($r > 0) { $r = $r - 1; $c = $this->clamp_col($r, $c); }
+        } else if ($what == "down") {
+            if ($r + 1 < count($this->buf->lines)) { $r = $r + 1; $c = $this->clamp_col($r, $c); }
+        } else if ($what == "home") {
+            $c = ide_leading_ws($this->line($r), strlen($this->line($r)));
+            if ($c == $this->col) { $c = 0; }
+        } else if ($what == "end") {
+            $c = strlen($this->line($r));
+        } else if ($what == "pageup") {
+            $r = $r - $this->viewRows;
+            if ($r < 0) { $r = 0; }
+            $c = $this->clamp_col($r, $c);
+        } else if ($what == "pagedown") {
+            $r = $r + $this->viewRows;
+            $last = count($this->buf->lines) - 1;
+            if ($r > $last) { $r = $last; }
+            $c = $this->clamp_col($r, $c);
+        } else if ($what == "docstart") {
+            $r = 0; $c = 0;
+        } else if ($what == "docend") {
+            $r = count($this->buf->lines) - 1;
+            $c = strlen($this->line($r));
+        } else if ($what == "wordleft") {
+            $t = $this->prev_word($r, $c);
+            $r = $t[0]; $c = $t[1];
+        } else if ($what == "wordright") {
+            $t = $this->next_word($r, $c);
+            $r = $t[0]; $c = $t[1];
+        }
+        $this->row = $r;
+        $this->col = $c;
+        if (!$ext) { $this->clear_sel(); }
+        $this->ensure_cursor_visible();
+        $this->invalidate();
+    }
+
+    function clamp_col(int $r, int $c): int {
+        if ($this->buf->line($r) == "" || $c > strlen($this->line($r))) {
+            return strlen($this->line($r));
+        }
+        return $c;
+    }
+
+    function caret_at_first(): bool {
+        $f = $this->first_end();
+        return $this->row == $f[0] && $this->col == $f[1];
+    }
+
+    function caret_at_last(): bool {
+        $l = $this->last_end();
+        return $this->row == $l[0] && $this->col == $l[1];
+    }
+
+    function prev_word(mut int $r, mut int $c): [int] {
+        $i = $c;
+        while (true) {
+            if ($i == 0) {
+                if ($r == 0) { return [0, 0]; }
+                $r = $r - 1;
+                $i = strlen($this->line($r));
+                return [$r, $i];
+            }
+            if (!ide_is_word_char(substr($this->line($r), $i - 1, 1))) { $i = $i - 1; continue; }
+            break;
+        }
+        while ($i > 0 && ide_is_word_char(substr($this->line($r), $i - 1, 1))) { $i = $i - 1; }
+        return [$r, $i];
+    }
+
+    function next_word(mut int $r, mut int $c): [int] {
+        $line = $this->line($r);
+        $i = $c;
+        $n = strlen($line);
+        while ($i < $n && ide_is_word_char(substr($line, $i, 1))) { $i = $i + 1; }
+        while ($i < $n && !ide_is_word_char(substr($line, $i, 1))) { $i = $i + 1; }
+        if ($i < $n) { return [$r, $i]; }
+        if ($r + 1 < count($this->buf->lines)) { return [$r + 1, 0]; }
+        return [$r, $n];
+    }
+
+    pub function ensure_cursor_visible() {
+        if ($this->row < $this->scrollRow) { $this->scrollRow = $this->row; }
+        if ($this->row >= $this->scrollRow + $this->viewRows) {
+            $this->scrollRow = $this->row - $this->viewRows + 1;
+        }
+        if ($this->scrollRow < 0) { $this->scrollRow = 0; }
+        $maxs = count($this->buf->lines) - $this->viewRows;
+        if ($maxs < 0) { $maxs = 0; }
+        if ($this->scrollRow > $maxs) { $this->scrollRow = $maxs; }
+        $maxc = strlen($this->line($this->row)) - $this->viewCols + 4;
+        if ($maxc < 0) { $maxc = 0; }
+        if ($this->scrollCol > $maxc) { $this->scrollCol = $maxc; }
+        if ($this->col < $this->scrollCol) { $this->scrollCol = $this->col; }
+    }
+
+    // ---- syntax + words ----------------------------------------------
+    /// Mark the cached highlighting stale (any edit does).
+    pub function invalidate() {
+        $this->hlRow = -1;
+        $this->words = [];
+    }
+
+    /// The block-comment state a line starts in: 1 while inside a `/* */`.
+    pub function state_before(int $r): int {
+        $state = 0;
+        for ($i = 0; $i < $r && $i < count($this->buf->lines); $i++) {
+            $sc = ide_scan_line($this->line($i), $state);
+            $state = $sc->state;
+        }
+        return $state;
+    }
+
+    /** Tokens for the visible rows, in viewport order.
+     *
+     *  The block-comment state is carried in from the top of the buffer, so a
+     *  comment opened twenty lines above still colours this screenful. The
+     *  result is cached until the next edit or scroll. */
+    pub function highlight_window(): [IdeRowHl] {
+        if ($this->hlRow == $this->scrollRow && count($this->hlWin) > 0) { return $this->hlWin; }
+        $state = $this->state_before($this->scrollRow);
+        $win: [IdeRowHl];
+        $end = $this->scrollRow + $this->viewRows;
+        if ($end > count($this->buf->lines)) { $end = count($this->buf->lines); }
+        for ($r = $this->scrollRow; $r < $end; $r++) {
+            $sc = ide_scan_line($this->line($r), $state);
+            $state = $sc->state;
+            $win[] = new IdeRowHl($r, $sc->tokens);
+        }
+        $this->hlWin = $win;
+        $this->hlRow = $this->scrollRow;
+        return $win;
+    }
+
+    /// Tokens of one line, whether or not it is on screen.
+    pub function line_tokens(int $r): [IdeToken] {
+        $state = $this->state_before($r);
+        return ide_scan_line($this->line($r), $state)->tokens;
+    }
+
+    /// Every identifier worth offering in the completion popup.
+    pub function vocabulary(): [string] {
+        if (count($this->words) > 0) { return $this->words; }
+        $seen: [string];
+        $kws = ide_keywords();
+        for ($i = 0; $i < count($kws); $i++) { $seen[] = $kws[$i]; }
+        $tys = ide_types();
+        for ($i = 0; $i < count($tys); $i++) { $seen[] = $tys[$i]; }
+        for ($r = 0; $r < count($this->buf->lines); $r++) {
+            $sc = ide_scan_line($this->line($r), 0);
+            for ($j = 0; $j < count($sc->tokens); $j++) {
+                $t = $sc->tokens[$j];
+                if ($t->kind != "id" && $t->kind != "fn" && $t->kind != "ty") { continue; }
+                if (strlen($t->text) < 3) { continue; }
+                $dup = false;
+                for ($k = 0; $k < count($seen); $k++) {
+                    if ($seen[$k] == $t->text) { $dup = true; break; }
+                }
+                if (!$dup) { $seen[] = $t->text; }
+            }
+        }
+        $this->words = $seen;
+        return $this->words;
+    }
+
+    /// The word the caret sits in (or right after) - what Tab completes.
+    pub function word_at_cursor(): string {
+        $line = $this->line($this->row);
+        $i = $this->col;
+        while ($i > 0 && ide_is_word_char(substr($line, $i - 1, 1))) { $i = $i - 1; }
+        return substr($line, $i, $this->col - $i);
+    }
+
+    /// Completions for a prefix, alphabetical, at most `$max`.
+    pub function completions(string $prefix, int $max): [string] {
+        $out: [string];
+        if ($prefix == "") { return $out; }
+        $v = $this->vocabulary();
+        for ($i = 0; $i < count($v); $i++) {
+            if (!str_starts_with($v[$i], $prefix)) { continue; }
+            if ($v[$i] == $prefix) { continue; }
+            $out[] = $v[$i];
+        }
+        /* insertion sort: the list is short and this keeps it stable */
+        $n = count($out);
+        for ($i = 1; $i < $n; $i++) {
+            $x = $out[$i];
+            $j = $i - 1;
+            while ($j >= 0 && $out[$j] > $x) {
+                $out[$j + 1] = $out[$j];
+                $j = $j - 1;
+            }
+            $out[$j + 1] = $x;
+        }
+        if (count($out) > $max) { $out = array_slice($out, 0, $max); }
+        return $out;
+    }
+
+    /// Replace the word before the caret with `$word` (Tab / Enter in popup).
+    pub function complete_with(string $word) {
+        $line = $this->line($this->row);
+        $i = $this->col;
+        while ($i > 0 && ide_is_word_char(substr($line, $i - 1, 1))) { $i = $i - 1; }
+        $nw = substr($line, 0, $i) . $word . substr($line, $this->col);
+        $old = $line;
+        $from = $this->col;
+        $this->col = $i + strlen($word);
+        $this->record($this->row, $this->row, [$old], [$nw], $this->row, $from, false);
+        $this->break_run();
+        $this->invalidate();
+    }
+
+    /// Matching bracket for the caret, or [-1,-1] when there is none.
+    pub function match_bracket(): [int] {
+        $line = $this->line($this->row);
+        $c = "";
+        $dir = 0;
+        $at = $this->col;
+        if ($at < strlen($line)) {
+            $c = substr($line, $at, 1);
+            $dir = 1;
+        }
+        if ($dir == 0 && $at > 0) {
+            $c = substr($line, $at - 1, 1);
+            $at = $at - 1;
+            $dir = -1;
+        }
+        $open = "";
+        $close = "";
+        if ($c == "(") { $open = "("; $close = ")"; }
+        else if ($c == "[") { $open = "["; $close = "]"; }
+        else if ($c == "{") { $open = "{"; $close = "}"; }
+        else if ($c == ")") { $open = "("; $close = ")"; $dir = -1; }
+        else if ($c == "]") { $open = "["; $close = "]"; $dir = -1; }
+        else if ($c == "}") { $open = "{"; $close = "}"; $dir = -1; }
+        else { return [-1, -1]; }
+        $depth = 0;
+        $r = $this->row;
+        $i = $at;
+        /* walk characters in one direction until the depth returns to zero */
+        while ($r >= 0 && $r < count($this->buf->lines)) {
+            $text = $this->line($r);
+            while ($i >= 0 && $i < strlen($text)) {
+                $ch = substr($text, $i, 1);
+                if ($dir > 0) {
+                    if ($ch == $open) { $depth = $depth + 1; }
+                    else if ($ch == $close) {
+                        $depth = $depth - 1;
+                        if ($depth == 0) { return [$r, $i]; }
+                    }
+                } else {
+                    if ($ch == $close) { $depth = $depth + 1; }
+                    else if ($ch == $open) {
+                        $depth = $depth - 1;
+                        if ($depth == 0) { return [$r, $i]; }
+                    }
+                }
+                $i = $i + $dir;
+            }
+            $r = $r + $dir;
+            if ($r >= 0 && $r < count($this->buf->lines)) {
+                if ($dir > 0) { $i = 0; } else { $i = strlen($this->line($r)) - 1; }
+            }
+        }
+        return [-1, -1];
+    }
+
+    // ---- status ------------------------------------------------------
+    pub function status(): string {
+        $sel = "";
+        if ($this->hasSel) {
+            $f = $this->first_end();
+            $l = $this->last_end();
+            $chars = 1;
+            if ($f[0] == $l[0]) { $chars = $l[1] - $f[1]; }
+            else { $chars = strlen($this->sel_text()); }
+            $sel = "  " . $chars . " selected";
+        }
+        $d = "";
+        if ($this->buf->dirty) { $d = "  modified"; }
+        return "Ln " . ($this->row + 1) . ", Col " . ($this->col + 1) . $sel . $d;
+    }
+}
+
+/* ---- small list helpers used above ----------------------------------- */
+
+/** Replace rows `$row..$end` of `$lines` with `$new` and hand back the list. */
+function ide_lines_replace([string] $lines, int $row, int $end, [string] $new): [string] {
+    $out: [string];
+    $i = 0;
+    while ($i < $row && $i < count($lines)) {
+        $out[] = $lines[$i];
+        $i = $i + 1;
+    }
+    for ($k = 0; $k < count($new); $k++) { $out[] = $new[$k]; }
+    $i = $end + 1;
+    while ($i < count($lines)) {
+        $out[] = $lines[$i];
+        $i = $i + 1;
+    }
+    return $out;
+}
+
+/* ---- small string helpers used above --------------------------------- */
+
+/** Length of the whitespace at the start of `$s`, at most `$limit`. */
+function ide_leading_ws(string $s, int $limit): int {
+    $i = 0;
+    while ($i < $limit) {
+        $c = substr($s, $i, 1);
+        if ($c != " " && $c != "\t") { break; }
+        $i = $i + 1;
+    }
+    return $i;
+}
+
+function ide_trim_end(string $s): string {
+    $n = strlen($s);
+    while ($n > 0) {
+        $c = substr($s, $n - 1, 1);
+        if ($c != " " && $c != "\t") { break; }
+        $n = $n - 1;
+    }
+    return substr($s, 0, $n);
+}
+
+function ide_trim_start(string $s): string {
+    return substr($s, ide_leading_ws($s, strlen($s)));
+}

@@ -38,6 +38,7 @@
 #include <commctrl.h>
 #include <shlobj.h>
 #include <commdlg.h>
+#include <gdiplus/gdiplus.h>
 #endif
 
 #include <stdlib.h>
@@ -45,6 +46,10 @@
 #include <stdio.h>
 
 #ifdef _WIN32
+
+/* Set once from HPHP_UI_DEBUG; declared up here because the paint
+ * trace below is the earliest caller. */
+static int hpui_win_debug(void);
 
 /* ================= optional Windows APIs (loaded lazily) ================= */
 /* uxtheme/dwmapi are resolved with LoadLibrary so the binary still starts on
@@ -98,6 +103,12 @@ static void load_optional_apis(void) {
 
 static int sc(int v) { return MulDiv(v, g_dpi, 96); }
 
+/* The DPI scale the whole UI is laid out in, so other parts of the runtime can
+ * convert a logical rectangle (what a script writes) into the physical pixels
+ * Win32 wants. Everything here is per-monitor DPI aware, so a plain logical
+ * number handed to SetWindowPos lands 1.5x too far away on a 150% display. */
+int64_t hpui_dpi_scale(void) { return g_dpi > 0 ? g_dpi : 96; }
+
 /* ================= theme ================= */
 typedef struct UiTheme {
     COLORREF bg, surface, elevated, text, muted, accent, on_accent, border;
@@ -140,6 +151,13 @@ static COLORREF mix(COLORREF a, COLORREF b, int pct) {
                (ab * (100 - t) + bb * t) / 100);
 }
 static COLORREF lighten(COLORREF c, int pct) { return mix(c, RGB(255, 255, 255), pct); }
+/* blend() with a 0..1 weight, for the hover fade */
+static COLORREF blend(COLORREF a, COLORREF b, double t) {
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    int pct = (int)(t * 100.0 + 0.5);
+    return mix(a, b, pct);
+}
 static COLORREF darken(COLORREF c, int pct)  { return mix(c, RGB(0, 0, 0), pct); }
 /* a soft tint of a colour: what a modern UI uses for hover/selected fills */
 static COLORREF tint(COLORREF c) {
@@ -151,10 +169,16 @@ typedef struct { int pt; bool bold; HFONT f; const wchar_t *fam; } FontEnt;
 static FontEnt g_fonts[64];
 static int      g_nfonts = 0;
 
+/* the canvas keeps its own font table (family + style are part of the key
+ * there, which the widget cache above cannot express); it has to go the same
+ * way on a DPI change, or every canvas frame is drawn with a stale face */
+static void cvfonts_drop(void);
+
 static void fonts_drop(void) {
     for (int i = 0; i < g_nfonts; i++)
         if (g_fonts[i].f) DeleteObject(g_fonts[i].f);
     g_nfonts = 0;
+    cvfonts_drop();
 }
 
 static HFONT ui_font_family(int pt, bool bold, const wchar_t *fam) {
@@ -240,7 +264,9 @@ typedef struct UiEntry {
     int     kind;
     HWND    hwnd;
     HMENU   menu_id;             /* menu item command id / popup HMENU */
-    hval    cb_click, cb_change, cb_action, cb_key;
+    hval    cb_click, cb_change, cb_action, cb_key, cb_drag;
+    int     drag_x, drag_y;               /* where the last drag started */
+    bool    drag_active;
     bool    checked_flag;
     /* --- v2 presentation --- */
     int64_t ov_bg, ov_fg, ov_accent, ov_border;   /* -1 = inherit theme */
@@ -249,20 +275,36 @@ typedef struct UiEntry {
     int     role;
     bool    hovered, pressed, focused;
     int     hover_index;
+    float   anim;                           /* hover fade, 0..1 */
     int     value, min_v, max_v;                 /* slider / progress */
     wchar_t **items;                             /* combo items       */
     int     n_items, cap_items;
+    wchar_t *svg;                                /* fixed-size vector icon markup */
+    char   *pic;                                 /* local image file drawn in the icon slot */
     int     sel;                                 /* combo selection   */
     WNDPROC old_proc;                            /* subclassed wndproc*/
     /* --- scrolling (window entry owns the offset) --- */
     int     scroll_y, content_h;
+    int64_t parent_id;                       /* owning window, for Tab order */
     /* --- logical, unscrolled geometry: scrolling replays these --- */
     int     base_x, base_y, base_w, base_h;
+    /* --- canvas (HPUI_CANVAS): an offscreen surface the script paints --- */
+    HDC     cv_dc;                           /* backbuffer DC: the target */
+    HBITMAP cv_bmp, cv_old_bmp;              /* backbuffer bitmap      */
+    int     cv_w, cv_h;                      /* backbuffer size, device px */
+    int     cv_cursor;                       /* requested pointer shape    */
+    bool    cv_track;                        /* TME_LEAVE armed            */
+    bool    cv_captured;                     /* this canvas holds the mouse*/
+    bool    cv_drag;                         /* a press is in progress      */
+    hval    cb_ev[HPUI_EV_NEV];              /* canvas input events        */
 } UiEntry;
 
 static UiEntry *tbl = NULL;
 static size_t tbl_len = 0, tbl_cap = 0;
 static int64_t next_id = 1;
+
+/* defined with the rest of the canvas code further down */
+static bool cv_ensure(UiEntry *e);
 
 static UiEntry *tbl_find(int64_t id) {
     for (size_t i = 0; i < tbl_len; i++)
@@ -293,6 +335,7 @@ static void tbl_add(int64_t id, int kind, HWND hwnd) {
     e->kind = kind;
     e->hwnd = hwnd;
     e->cb_click = e->cb_change = e->cb_action = e->cb_key = hp_null;
+    e->svg = NULL;
     e->ov_bg = e->ov_fg = e->ov_accent = e->ov_border = -1;
     e->ov_radius = -1;
     e->ov_font_pt = -1;
@@ -310,6 +353,14 @@ static void fill_rect(HDC dc, RECT r, COLORREF c) {
     DeleteObject(b);
 }
 
+/* Same, but only inside an arbitrary region. Used to erase a window's
+ * background without touching the boxes its owner-drawn children own. */
+static void fill_region(HDC dc, HRGN rgn, COLORREF c) {
+    HBRUSH b = CreateSolidBrush(c);
+    FillRgn(dc, rgn, b);
+    DeleteObject(b);
+}
+
 /* rounded fill + optional 1px outline; radius <= 0 falls back to a plain rect */
 static void fill_round(HDC dc, RECT r, int radius, COLORREF fill,
                        COLORREF border, int bwidth) {
@@ -318,9 +369,18 @@ static void fill_round(HDC dc, RECT r, int radius, COLORREF fill,
                      ? CreatePen(PS_SOLID, bwidth, border) : (HPEN)GetStockObject(NULL_PEN);
     HBRUSH ob = (HBRUSH)SelectObject(dc, br ? br : GetStockObject(NULL_BRUSH));
     HPEN   op = (HPEN)SelectObject(dc, pen);
+    /* GDI centres a pen on the outline, so a border drawn on the exact edge
+     * loses its outer half to the clip: a focused field ended up with a bright
+     * half-line along the top and nothing round the sides. Inset by half the
+     * pen width and the ring lands entirely inside the control. */
+    int in = bwidth > 0 ? bwidth / 2 : 0;
+    int l = r.left + in, t = r.top + in;
+    int rt = r.right - in, bt = r.bottom - in;
     int rr = radius * 2;
-    if (rr > 0) RoundRect(dc, r.left, r.top, r.right, r.bottom, rr, rr);
-    else        Rectangle(dc, r.left, r.top, r.right, r.bottom);
+    if (rt <= l) rt = l + 1;
+    if (bt <= t) bt = t + 1;
+    if (rr > 0) RoundRect(dc, l, t, rt, bt, rr, rr);
+    else        Rectangle(dc, l, t, rt, bt);
     SelectObject(dc, ob);
     SelectObject(dc, op);
     if (br) DeleteObject(br);
@@ -336,6 +396,256 @@ static void draw_str(HDC dc, RECT r, const wchar_t *s, COLORREF fg, HFONT f,
     HFONT of = (HFONT)SelectObject(dc, font_for_wstr(s, base));
     DrawTextW(dc, s, -1, &r, flags | DT_NOPREFIX);
     SelectObject(dc, of);
+}
+
+/* ================= SVG vector icons ================= */
+/* Browser controls pass ordinary, self-contained SVG. The native painter
+ * intentionally implements the tiny subset used by the chrome (viewBox and
+ * path d=, with M/L/H/V/C/Z commands); it never loads fonts or external data. */
+static bool svg_num(const wchar_t **p, REAL *out) {
+    while (**p == L' ' || **p == L',' || **p == L'\t' || **p == L'\n' || **p == L'\r') ++*p;
+    if (**p == L'+' || **p == L'-') {
+        wchar_t sign = **p;
+        if ((*p)[1] == sign) return false;
+    }
+    wchar_t *end = NULL;
+    double d = wcstod(*p, &end);
+    if (end == *p) return false;
+    *out = (REAL)d;
+    *p = end;
+    return true;
+}
+
+static const wchar_t *svg_attr(const wchar_t *tag, const wchar_t *end,
+                               const wchar_t *name, size_t *len) {
+    size_t n = wcslen(name);
+    const wchar_t *p = tag;
+    while (p < end) {
+        while (p < end && !((*p >= L'A' && *p <= L'Z') || (*p >= L'a' && *p <= L'z'))) ++p;
+        const wchar_t *key = p;
+        while (p < end && ((*p >= L'A' && *p <= L'Z') || (*p >= L'a' && *p <= L'z') || *p == L'-')) ++p;
+        if ((size_t)(p - key) != n || wcsncmp(key, name, n) != 0) continue;
+        while (p < end && (*p == L' ' || *p == L'\t')) ++p;
+        if (p >= end || *p++ != L'=') continue;
+        while (p < end && (*p == L' ' || *p == L'\t')) ++p;
+        if (p >= end || (*p != L'\"' && *p != L'\'')) continue;
+        wchar_t quote = *p++;
+        const wchar_t *value = p;
+        while (p < end && *p != quote) ++p;
+        if (p >= end) return NULL;
+        *len = (size_t)(p - value);
+        return value;
+    }
+    return NULL;
+}
+
+static void svg_path_draw(GpGraphics *g, const wchar_t *d, COLORREF color,
+                          REAL vx, REAL vy, REAL ox, REAL oy, REAL scale) {
+    GpPath *path = NULL;
+    if (GdipCreatePath(FillModeWinding, &path) != Ok || !path) return;
+    const wchar_t *p = d;
+    REAL cx = 0, cy = 0, sx = 0, sy = 0;
+    wchar_t op = 0;
+    bool have = false;
+    while (*p) {
+        while (*p == L' ' || *p == L',' || *p == L'\t' || *p == L'\n' || *p == L'\r') ++p;
+        if ((*p >= L'A' && *p <= L'Z') || (*p >= L'a' && *p <= L'z')) op = *p++;
+        if (!op) break;
+        REAL a, b;
+        if (op == L'M' || op == L'm') {
+            if (!svg_num(&p, &a) || !svg_num(&p, &b)) break;
+            if (op == L'm') { a += cx; b += cy; }
+            GdipStartPathFigure(path);
+            cx = sx = a; cy = sy = b; have = true;
+            op = (op == L'm') ? L'l' : L'L';
+        } else if (op == L'L' || op == L'l') {
+            if (!svg_num(&p, &a) || !svg_num(&p, &b)) break;
+            if (op == L'l') { a += cx; b += cy; }
+            if (have) GdipAddPathLine(path, ox + (cx - vx) * scale, oy + (cy - vy) * scale,
+                                           ox + (a - vx) * scale, oy + (b - vy) * scale);
+            cx = a; cy = b;
+        } else if (op == L'H' || op == L'h') {
+            if (!svg_num(&p, &a)) break;
+            if (op == L'h') a += cx;
+            if (have) GdipAddPathLine(path, ox + (cx - vx) * scale, oy + (cy - vy) * scale,
+                                           ox + (a - vx) * scale, oy + (cy - vy) * scale);
+            cx = a;
+        } else if (op == L'V' || op == L'v') {
+            if (!svg_num(&p, &b)) break;
+            if (op == L'v') b += cy;
+            if (have) GdipAddPathLine(path, ox + (cx - vx) * scale, oy + (cy - vy) * scale,
+                                           ox + (cx - vx) * scale, oy + (b - vy) * scale);
+            cy = b;
+        } else if (op == L'C' || op == L'c') {
+            REAL c, e, f, h;
+            if (!svg_num(&p, &a) || !svg_num(&p, &b) || !svg_num(&p, &c) ||
+                !svg_num(&p, &e) || !svg_num(&p, &f) || !svg_num(&p, &h)) break;
+            if (op == L'c') { a += cx; b += cy; c += cx; e += cy; f += cx; h += cy; }
+            if (have) GdipAddPathBezier(path, ox + (cx - vx) * scale, oy + (cy - vy) * scale,
+                ox + (a - vx) * scale, oy + (b - vy) * scale,
+                ox + (c - vx) * scale, oy + (e - vy) * scale,
+                ox + (f - vx) * scale, oy + (h - vy) * scale);
+            cx = f; cy = h;
+        } else if (op == L'Z' || op == L'z') {
+            if (have) GdipClosePathFigure(path);
+            cx = sx; cy = sy; op = 0;
+        } else {
+            break; /* unsupported SVG command: fail closed */
+        }
+    }
+    ARGB argb = 0xFF000000u | ((GetRValue(color) & 255u) << 16) |
+                ((GetGValue(color) & 255u) << 8) | (GetBValue(color) & 255u);
+    GpPen *pen = NULL;
+    if (GdipCreatePen1(argb, 1.8f, UnitPixel, &pen) == Ok && pen) {
+        GdipSetPenLineCap197819(pen, LineCapRound, LineCapRound, DashCapRound);
+        GdipSetPenLineJoin(pen, LineJoinRound);
+        GdipDrawPath(g, pen, path);
+        GdipDeletePen(pen);
+    }
+    GdipDeletePath(path);
+}
+
+static ULONG_PTR g_gdip_token;
+static void draw_svg_icon(HDC dc, RECT rc, const wchar_t *svg, COLORREF color) {
+    if (!svg || !*svg || !g_gdip_token) return;
+    /* HPHP_UI_DEBUG=2 paints every icon in a colour nothing else uses, so
+       "is this glyph being drawn at all" stops being a judgement call about
+       whether the colour is dark enough to see against the background. It is
+       what settled a close button that was drawing in the right place and
+       still could not be seen. */
+    {
+        const char *dbg = getenv("HPHP_UI_DEBUG");
+        if (dbg && dbg[0] == '2') color = RGB(255, 0, 0);
+    }
+    const wchar_t *root = wcsstr(svg, L"<svg");
+    if (!root) return;
+    const wchar_t *root_end = wcschr(root, L'>');
+    if (!root_end) return;
+    size_t vb_len = 0;
+    const wchar_t *vb = svg_attr(root, root_end, L"viewBox", &vb_len);
+    if (!vb || vb_len >= 128) return;
+    wchar_t box[128];
+    memcpy(box, vb, vb_len * sizeof(wchar_t)); box[vb_len] = 0;
+    const wchar_t *bp = box;
+    REAL vx, vy, vw, vh;
+    if (!svg_num(&bp, &vx) || !svg_num(&bp, &vy) || !svg_num(&bp, &vw) ||
+        !svg_num(&bp, &vh) || vw <= 0 || vh <= 0) return;
+    int side = rc.right - rc.left;
+    if (rc.bottom - rc.top < side) side = rc.bottom - rc.top;
+    if (side <= 0) return;
+    REAL scale = (REAL)side / (vw > vh ? vw : vh);
+    REAL ox = (REAL)rc.left + ((REAL)(rc.right - rc.left) - vw * scale) * 0.5f;
+    REAL oy = (REAL)rc.top + ((REAL)(rc.bottom - rc.top) - vh * scale) * 0.5f;
+    GpGraphics *g = NULL;
+    if (GdipCreateFromHDC(dc, &g) != Ok || !g) return;
+    GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
+    const wchar_t *tag = root_end + 1;
+    while ((tag = wcsstr(tag, L"<path")) != NULL) {
+        const wchar_t *tag_end = wcschr(tag, L'>');
+        if (!tag_end) break;
+        size_t dlen = 0;
+        const wchar_t *d = svg_attr(tag, tag_end, L"d", &dlen);
+        if (d && dlen && dlen < 4096) {
+                wchar_t *commands = (wchar_t *)malloc((dlen + 1) * sizeof(wchar_t));
+            if (!commands) break;
+            memcpy(commands, d, dlen * sizeof(wchar_t)); commands[dlen] = 0;
+            svg_path_draw(g, commands, color, vx, vy, ox, oy, scale);
+            free(commands);
+        }
+        tag = tag_end + 1;
+    }
+    GdipDeleteGraphics(g);
+}
+
+static void input_region(UiEntry *e);
+
+/* An owner-drawn control does not paint itself.
+ *
+ * Its WM_DRAWITEM is dispatched by the PARENT, from inside the parent's own
+ * WM_PAINT, and only for the part of the parent that is actually in the
+ * update region. Invalidating the child alone therefore does nothing once the
+ * parent has finished painting itself: the child's update region is non-empty
+ * but nobody ever walks it, so no WM_DRAWITEM is sent and the change is
+ * dropped on the floor.
+ *
+ * That is exactly what the browser chrome was doing. A button's first paint
+ * happens inside CreateWindowExW, before ->svg() has been called, so the ring
+ * drawn by that first paint stuck and every later ->svg()/->radius()/->style()
+ * was silently discarded. The tab survived only because render() restyles it
+ * on every pass while the row beside it was built once and never touched
+ * again - which is why one icon showed up and the entire toolbar did not.
+ *
+ * Dirty the parent over the control's own box as well, so the next parent
+ * paint really does redraw it.
+ */
+static void hpui_dirty_ex(UiEntry *e, BOOL erase) {
+    if (!e || !e->hwnd || !IsWindow(e->hwnd)) return;
+    InvalidateRect(e->hwnd, NULL, erase);
+    HWND par = GetParent(e->hwnd);
+    if (!par) return;
+    RECT r;
+    GetWindowRect(e->hwnd, &r);
+    POINT pts[2] = { { r.left, r.top }, { r.right, r.bottom } };
+    MapWindowPoints(HWND_DESKTOP, par, pts, 2);
+    RECT pr = { pts[0].x, pts[0].y, pts[1].x, pts[1].y };
+    InvalidateRect(par, &pr, erase);
+}
+static void hpui_dirty(UiEntry *e) { hpui_dirty_ex(e, TRUE); }
+/* Same, but no erase: for controls that clear their own box while drawing
+ * (sliders, progress bars, the hover fade) and must not flicker. */
+static void hpui_dirty_soft(UiEntry *e) { hpui_dirty_ex(e, FALSE); }
+
+int64_t hpui_ctrl_svg(int64_t h, const char *source) {
+    UiEntry *e = tbl_find(h);
+    if (!e || !e->hwnd || (e->kind != HPUI_BUTTON && e->kind != HPUI_LABEL) ||
+        !source || !strstr(source, "<svg") || !strstr(source, "</svg>")) return -1;
+    for (const char *p = source; *p; p++) {
+        /* Every shape an icon is allowed to be made of. Leaving out the
+           primitives beyond <path> did not fail loudly: the markup was
+           rejected whole, so the button simply came out blank. */
+        static const char *const ok_tags[] = {
+            "<svg", "</svg", "<path", "</path", "<g", "</g",
+            "<rect", "</rect", "<circle", "</circle", "<ellipse", "</ellipse",
+            "<line", "</line", "<polyline", "</polyline",
+            "<polygon", "</polygon", "<defs", "</defs",
+            "<?xml", "<!--", "</"
+        };
+        size_t t;
+        for (t = 0; t < sizeof(ok_tags) / sizeof(ok_tags[0]); t++)
+            if (strncmp(p, ok_tags[t], strlen(ok_tags[t])) == 0) break;
+        if (t < sizeof(ok_tags) / sizeof(ok_tags[0])) continue;
+        if (*p == '<') return -1;
+    }
+    if (strstr(source, "<script") || strstr(source, "href=") || strstr(source, "url(")) return -1;
+    const char *vg = strstr(source, "viewBox=");
+    const char *viewbox = strstr(source, "viewbox=");
+    if (!vg || (viewbox && viewbox < vg)) vg = viewbox;
+    if (!vg) return -1;
+    const char *eq = strchr(vg, '=');
+    if (!eq || (eq[1] != '\"' && eq[1] != '\'')) return -1;
+    if (strlen(source) > 8192) return -1;
+    int n = MultiByteToWideChar(CP_UTF8, 0, source, -1, NULL, 0);
+    if (n <= 1 || n > 8192) return -1;
+    wchar_t *w = (wchar_t *)malloc((size_t)n * sizeof(wchar_t));
+    if (!w) return -1;
+    if (!MultiByteToWideChar(CP_UTF8, 0, source, -1, w, n)) { free(w); return -1; }
+    size_t svg_len = wcslen(w);
+    wchar_t *close_svg = wcsstr(w, L"</svg>");
+    if (svg_len > 8192 || !close_svg || close_svg[6] != 0) {
+        free(w);
+        return -1;
+    }
+    free(e->svg);
+    e->svg = w;
+    /* Erase, like every other visual setter here. A non-erasing invalidate on
+       an owner-drawn button does not bring WM_DRAWITEM back: the parent paints
+       over the control's update region and the button is never asked to draw
+       again, so a button whose only change was ->svg() stayed blank. The
+       close button escaped it purely because render() calls ->style() on it
+       afterwards, and style() does invalidate with an erase - which is why one
+       icon showed up and the whole toolbar did not. */
+    hpui_dirty(e);
+    return 0;
 }
 
 /* ================= resolved colours per control ================= */
@@ -439,6 +749,116 @@ static COLORREF rgbv(int64_t v) {
 }
 static COLORREF ov(COLORREF from, int64_t over) { return over >= 0 ? rgbv(over) : from; }
 
+/* ================= images =================
+ * A decoded image is cached by path and shared: a browser asks for the same
+ * favicon once per tab, and GDI+ decoding is far too expensive to repeat on
+ * every paint. The cache lives until the process ends; favicons are a handful
+ * of kilobytes each and the app has at most MAX_TABS of them. */
+
+typedef struct PicCache PicCache;
+struct PicCache {
+    char      *path;
+    void      *bmp;                    /* GpBitmap* */
+    int        w, h;
+    PicCache  *next;
+};
+
+static PicCache *g_pics = NULL;
+
+static PicCache *pic_find(const char *path) {
+    for (PicCache *c = g_pics; c; c = c->next)
+        if (strcmp(c->path, path) == 0) return c;
+    return NULL;
+}
+
+/* Only a path on this machine is ever loaded. A URL is not a file, and
+ * quietly turning a remote string into a file name is how a browser ends up
+ * drawing somebody else's bytes. */
+static PicCache *pic_get(const char *path) {
+    if (!path || !*path) return NULL;
+    if (strstr(path, "://") || strncmp(path, "data:", 5) == 0) return NULL;
+    PicCache *c = pic_find(path);
+    if (c) return c->bmp ? c : NULL;
+    int n = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    if (n <= 1) return NULL;
+    wchar_t *w = (wchar_t *)malloc(sizeof(wchar_t) * n);
+    if (!w) return NULL;
+    MultiByteToWideChar(CP_UTF8, 0, path, -1, w, n);
+    GpBitmap *bmp = NULL;
+    if (GdipCreateBitmapFromFile(w, &bmp) != Ok || !bmp) { free(w); return NULL; }
+    free(w);
+    int iw = 0, ih = 0;
+    GdipGetImageWidth((GpImage *)bmp, &iw);
+    GdipGetImageHeight((GpImage *)bmp, &ih);
+    if (iw <= 0 || ih <= 0) { GdipDisposeImage((GpImage *)bmp); return NULL; }
+    c = (PicCache *)calloc(1, sizeof(PicCache));
+    if (!c) { GdipDisposeImage((GpImage *)bmp); return NULL; }
+    c->path = _strdup(path);
+    c->bmp = bmp;
+    c->w = iw;
+    c->h = ih;
+    c->next = g_pics;
+    g_pics = c;
+    return c;
+}
+
+/* Draw a picture fitted into `box`, centred, keeping its aspect ratio.
+ * The image is composited onto `bg` first: a plain HDC cannot hold per-pixel
+ * alpha, so a favicon with a transparent background would otherwise come out
+ * with a black box behind it on a dark theme. */
+static void pic_draw(HDC dc, const RECT *box, PicCache *c, COLORREF bg) {
+    if (!c || !c->bmp) return;
+    int bw = box->right - box->left, bh = box->bottom - box->top;
+    if (bw <= 0 || bh <= 0) return;
+    double k = (double)bw / (double)c->w;
+    if ((double)bh / (double)c->h < k) k = (double)bh / (double)c->h;
+    int dw = (int)((double)c->w * k + 0.5), dh = (int)((double)c->h * k + 0.5);
+    if (dw < 1) dw = 1;
+    if (dh < 1) dh = 1;
+    if (dw > bw) dw = bw;
+    if (dh > bh) dh = bh;
+
+    HDC mem = CreateCompatibleDC(dc);
+    if (!mem) return;
+    BITMAPINFO bi;
+    memset(&bi, 0, sizeof bi);
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = dw;
+    bi.bmiHeader.biHeight = -dh;                 /* top-down */
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void *bits = NULL;
+    HBITMAP dib = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (!dib) { DeleteDC(mem); return; }
+    HGDIOBJ prev = SelectObject(mem, dib);
+    RECT all = { 0, 0, dw, dh };
+    HBRUSH br = CreateSolidBrush(bg);
+    FillRect(mem, &all, br);
+    DeleteObject(br);
+    GpGraphics *g = NULL;
+    if (GdipCreateFromHDC(mem, &g) == Ok && g) {
+        GdipDrawImageRectI(g, (GpImage *)c->bmp, 0, 0, dw, dh);
+        GdipDeleteGraphics(g);
+    }
+    BitBlt(dc, box->left + (bw - dw) / 2, box->top + (bh - dh) / 2, dw, dh,
+           mem, 0, 0, SRCCOPY);
+    SelectObject(mem, prev);
+    DeleteObject(dib);
+    DeleteDC(mem);
+}
+
+/* The icon slot of a button or label: a decoded picture when there is one,
+ * otherwise the inline SVG, otherwise nothing. */
+static void draw_icon_slot(HDC dc, const RECT *box, UiEntry *e, COLORREF fg,
+                           COLORREF bg) {
+    if (e->pic && *e->pic) {
+        PicCache *c = pic_get(e->pic);
+        if (c) { pic_draw(dc, box, c, bg); return; }
+    }
+    if (e->svg && *e->svg) draw_svg_icon(dc, *box, e->svg, fg);
+}
+
 static void resolve_paint(UiEntry *e, UiPaint *p) {
     p->bg = g_theme.bg;
     p->fg = g_theme.text;
@@ -468,14 +888,17 @@ static void resolve_paint(UiEntry *e, UiPaint *p) {
         default: /* subtle */
             p->bg = g_theme.surface; p->fg = g_theme.text; p->border = g_theme.border; break;
         }
-        if (e->hovered && on) {
-            if (e->role == UI_ROLE_GHOST || e->role == UI_ROLE_LINK)
-                p->bg = tint(p->fg);
-            else if (e->role == UI_ROLE_PRIMARY || e->role == UI_ROLE_DANGER ||
-                     e->role == UI_ROLE_SUCCESS)
-                p->bg = lighten(p->bg, 10);
-            else
-                p->bg = g_theme.elevated;
+        /* A ghost button has no fill of its own, so the theme radius is what
+         * gives it a shape at all; without this it painted as a hard square. */
+        if (e->ov_radius <= 0 && g_theme.radius > 0) p->radius = g_theme.radius;
+        if (e->anim > 0.004f) {
+            /* hover fades in rather than snapping: the colour walks from the
+             * resting fill towards the highlighted one */
+            COLORREF hi;
+            if (e->role == UI_ROLE_PRIMARY || e->role == UI_ROLE_DANGER ||
+                e->role == UI_ROLE_SUCCESS) hi = lighten(p->bg, 10);
+            else hi = g_theme.elevated;
+            p->bg = blend(p->bg, hi, e->anim);
         }
         if (e->pressed && on) p->bg = darken(p->bg, 12);
         break;
@@ -537,7 +960,7 @@ static void call_cb(hval cb, int64_t arg1, int64_t arg2) {
 
 typedef struct CbJob {
     hval cb;
-    hval args[2];
+    hval args[3];
     int  nargs;
 } CbJob;
 
@@ -552,6 +975,7 @@ static void ui_call_guarded(hval cb, hval *args, int nargs) {
     j.cb = cb;
     j.args[0] = args[0];
     j.args[1] = args[1];
+    j.args[2] = nargs > 2 ? args[2] : hp_null;
     j.nargs = nargs;
     hval r = hp_try_run(cb_body, NULL, &j);
     if (r.tag != HV_NULL) {
@@ -564,7 +988,18 @@ static void ui_call_guarded(hval cb, hval *args, int nargs) {
 }
 
 static void fire(UiEntry *e, hval *slot, int64_t a1, int64_t a2) {
-    if (e && slot && slot->tag == HV_CLO && slot->u.c) call_cb(*slot, a1, a2);
+    if (e && slot && slot->tag == HV_CLO && slot->u.c) {
+        if (hpui_win_debug())
+            fprintf(stderr, "[ui] fire entry=%lld kind=%d cb=%p\n",
+                    (long long)e->id, (int)e->kind, (void *)slot->u.c);
+        call_cb(*slot, a1, a2);
+    }
+}
+
+static void call_cb3(hval cb, int64_t arg1, int64_t arg2, int64_t arg3) {
+    if (cb.tag != HV_CLO || !cb.u.c) return;
+    hval args[3] = { hp_of_int(arg1), hp_of_int(arg2), hp_of_int(arg3) };
+    ui_call_guarded(cb, args, 3);
 }
 
 /* repaint every live control of a window: used after a theme change */
@@ -580,6 +1015,8 @@ static void repaint_window(int64_t win) {
 static void ensure_common(void) {
     static bool done = false;
     if (!done) {
+        GdiplusStartupInput gsi = {1, NULL, FALSE, FALSE};
+        GdiplusStartup(&g_gdip_token, &gsi, NULL);
         INITCOMMONCONTROLSEX icc;
         icc.dwSize = sizeof icc;
         icc.dwICC = ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES |
@@ -595,17 +1032,73 @@ void hpui_init(void) { ensure_common(); }
 /* internal wakeup message so a parked GetMessage loop returns to the caller */
 #define HPUI_WM_WAKE (WM_APP + 0x5150)
 
+/* HPHP_UI_DEBUG=1 traces why a window went away; tracing a browser that
+ * "restarts" needs the message that ended it. */
+static int hpui_win_debug(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("HPHP_UI_DEBUG"); v = (e && e[0] && e[0] != '0') ? 1 : 0; }
+    return v;
+}
+
+/* Every message the runtime handles goes through here, in both the blocking
+ * hpui_run_main() loop and the timed hpui_dispatch() one. The embedded browser
+ * shares this thread and loop, so this is also where its pending work runs:
+ * hpwv2_drain_events() calls CefDoMessageLoopWork() and runs whatever the
+ * engine queued for the script. Without it CEF sits idle - it only ever posts
+ * a wake message - and the browser window never appears. */
+/* ================= Tab order ================= */
+
+/* Win32 gives a window no tab order on its own: the dialog manager is what
+ * walks one, and this is not a dialog. Tab therefore did nothing at all. Walk
+ * the window's own controls in the order the script created them, which is
+ * also the order they are laid out in reading order. */
+static void focus_step(HWND win, int dir);
+static void anim_tick(void);
+static bool focusable(UiEntry *e) {
+    if (!e->hwnd || !IsWindow(e->hwnd)) return false;
+    if (!IsWindowVisible(e->hwnd) || !IsWindowEnabled(e->hwnd)) return false;
+    switch (e->kind) {
+    case HPUI_BUTTON: case HPUI_INPUT: case HPUI_CHECKBOX:
+    case HPUI_LIST: case HPUI_COMBO: case HPUI_SLIDER:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void focus_step(HWND win, int dir) {
+    HWND cur = GetFocus();
+    int64_t cur_id = cur ? (int64_t)GetWindowLongPtrW(cur, GWLP_USERDATA) : 0;
+    int n = (int)tbl_len;
+    if (n <= 0) return;
+    int start = -1;
+    for (int i = 0; i < n; i++)
+        if (tbl[i].parent_id && GetWindowLongPtrW(win, GWLP_USERDATA) == tbl[i].parent_id &&
+            tbl[i].id == cur_id) { start = i; break; }
+    for (int k = 1; k <= n; k++) {
+        int i = start < 0 ? (k - 1) : (((start + dir * k) % n) + n) % n;
+        UiEntry *e = &tbl[i];
+        if (e->parent_id != (int64_t)GetWindowLongPtrW(win, GWLP_USERDATA)) continue;
+        if (!focusable(e)) continue;
+        SetFocus(e->hwnd);
+        return;
+    }
+    /* nothing focusable left to move to: keep the caret where it is */
+}
+
 static int pump_one(bool block) {
     MSG msg;
     if (block) {
         if (!GetMessageW(&msg, NULL, 0, 0)) return 0;
     } else {
-        if (!PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) return 0;
+        if (!PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) { hpwv2_drain_events(); return 0; }
     }
-    if (msg.message == HPUI_WM_WAKE) return 1;
+    if (msg.message != WM_QUIT) TranslateMessage(&msg);
+    if (msg.message != WM_QUIT && msg.message != HPUI_WM_WAKE)
+        DispatchMessageW(&msg);
+    hpwv2_drain_events();
+    anim_tick();
     if (msg.message == WM_QUIT) return 0;
-    TranslateMessage(&msg);
-    DispatchMessageW(&msg);
     return 1;
 }
 
@@ -614,10 +1107,13 @@ int64_t hpui_dispatch(int ms) {
         for (;;) {
             MSG msg;
             if (!GetMessageW(&msg, NULL, 0, 0)) return 0;
-            if (msg.message == HPUI_WM_WAKE) return 1;
+            if (msg.message != WM_QUIT) TranslateMessage(&msg);
+            if (msg.message != WM_QUIT && msg.message != HPUI_WM_WAKE)
+                DispatchMessageW(&msg);
+            hpwv2_drain_events();
+            anim_tick();
             if (msg.message == WM_QUIT) return 0;
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            if (msg.message == HPUI_WM_WAKE) return 1;
         }
     }
     DWORD start = GetTickCount();
@@ -629,8 +1125,17 @@ int64_t hpui_dispatch(int ms) {
     }
 }
 
-void hpui_run_main(void) { while (pump_one(true)) { } }
-void hpui_quit(void) { PostQuitMessage(0); }
+void hpui_run_main(void) {
+    if (hpui_win_debug()) fprintf(stderr, "[ui] main loop enter (pid %lu)\n",
+                                  (unsigned long)GetCurrentProcessId());
+    while (pump_one(true)) { }
+    if (hpui_win_debug()) fprintf(stderr, "[ui] main loop EXIT (pid %lu)\n",
+                                  (unsigned long)GetCurrentProcessId());
+}
+void hpui_quit(void) {
+    if (hpui_win_debug()) fprintf(stderr, "[ui] ui_quit -> PostQuitMessage\n");
+    PostQuitMessage(0);
+}
 
 /* ================= custom control classes ================= */
 static LRESULT CALLBACK ui_wndproc(HWND, UINT, WPARAM, LPARAM);
@@ -638,6 +1143,7 @@ static LRESULT CALLBACK track_wndproc(HWND, UINT, WPARAM, LPARAM);
 static LRESULT CALLBACK bar_wndproc(HWND, UINT, WPARAM, LPARAM);
 static LRESULT CALLBACK combo_wndproc(HWND, UINT, WPARAM, LPARAM);
 static LRESULT CALLBACK poplist_wndproc(HWND, UINT, WPARAM, LPARAM);
+static LRESULT CALLBACK canvas_wndproc(HWND, UINT, WPARAM, LPARAM);
 
 static void apply_dark_decor(HWND hw) {
     if (!p_DwmSetWindowAttribute) return;
@@ -695,6 +1201,21 @@ static void register_classes(void) {
     wc.hbrBackground = NULL;
     wc.style = CS_DROPSHADOW;
     wc.lpszClassName = L"HolyPHPPopList";
+    RegisterClassW(&wc);
+
+    /* The canvas.
+     *
+     * CS_DBLCLKS because a code editor without double-click-to-select-word
+     * is not an editor, and CS_HREDRAW/CS_VREDRAW so a resize asks for the
+     * whole surface rather than leaving strips of the old frame behind -
+     * the backbuffer is blitted, not painted, so nothing else fills it in. */
+    memset(&wc, 0, sizeof wc);
+    wc.lpfnWndProc = canvas_wndproc;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    wc.hbrBackground = NULL;
+    wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
+    wc.lpszClassName = L"HolyPHPCanvas";
     RegisterClassW(&wc);
     done = true;
 }
@@ -897,20 +1418,65 @@ static void hover_enter(UiEntry *e) {
     t.hwndTrack = e->hwnd;
     t.dwHoverTime = 0;
     TrackMouseEvent(&t);
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
 }
 static void hover_leave(UiEntry *e) {
     if (!e->hovered) return;
     e->hovered = false;
     e->hover_index = -1;
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
+}
+
+/* Ease every hover fade a step towards its target and repaint the ones still
+ * moving. Nothing here runs on a timer of its own: the UI pump calls it once
+ * per message-loop turn, so an idle window costs nothing. */
+static void anim_tick(void) {
+    DWORD now = GetTickCount();
+    static DWORD last = 0;
+    if (last == 0) last = now;
+    DWORD dt = now - last;
+    if (dt == 0 || dt > 250) dt = 16;
+    last = now;
+    float step = 0.016f * (float)dt / 16.0f;      /* ~60 ms fade 0 -> 1 */
+    for (size_t i = 0; i < tbl_len; i++) {
+        UiEntry *e = &tbl[i];
+        if (!e->hwnd || !IsWindow(e->hwnd)) continue;
+        if (e->kind != HPUI_BUTTON && e->kind != HPUI_CHECKBOX &&
+            e->kind != HPUI_INPUT) continue;
+        float want = e->hovered ? 1.0f : 0.0f;
+        float before = e->anim;
+        if (e->anim < want) { e->anim += step; if (e->anim > 1.0f) e->anim = 1.0f; }
+        else if (e->anim > want) { e->anim -= step; if (e->anim < 0.0f) e->anim = 0.0f; }
+        if (before != e->anim) hpui_dirty_soft(e);
+    }
 }
 
 static LRESULT CALLBACK hover_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
     UiEntry *e = entry_of(hw);
     if (!e) return DefWindowProcW(hw, msg, wp, lp);
     switch (msg) {
-    case WM_MOUSEMOVE: hover_enter(e); break;
+    case WM_NCHITTEST:
+        /* A label that only decorates must not eat clicks meant for whatever
+         * is under it. A browser draws the lock or the site glyph inside its
+         * address bar, but a native edit cannot host one, so the glyph has to
+         * be a sibling label stacked on top - and without this, clicking the
+         * left of the bar to put the caret there did nothing at all. */
+        if (e->kind == HPUI_LABEL && e->cb_click.tag != HV_CLO)
+            return HTTRANSPARENT;
+        break;
+    case WM_MOUSEMOVE:
+        hover_enter(e);
+        /* Captured moves report screen coordinates, so the delta is measured
+           from the press rather than from the control's own origin. */
+        if (e->drag_active && e->cb_drag.tag == HV_CLO && e->cb_drag.u.c) {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hw, &pt);
+            call_cb3(e->cb_drag, (int64_t)(pt.x - e->drag_x),
+                     (int64_t)(pt.y - e->drag_y), 1);  /* phase 1: move */
+            return 0;
+        }
+        break;
     case WM_MOUSELEAVE: hover_leave(e); break;
     /* Every class is registered with IDC_ARROW, so the pointer stayed an
      * arrow over the buttons that do something and an I-beam bar over the
@@ -926,7 +1492,20 @@ static LRESULT CALLBACK hover_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         }
         break;
     case WM_LBUTTONDOWN:
+        if (hpui_win_debug())
+            fprintf(stderr, "[ui] ctrl down entry=%lld kind=%d\n",
+                    (long long)e->id, (int)e->kind);
         e->pressed = true;
+        /* A drag handler takes the mouse: the control has to see the moves and
+         * the release even though the cursor may leave it long before either. */
+        if (e->cb_drag.tag == HV_CLO && e->cb_drag.u.c) {
+            e->drag_x = GET_X_LPARAM(lp);
+            e->drag_y = GET_Y_LPARAM(lp);
+            SetCapture(hw);
+            e->drag_active = true;
+            call_cb3(e->cb_drag, 0, 0, 0);          /* phase 0: press */
+            return 0;
+        }
         /* An edit MUST still see the click: swallowing it left the control
          * with no caret, so typing looked dead and Ctrl+A had nothing to
          * select. Track the state, then let the real control have it. */
@@ -937,8 +1516,21 @@ static LRESULT CALLBACK hover_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         }
         InvalidateRect(hw, NULL, TRUE);
         break;
+    /* A drag that ends anywhere, not just over the control. */
     case WM_LBUTTONUP:
+        if (hpui_win_debug())
+            fprintf(stderr, "[ui] ctrl up entry=%lld kind=%d\n",
+                    (long long)e->id, (int)e->kind);
         e->pressed = false;
+        if (e->drag_active && e->cb_drag.tag == HV_CLO && e->cb_drag.u.c) {
+            e->drag_active = false;
+            /* ReleaseCapture sends WM_CAPTURECHANGED straight away, and that
+               path also ends the drag - the flag is what stops it happening
+               twice for one gesture. */
+            ReleaseCapture();
+            call_cb3(e->cb_drag, 0, 0, 2);           /* phase 2: release */
+            return 0;
+        }
         if (e->kind == HPUI_INPUT) {
             LRESULT r = CallWindowProcW(e->old_proc, hw, msg, wp, lp);
             InvalidateRect(hw, NULL, TRUE);
@@ -953,6 +1545,10 @@ static LRESULT CALLBACK hover_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     case WM_CAPTURECHANGED:
         e->pressed = false;
+        if (e->drag_active && e->cb_drag.tag == HV_CLO && e->cb_drag.u.c) {
+            e->drag_active = false;
+            call_cb3(e->cb_drag, 0, 0, 2);           /* phase 2: cancelled */
+        }
         break;
     case WM_SETFOCUS:  e->focused = true;  InvalidateRect(hw, NULL, TRUE); break;
     case WM_KILLFOCUS: e->focused = false; InvalidateRect(hw, NULL, TRUE); break;
@@ -963,6 +1559,37 @@ static LRESULT CALLBACK hover_proc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
             return (LRESULT)(DefWindowProcW(hw, msg, wp, lp) | DLGC_WANTARROWS);
         break;
     case WM_KEYDOWN:
+        /* A control with WS_TABSTOP eats Tab and nothing forwards it, so
+         * focus could never leave a button or an edit. Send it up instead. */
+        if ((int)wp == VK_TAB && !(GetKeyState(VK_CONTROL) & 0x8000)) {
+            HWND par = GetParent(hw);
+            if (par) {
+                focus_step(par, (GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
+                return 0;
+            }
+        }
+        if (e->kind == HPUI_INPUT && e->cb_key.tag == HV_CLO && e->cb_key.u.c) {
+            int vk = (int)wp;
+            BYTE state[256];
+            GetKeyboardState(state);
+            wchar_t text[8];
+            int n = ToUnicode((UINT)vk, (UINT)((lp >> 16) & 0xFF), state, text, 8, 0);
+            int64_t ch = n > 0 ? (int64_t)text[0] : 0;
+            if (vk == VK_RETURN) ch = '\r';
+            else if (vk == VK_BACK) ch = '\b';
+            int mods = 0;
+            if (GetAsyncKeyState(VK_CONTROL) & 0x8000) mods |= 1;
+            if (GetAsyncKeyState(VK_SHIFT) & 0x8000) mods |= 2;
+            if (GetAsyncKeyState(VK_MENU) & 0x8000) mods |= 4;
+            call_cb3(e->cb_key, vk, ch, mods);
+            if ((mods & 1) && (vk == 'A' || vk == 'L')) SendMessageW(hw, EM_SETSEL, 0, -1);
+            if (vk == VK_RETURN || vk == VK_UP || vk == VK_DOWN ||
+                (mods & 1 && (vk == VK_TAB || vk == 'A' || vk == 'L' || vk == 'T' || vk == 'W' || vk == 'J' ||
+                              vk == 'R' || vk == 'Q' || vk == '0' || vk == VK_OEM_COMMA ||
+                              vk == VK_OEM_PLUS || vk == VK_OEM_MINUS)) ||
+                (mods & 4 && (vk == VK_LEFT || vk == VK_RIGHT || vk == VK_HOME)) ||
+                (!(mods & 7) && (vk == VK_F5 || vk == VK_F12))) return 0;
+        }
         /* Ctrl+A. The stock edit only honours it on some builds, and a
          * subclassed control is exactly the case where it goes missing, so
          * do it here rather than leave select-all silently dead. */
@@ -1072,21 +1699,52 @@ int64_t hpui_ctrl_new(int64_t kind, int64_t parent, const char *text,
                              sx, sy, sw, sh, host, NULL, GetModuleHandleW(NULL), NULL);
         untheme(hw);
         break;
+    case HPUI_CANVAS:
+        /* No theme, no text, no system painting: the script owns every pixel
+         * and the toolkit only hands it a surface and the input. WS_TABSTOP
+         * is deliberately absent - Tab inside the editor must reach the
+         * canvas' own key handler, not move focus to the next control. */
+        hw = CreateWindowExW(0, L"HolyPHPCanvas", NULL, base,
+                             sx, sy, sw, sh, host, NULL, GetModuleHandleW(NULL), NULL);
+        break;
     default:
         return -1;
     }
     if (!hw) return -1;
     tbl_add(id, (int)kind, hw);
     UiEntry *e = tbl_find(id);
+    if (kind == HPUI_CANVAS) {
+        for (int i = 0; i < HPUI_EV_NEV; i++) e->cb_ev[i] = hp_null;
+        e->cv_cursor = HPUI_CUR_ARROW;
+        cv_ensure(e);
+    }
+    e->parent_id = parent;
     e->base_x = x; e->base_y = y; e->base_w = w; e->base_h = h;
+    /* An edit's text starts hard against the window edge, which is what made
+     * the omnibox look cramped. A real left and right margin gives it the
+     * breathing room a browser address bar has. */
+    if (kind == HPUI_INPUT) {
+        RECT m;
+        m.left = m.right = sc(g_theme.pad - 4 > 0 ? g_theme.pad - 4 : 4);
+        SendMessageW(hw, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                     (LPARAM)&m);
+    }
     /* honour whatever the window has already scrolled to */
     if (p && p->scroll_y != 0)
         SetWindowPos(hw, NULL, sx, sc(y - p->scroll_y), sw, sh,
                      SWP_NOZORDER | SWP_NOACTIVATE);
     SetWindowLongPtrW(hw, GWLP_USERDATA, (LONG_PTR)id);
     fonts_apply(hw);
-    if (kind == HPUI_BUTTON || kind == HPUI_CHECKBOX || kind == HPUI_INPUT)
+    if (kind == HPUI_BUTTON || kind == HPUI_CHECKBOX || kind == HPUI_INPUT ||
+        kind == HPUI_LABEL)
         subclass(e);
+        /* Clip to the rounded field NOW rather than waiting for the first
+         * WM_ERASEBKGND. An edit only gets one if something else asks the
+         * system to erase it first, and nothing here does, so a control whose
+         * whole look is its rounded corners came out a hard square - and then
+         * WM_CTLCOLOREDIT painted the opaque field right over the top of the
+         * corners the region was supposed to preserve. */
+        input_region(e);
     if (p_SetWindowTheme) {
         p_SetWindowTheme(hw, g_theme.dark ? L"DarkMode_Explorer" : L"Explorer",
                          g_theme.dark ? NULL : L"");
@@ -1110,7 +1768,7 @@ int64_t hpui_ctrl_set_text(int64_t h, const char *text) {
         e->items[e->sel][1023] = 0;
     }
     SetWindowTextW(e->hwnd, w);
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
     return 0;
 }
 
@@ -1135,6 +1793,12 @@ int64_t hpui_ctrl_show(int64_t h, bool visible) {
     UiEntry *e = tbl_find(h);
     if (!e || !e->hwnd) return -1;
     ShowWindow(e->hwnd, visible ? SW_SHOW : SW_HIDE);
+    /* The autocomplete is a list overlay and is created before its WebView2
+     * controller. Raise only that popup; raising every shown child would put
+     * tab buttons above their own close and favicon controls. */
+    if (visible && e->kind == HPUI_LIST)
+        SetWindowPos(e->hwnd, HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     return 0;
 }
 
@@ -1142,7 +1806,7 @@ int64_t hpui_ctrl_enable(int64_t h, bool enabled) {
     UiEntry *e = tbl_find(h);
     if (!e || !e->hwnd) return -1;
     EnableWindow(e->hwnd, enabled);
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
     return 0;
 }
 
@@ -1157,6 +1821,7 @@ int64_t hpui_ctrl_move(int64_t h, int x, int y, int w, int hgt) {
         if (pe) scroll_refresh(pe);
     }
     MoveWindow(e->hwnd, sc(x), sc(y), sc(w), sc(hgt), TRUE);
+    input_region(e);   /* the corner radius is a fraction of the height */
     return 0;
 }
 
@@ -1184,6 +1849,13 @@ int64_t hpui_ctrl_focus(int64_t h) {
     UiEntry *e = tbl_find(h);
     if (!e || !e->hwnd) return -1;
     SetFocus(e->hwnd);
+    return 0;
+}
+
+int64_t hpui_ctrl_select_all(int64_t h) {
+    UiEntry *e = tbl_find(h);
+    if (!e || !e->hwnd || e->kind != HPUI_INPUT) return -1;
+    SendMessageW(e->hwnd, EM_SETSEL, 0, -1);
     return 0;
 }
 
@@ -1221,7 +1893,8 @@ static void draw_list_item(DRAWITEMSTRUCT *di) {
              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 }
 
-int64_t hpui_list_add(int64_t h, const char *item) {    UiEntry *e = tbl_find(h);
+int64_t hpui_list_add(int64_t h, const char *item) {
+    UiEntry *e = tbl_find(h);
     if (!e || !e->hwnd) return -1;
     wchar_t w[1024];
     MultiByteToWideChar(CP_UTF8, 0, item ? item : "", -1, w, 1024);
@@ -1230,7 +1903,7 @@ int64_t hpui_list_add(int64_t h, const char *item) {    UiEntry *e = tbl_find(h)
     combo_add(e, w);
     if (e->kind == HPUI_LIST)
         SendMessageW(e->hwnd, LB_ADDSTRING, 0, (LPARAM)w);
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
     return e->n_items - 1;
 }
 
@@ -1240,7 +1913,7 @@ int64_t hpui_list_clear(int64_t h) {
     items_free(e);
     e->sel = -1;
     if (e->kind == HPUI_LIST) SendMessageW(e->hwnd, LB_RESETCONTENT, 0, 0);
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
     return 0;
 }
 
@@ -1253,7 +1926,7 @@ int64_t hpui_list_remove(int64_t h, int64_t index) {
     e->n_items--;
     if (e->sel >= e->n_items) e->sel = e->n_items - 1;
     if (e->kind == HPUI_LIST) SendMessageW(e->hwnd, LB_DELETESTRING, (WPARAM)index, 0);
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
     return 0;
 }
 
@@ -1278,7 +1951,7 @@ int64_t hpui_list_select(int64_t h, int64_t index) {
     if (!e || !e->hwnd) return -1;
     if (e->kind == HPUI_COMBO) {
         e->sel = (index >= 0 && index < e->n_items) ? (int)index : -1;
-        InvalidateRect(e->hwnd, NULL, TRUE);
+        hpui_dirty(e);
         return 0;
     }
     SendMessageW(e->hwnd, LB_SETCURSEL, (WPARAM)index, 0);
@@ -1314,7 +1987,7 @@ int64_t hpui_check_set(int64_t h, bool on) {
     UiEntry *e = tbl_find(h);
     if (!e || !e->hwnd) return -1;
     e->checked_flag = on;
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
     return 0;
 }
 
@@ -1324,7 +1997,7 @@ int64_t hpui_progress_set(int64_t h, int64_t pct) {
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
     e->value = (int)pct;
-    InvalidateRect(e->hwnd, NULL, FALSE);
+    hpui_dirty_soft(e);
     return 0;
 }
 
@@ -1346,7 +2019,7 @@ int64_t hpui_slider_set(int64_t h, int64_t pos) {
     if (pos < e->min_v) pos = e->min_v;
     if (pos > e->max_v) pos = e->max_v;
     e->value = (int)pos;
-    InvalidateRect(e->hwnd, NULL, FALSE);
+    hpui_dirty_soft(e);
     return 0;
 }
 
@@ -1358,7 +2031,7 @@ int64_t hpui_range_set(int64_t h, int64_t lo, int64_t hi) {
     e->max_v = (int)hi;
     if (e->value < e->min_v) e->value = e->min_v;
     if (e->value > e->max_v) e->value = e->max_v;
-    InvalidateRect(e->hwnd, NULL, FALSE);
+    hpui_dirty_soft(e);
     return 0;
 }
 
@@ -1379,7 +2052,7 @@ int64_t hpui_ctrl_set_bg(int64_t h, int64_t rgb) {
     if (!e) return -1;
     if (e->kind == HPUI_WINDOW) { g_theme.bg = rgbv(rgb); repaint_window(h); return 0; }
     e->ov_bg = rgb;
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
     return 0;
 }
 
@@ -1388,7 +2061,7 @@ int64_t hpui_ctrl_set_fg(int64_t h, int64_t rgb) {
     if (!e) return -1;
     if (e->kind == HPUI_WINDOW) { g_theme.text = rgbv(rgb); repaint_window(h); return 0; }
     e->ov_fg = rgb;
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
     return 0;
 }
 
@@ -1396,7 +2069,7 @@ int64_t hpui_ctrl_accent(int64_t h, int64_t rgb) {
     UiEntry *e = tbl_find(h);
     if (!e || !e->hwnd) return -1;
     e->ov_accent = rgb;
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
     return 0;
 }
 
@@ -1404,7 +2077,29 @@ int64_t hpui_ctrl_radius(int64_t h, int64_t r) {
     UiEntry *e = tbl_find(h);
     if (!e || !e->hwnd) return -1;
     e->ov_radius = (int)r;
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    input_region(e);   /* the window region is what shows the radius at all */
+    hpui_dirty(e);
+    return 0;
+}
+
+/* ui_input_margin(h, left, right) - inset an edit's text from its own edges,
+ * in logical pixels.
+ *
+ * A control drawn by this library lays its own icon out inside its box; a
+ * native edit cannot, because its text always starts wherever the system says.
+ * An address bar with a leading site/lock glyph needs a real left margin or
+ * the glyph and the first letter end up on top of each other. */
+int64_t hpui_input_margin(int64_t h, int64_t l, int64_t r) {
+    UiEntry *e = tbl_find(h);
+    if (!e || !e->hwnd || e->kind != HPUI_INPUT) return -1;
+    RECT m;
+    m.left = sc((int)l);
+    m.right = sc((int)r);
+    if (m.left < 0) m.left = 0;
+    if (m.right < 0) m.right = 0;
+    SendMessageW(e->hwnd, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                 (LPARAM)&m);
+    hpui_dirty(e);
     return 0;
 }
 
@@ -1412,7 +2107,7 @@ int64_t hpui_ctrl_style(int64_t h, int64_t role) {
     UiEntry *e = tbl_find(h);
     if (!e || !e->hwnd) return -1;
     e->role = (int)role;
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
     return 0;
 }
 
@@ -1423,13 +2118,38 @@ int64_t hpui_ctrl_font(int64_t h, int64_t size, bool bold) {
     e->ov_font_bold = bold;
     SendMessageW(e->hwnd, WM_SETFONT,
                  (WPARAM)entry_font(e, false), TRUE);
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
+    return 0;
+}
+
+/* Creation order is z-order, and that is not enough: a control that is shown
+ * again after being hidden jumps to the top, so which of two overlapping
+ * siblings receives a click depends on the order they were last shown in.
+ * Anything meant to sit on top of another control - a tab's close button over
+ * its own tab - has to say so. */
+int64_t hpui_ctrl_raise(int64_t h) {
+    UiEntry *e = tbl_find(h);
+    if (!e || !e->hwnd) return -1;
+    SetWindowPos(e->hwnd, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     return 0;
 }
 
 int64_t hpui_picture_load(int64_t h, const char *path) {
-    (void)h; (void)path;
-    return -1; /* images via GDI+ come later; keep the API surface now */
+    UiEntry *e = tbl_find(h);
+    if (!e || !e->hwnd) return -1;
+    if (e->kind != HPUI_BUTTON && e->kind != HPUI_LABEL &&
+        e->kind != HPUI_PANEL && e->kind != HPUI_GROUP) return -1;
+    ensure_common();
+    char *want = (path && *path) ? _strdup(path) : NULL;
+    if (!path || !*path) { free(e->pic); e->pic = NULL; hpui_dirty(e); return 0; }
+    /* Decode once up front so a bad path is reported now rather than as a
+       blank slot that silently falls back to the SVG. */
+    if (!pic_get(path)) { free(want); return -1; }
+    free(e->pic);
+    e->pic = want;
+    hpui_dirty(e);
+    return 0;
 }
 
 /* ui_theme(win, bg, surface, elevated, text, muted, accent, onAccent, border,
@@ -1520,13 +2240,34 @@ int64_t hpui_on_event(int64_t handle, int64_t evtype, hval cb) {
     case 2: e->cb_change = cb; break;
     case 3: e->cb_action = cb; break;
     case 4: e->cb_key = cb; break;
-    default: return -1;
+    case 5: e->cb_drag = cb; break;
+    default:
+        /* the canvas input events (6..15): mouse in logical pixels, wheel
+         * notches, resize, typed characters and focus changes */
+        if (evtype > 5 && evtype < HPUI_EV_NEV) { e->cb_ev[evtype] = cb; break; }
+        return -1;
     }
     return 0;
 }
 
 /* The raw HWND of a window, so something that must be a real child window
  * (an embedded Chromium view) can be parented inside it. */
+/* The window's client area in the same 96-dpi logical pixels every other
+ * coordinate in this library uses, so a script can lay itself out against a
+ * window the user has resized. */
+int64_t hpui_client_size(int64_t win, int64_t *out_w, int64_t *out_h) {
+    UiEntry *e = tbl_find(win);
+    if (!e || !e->hwnd) return -1;
+    RECT rc;
+    GetClientRect(e->hwnd, &rc);
+    int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    int dpi = (int)hpui_dpi_scale();
+    if (dpi <= 0) dpi = 96;
+    if (out_w) *out_w = (w * 96 + dpi / 2) / dpi;
+    if (out_h) *out_h = (h * 96 + dpi / 2) / dpi;
+    return 0;
+}
+
 int64_t hpui_hwnd(int64_t win) {
     UiEntry *e = tbl_find(win);
     if (!e || !e->hwnd) return 0;
@@ -1536,7 +2277,7 @@ int64_t hpui_hwnd(int64_t win) {
 int64_t hpui_repaint(int64_t h) {
     UiEntry *e = tbl_find(h);
     if (!e || !e->hwnd) return -1;
-    InvalidateRect(e->hwnd, NULL, TRUE);
+    hpui_dirty(e);
     return 0;
 }
 
@@ -1705,24 +2446,125 @@ static void draw_chevron(HDC dc, int cx, int cy, int r, COLORREF color, int widt
     DeleteObject(pen);
 }
 
-/* Draws one control into `dc`. `where` is the rectangle in *parent*
- * coordinates (what WM_DRAWITEM supplies); pass NULL when painting the
- * control's own surface, where the client rect is the right frame. */
+static void draw_control_at(HWND hw, HDC dc, const RECT *where);
+
+/* A control's rectangle in its parent's client coordinates. Done through the
+ * screen rather than MapWindowPoints, whose "window coordinates" wording is a
+ * reliable way to be off by the child's position exactly when it matters. */
+static bool self_rect_in_parent(HWND hw, HWND parent, RECT *out) {
+    RECT wr;
+    if (!GetWindowRect(hw, &wr)) return false;
+    POINT tl = {wr.left, wr.top}, br = {wr.right, wr.bottom};
+    ScreenToClient(parent, &tl);
+    ScreenToClient(parent, &br);
+    out->left = tl.x;
+    out->top = tl.y;
+    out->right = br.x;
+    out->bottom = br.y;
+    return true;
+}
+
+/* ================= owner-drawn siblings share one surface =================
+ *
+ * An owner-drawn control has no bitmap of its own: its pixels are drawn into
+ * the PARENT's DC while the parent handles WM_DRAWITEM. Windows therefore
+ * keeps no copy of them, and repainting a control erases whatever was stacked
+ * on top of it in the same rectangle unless those repaint too.
+ *
+ * That is why a tab's close button used to disappear every time the tab
+ * refreshed its favicon: the tab is painted nine times, the cross three, and
+ * the last word belongs to whoever painted last.
+ *
+ * tbl is in creation order, which is also z-order, so anything later in the
+ * table is above anything earlier. After a control paints, everything above it
+ * that overlaps is repainted immediately, on top. */
+
+static void repaint_above(const UiEntry *self, const RECT *where) {
+    size_t idx = 0;
+    for (size_t i = 0; i < tbl_len; i++)
+        if (&tbl[i] == self) { idx = i; break; }
+    if (!self->hwnd) return;
+    HWND parent = GetParent(self->hwnd);
+    if (!parent) return;
+
+    /* The rectangle this control just painted, in the parent's client space. */
+    RECT mine;
+    if (where) mine = *where;
+    else if (!self_rect_in_parent(self->hwnd, parent, &mine)) return;
+
+    for (size_t i = idx + 1; i < tbl_len; i++) {
+        UiEntry *e = &tbl[i];
+        if (!e->hwnd || !IsWindow(e->hwnd) || !IsWindowVisible(e->hwnd)) continue;
+        if (GetParent(e->hwnd) != parent) continue;
+        if (e->kind != HPUI_BUTTON && e->kind != HPUI_LABEL) continue;
+        RECT other, hit;
+        if (!self_rect_in_parent(e->hwnd, parent, &other)) continue;
+        if (!IntersectRect(&hit, &mine, &other)) continue;
+        /* Paint straight into the parent: going through WM_DRAWITEM from here
+         * would recurse into the dispatcher we are already inside. */
+        HDC dc = GetDC(parent);
+        if (dc) {
+            draw_control_at(e->hwnd, dc, &other);
+            ReleaseDC(parent, dc);
+        }
+    }
+}
+
 static void draw_control_at(HWND hw, HDC dc, const RECT *where) {
     UiEntry *e = entry_of(hw);
     if (!e) return;
     UiPaint p;
     resolve_paint(e, &p);
     RECT rc;
+    /* rc stays in the DC's own coordinates - the parent's client area when a
+     * rectangle was supplied, the control's own client area when it was not -
+     * and the viewport is left alone.
+     *
+     * Shifting the viewport and rebasing rc at the same time is a double
+     * offset, and shifting one without the other is a single offset. Both
+     * were wrong, in opposite directions: with the rectangle parent-relative
+     * and the viewport moved, every fill, rounded rect and string went to the
+     * DC's origin and the whole chrome piled into the window's top-left
+     * corner; with the rectangle rebased, the same drawing went off the top
+     * left of the control and clipped away to nothing. Keeping the rectangle
+     * and the DC in one coordinate system is the only version that needs no
+     * explanation - and it leaves the DC exactly as the caller found it, so
+     * repainting an overlapping sibling cannot leak a shift into the next
+     * control that shares the DC. */
+    if (where) rc = *where;
+    else GetClientRect(hw, &rc);
+    /* The DC that arrives with WM_DRAWITEM is the PARENT's, and Windows has
+       already clipped it to the item rectangle it believes in - which, as the
+       comment at that handler says, is not always the control's real place.
+       A wrong clip region does not move the drawing, it deletes it: GDI drops
+       every operation outside the clip, so a control whose rect was computed
+       correctly still painted nothing at all. That is why the whole toolbar
+       (back, forward, reload, home, print) was blank while the tab's close
+       cross - whose rcItem happened to be right - drew every time.
+       Pinning the clip to the rectangle this function just worked out makes
+       the paint independent of what the item structure claimed. */
+    int clip_saved = -1;
+    HRGN clip_rgn = NULL;
     if (where) {
-        rc = *where;
-        /* shift the viewport so the rest of this function can keep working
-         * in the control's own 0,0-based coordinates */
-        SetViewportOrgEx(dc, -rc.left, -rc.top, NULL);
-    } else {
-        GetClientRect(hw, &rc);
+        clip_saved = SaveDC(dc);
+        if (clip_saved != -1) {
+            clip_rgn = CreateRectRgn(rc.left, rc.top, rc.right, rc.bottom);
+            if (clip_rgn) SelectClipRgn(dc, clip_rgn);
+            else clip_saved = -1;
+        }
     }
     int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    if (hpui_win_debug()) {
+        RECT wr;
+        GetWindowRect(hw, &wr);
+        fprintf(stderr,
+                "[ui] paint id=%lld kind=%d rect=%d,%d %dx%d role=%d "
+                "win=%d,%d %dx%d where=%s\n",
+                (long long)e->id, (int)e->kind, rc.left, rc.top, w, h,
+                (int)e->role,
+                wr.left, wr.top, wr.right - wr.left,
+                wr.bottom - wr.top, where ? "given" : "own");
+    }
     int font_pt = e->ov_font_pt > 0 ? e->ov_font_pt : g_theme.font_pt;
     /* Owner-drawn and custom controls are never erased for us, so clear the
      * frame first. Without this a slider leaves its old thumb behind on every
@@ -1735,6 +2577,10 @@ static void draw_control_at(HWND hw, HDC dc, const RECT *where) {
 
     switch (e->kind) {
     case HPUI_LABEL: {
+        if ((e->pic && *e->pic) || (e->svg && *e->svg)) {
+            draw_icon_slot(dc, &rc, e, p.fg, p.bg);
+            break;
+        }
         wchar_t buf[1024];
         GetWindowTextW(hw, buf, 1024);
         RECT tr = rc;
@@ -1754,7 +2600,27 @@ static void draw_control_at(HWND hw, HDC dc, const RECT *where) {
         fill_round(dc, rc, p.radius, p.bg, p.border, 1);
         wchar_t buf[512];
         GetWindowTextW(hw, buf, 512);
+        bool has_icon = (e->pic && *e->pic) || (e->svg && *e->svg);
+        if (has_icon && !buf[0]) {
+            /* Icon-only button: the artwork is centred in the whole button. */
+            int side = w - sc(10), sh = h - sc(10);
+            if (sh < side) side = sh;
+            if (side < sc(10)) side = sc(10);
+            RECT ir = { rc.left + (w - side) / 2, rc.top + (h - side) / 2,
+                        rc.left + (w + side) / 2, rc.top + (h + side) / 2 };
+            draw_icon_slot(dc, &ir, e, p.fg, p.bg);
+            break;
+        }
         RECT tr = rc;
+        if (has_icon) {
+            int side = sc(18);
+            if (h - side < sc(8)) side = h - sc(8);
+            if (side < sc(8)) side = sc(8);
+            RECT ir = { rc.left + sc(8), rc.top + (h - side) / 2,
+                        rc.left + sc(8) + side, rc.top + (h + side) / 2 };
+            draw_icon_slot(dc, &ir, e, p.fg, p.bg);
+            tr.left = ir.right + sc(7);
+        }
         /* inset BOTH edges. Centring inside a box that is only inset on the
          * left pushes the label right by half the inset, which reads as less
          * padding on the right than on the left. */
@@ -1834,14 +2700,12 @@ static void draw_control_at(HWND hw, HDC dc, const RECT *where) {
         int visible = (h + row - 1) / row;
         for (int i = 0; i < visible; i++) {
             int idx = top + i;
-            wchar_t buf[1024];
-            LRESULT len = SendMessageW(hw, LB_GETTEXTLEN, (WPARAM)idx, 0);
-            if (len == LB_ERR || len >= 1024) continue;
-            SendMessageW(hw, LB_GETTEXT, (WPARAM)idx, (LPARAM)buf);
+            if (idx < 0 || idx >= e->n_items) continue;
+            const wchar_t *buf = e->items[idx];
             RECT ir = { rc.left + sc(2), i * row, rc.right - sc(2), (i + 1) * row };
             if (idx == sel)      fill_round(dc, ir, sc(6), tint(p.accent), (COLORREF)-1, 0);
             else if (idx == e->hover_index)
-                                     fill_round(dc, ir, sc(6),
+                fill_round(dc, ir, sc(6),
                                                 g_theme.dark ? lighten(g_theme.surface, 6)
                                                              : darken(g_theme.surface, 5),
                                                 (COLORREF)-1, 0);
@@ -1913,6 +2777,8 @@ static void draw_control_at(HWND hw, HDC dc, const RECT *where) {
     default:
         break;
     }
+    if (clip_rgn) DeleteObject(clip_rgn);
+    if (clip_saved != -1) RestoreDC(dc, clip_saved);
     (void)font_pt;
 }
 
@@ -1933,7 +2799,7 @@ static void combo_choose(int idx) {
     if (!e) return;
     if (idx >= 0 && idx < e->n_items && idx != e->sel) {
         e->sel = idx;
-        InvalidateRect(e->hwnd, NULL, TRUE);
+        hpui_dirty(e);
         fire(e, &e->cb_change, e->id, idx);
     }
 }
@@ -2045,7 +2911,7 @@ static void track_set_from_x(UiEntry *e, int x) {
     if (v > e->max_v) v = e->max_v;
     if (v == e->value) return;
     e->value = v;
-    InvalidateRect(e->hwnd, NULL, FALSE);
+    hpui_dirty_soft(e);
     fire(e, &e->cb_change, e->id, v);
 }
 
@@ -2167,6 +3033,19 @@ static LRESULT CALLBACK combo_wndproc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 /* ================= window proc: routes events ================= */
+/* What does the OS think owns the mouse? Reported from inside the process,
+ * because GetCapture() is thread-local and reading it from a test harness
+ * answers a different thread's question. */
+static const char *hpui_capture_name(void) {
+    static char buf[96];
+    HWND c = GetCapture();
+    if (!c) { return "none"; }
+    wchar_t cls[64];
+    GetClassNameW(c, cls, 64);
+    WideCharToMultiByte(CP_UTF8, 0, cls, -1, buf, sizeof buf, NULL, NULL);
+    return buf;
+}
+
 static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     int64_t id = (int64_t)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
     UiEntry *e = id ? tbl_find(id) : NULL;
@@ -2180,6 +3059,13 @@ static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_KEYDOWN: {
         UiEntry *we = entry_of(hwnd);
         int vk = (int)wp;
+        /* Tab / Shift+Tab move focus between the controls, unless the script
+         * asked for that combination itself. */
+        if (vk == VK_TAB && !(GetKeyState(VK_CONTROL) & 0x8000) &&
+            !(we && we->cb_key.tag == HV_CLO && we->cb_key.u.c)) {
+            focus_step(hwnd, (GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1);
+            return 0;
+        }
         if (vk == VK_ESCAPE && we && we->kind == HPUI_WINDOW)
             DestroyWindow(hwnd);
         /* PageUp/Down and Ctrl+Home/End scroll a window whose content does not
@@ -2207,7 +3093,15 @@ static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             int64_t ch = (n > 0) ? (int64_t)buf[0] : 0;
             if (ch == VK_RETURN) ch = '\r';
             if (ch == VK_BACK)   ch = '\b';
-            fire(we, &we->cb_key, vk, ch);
+            /* The modifiers come along for the same reason the input's key
+               callback passes them: a window-level shortcut that cannot see
+               Ctrl from T is not a shortcut, it is a letter. Same bit
+               meanings as everywhere else - 1 Ctrl, 2 Shift, 4 Alt. */
+            int mods = 0;
+            if (GetAsyncKeyState(VK_CONTROL) & 0x8000) mods |= 1;
+            if (GetAsyncKeyState(VK_SHIFT) & 0x8000) mods |= 2;
+            if (GetAsyncKeyState(VK_MENU) & 0x8000) mods |= 4;
+            call_cb3(we->cb_key, vk, ch, mods);
         }
         if (!we || we->cb_key.tag != HV_CLO || !we->cb_key.u.c)
             return DefWindowProcW(hwnd, msg, wp, lp);
@@ -2227,6 +3121,17 @@ static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
 
+    /* Input at the window itself, not its children: the first place a mouse
+     * message can appear. HPHP_UI_DEBUG=1 only; WM_MOUSEMOVE and WM_TIMER are
+     * deliberately left out or the log drowns in them. */
+    case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP: case WM_CAPTURECHANGED:
+        if (hpui_win_debug())
+            fprintf(stderr, "[ui] WIN msg=0x%04X lparam=0x%llX capture=%s focus=%p\n",
+                    msg, (unsigned long long)lp, hpui_capture_name(),
+                    (void *)GetFocus());
+        break;
+
     case WM_SIZE: {
         UiEntry *we = entry_of(hwnd);
         if (we && we->kind == HPUI_WINDOW) scroll_place(we);
@@ -2238,6 +3143,9 @@ static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         HWND src = (HWND)lp;
         int64_t sid = src ? (int64_t)GetWindowLongPtrW(src, GWLP_USERDATA) : 0;
         UiEntry *se = sid ? tbl_find(sid) : NULL;
+        if (hpui_win_debug())
+            fprintf(stderr, "[ui] WM_COMMAND code=%d src=%p sid=%lld kind=%d\n",
+                    code, (void *)src, (long long)sid, se ? (int)se->kind : -1);
         if (se) {
             if (code == BN_CLICKED && se->kind == HPUI_BUTTON) {
                 fire(se, &se->cb_click, sid, 0);
@@ -2258,13 +3166,41 @@ static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 fire(&tbl[i], &tbl[i].cb_click, tbl[i].id, (int64_t)wp);
                 return 0;
             }
+        /* A control of ours sent a notification we have no handler for
+           (BN_SETFOCUS, BN_DBLCLK, ...). DefWindowProc is not neutral here:
+           it ends up in the default button handling, which rings the system
+           error bell. Swallow it instead. */
+        if (se) return 0;
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
+
+    /* DefWindowProc answers an unhandled WM_MENUCHAR by calling
+       MessageBeep(MB_ICONHAND) - the "Windows Error" sound. There is no menu
+       here at all, so every keystroke that produces a menu character is a
+       guaranteed error beep. Claim the message and stay quiet. */
+    case WM_MENUCHAR:
+        return 0;
 
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT *di = (DRAWITEMSTRUCT *)lp;
         if (di->CtlType == ODT_BUTTON || di->CtlType == ODT_STATIC) {
-            draw_control_at(di->hwndItem, di->hDC, &di->rcItem);
+            /* rcItem is the control's rectangle in the parent's client space -
+             * in theory. In practice it comes back as {0,0,w,h} for some paints
+             * and the real position for others, with the size right both times,
+             * and a control drawn at the origin landed at the top-left corner
+             * of the window. That is how a tab's cross ended up drawn in the
+             * corner instead of inside the tab.
+             *
+             * The window knows where it is, so ask it. rcItem stays only as a
+             * fallback for the one case where the query itself fails. */
+            RECT at;
+            const RECT *where = self_rect_in_parent(di->hwndItem, hwnd, &at)
+                                    ? &at
+                                    : &di->rcItem;
+            draw_control_at(di->hwndItem, di->hDC, where);
+            /* whoever is stacked on top of this control has just been erased */
+            UiEntry *below = entry_of(di->hwndItem);
+            if (below) repaint_above(below, where);
             return TRUE;
         }
         if (di->CtlType == ODT_LISTBOX) {
@@ -2319,10 +3255,68 @@ static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return (LRESULT)GetStockObject(NULL_BRUSH);
     }
 
+    /* Erase ONLY the region that is actually invalid.
+     *
+     * The HDC handed to WM_ERASEBKGND is the plain window DC: it is not
+     * clipped to the update region the way a BeginPaint DC would be. Filling
+     * GetClientRect() with the background therefore painted over the whole
+     * window every time anything at all asked for a repaint, and because an
+     * owner-drawn button sends its WM_DRAWITEM from its OWN WM_PAINT, a
+     * button with an empty update region was simply never redrawn after that.
+     *
+     * That is what made the entire toolbar vanish while the tab beside it
+     * stayed: a 120ms layout timer invalidated the window, the erase wiped
+     * every icon, and only the controls render() restyles each tick came back.
+     * The tab strip was never broken; it was simply the only thing still
+     * asking to be painted.
+     */
+    /* Erase the invalid region MINUS every visible child.
+     *
+     * An owner-drawn control does not own its pixels. Its WM_DRAWITEM is sent
+     * from its OWN WM_PAINT, so it only redraws when its own update region is
+     * non-empty - and it stops redrawing the moment something paints over its
+     * box. This window used to erase the whole client rect here, because the
+     * HDC given to WM_ERASEBKGND is the plain window DC and is not clipped to
+     * the update region the way a BeginPaint DC would be.
+     *
+     * Any repaint anywhere therefore wiped the toolbar, and only the controls
+     * that something had just invalidated came back. That is the whole reason
+     * the toolbar looked empty while the tab beside it was fine: a 120ms
+     * layout timer asked for a repaint, the erase cleared every icon, and
+     * render() only ever restyles the tab strip. Nothing was wrong with the
+     * icons, their colours, or the SVG parser - they were painted, then
+     * deleted a few milliseconds later, and nobody asked for them again.
+     *
+     * Subtracting the children keeps the background correct everywhere it is
+     * actually visible while leaving every owner-drawn control to paint itself.
+     */
     case WM_ERASEBKGND: {
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-        fill_rect((HDC)wp, rc, g_theme.bg);
+        RECT upd;
+        if (!GetUpdateRect(hwnd, &upd, FALSE)) return 1;
+        RECT cl;
+        GetClientRect(hwnd, &cl);
+        RECT want = { upd.left   < cl.left   ? cl.left   : upd.left,
+                      upd.top    < cl.top    ? cl.top    : upd.top,
+                      upd.right  > cl.right  ? cl.right  : upd.right,
+                      upd.bottom > cl.bottom ? cl.bottom : upd.bottom };
+        if (want.right <= want.left || want.bottom <= want.top) return 1;
+        HRGN keep = CreateRectRgn(want.left, want.top, want.right, want.bottom);
+        if (!keep) return 1;
+        for (size_t i = 0; i < tbl_len; i++) {
+            UiEntry *k = &tbl[i];
+            if (!k->hwnd || !IsWindow(k->hwnd) || !IsWindowVisible(k->hwnd)) continue;
+            if (GetParent(k->hwnd) != hwnd) continue;
+            RECT kr;
+            if (!self_rect_in_parent(k->hwnd, hwnd, &kr)) continue;
+            HRGN cut = CreateRectRgn(kr.left, kr.top, kr.right, kr.bottom);
+            if (cut) { CombineRgn(keep, keep, cut, RGN_DIFF); DeleteObject(cut); }
+        }
+        if (hpui_win_debug())
+            fprintf(stderr, "[ui] parent erase %d,%d %dx%d\n",
+                    want.left, want.top, want.right - want.left,
+                    want.bottom - want.top);
+        fill_region((HDC)wp, keep, g_theme.bg);
+        DeleteObject(keep);
         return 1;
     }
 
@@ -2343,7 +3337,20 @@ static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return DefWindowProcW(hwnd, msg, wp, lp);
 
     case WM_CLOSE:
+        /* A tab being closed arrives here too: a browser window that is a
+         * child of this window asks Chromium to close it by sending WM_CLOSE
+         * to its OWNER, which is us. Treating that as "the user closed the
+         * app" would take every tab down with it. */
+        if (hpwv2_closing() > 0) {
+            if (hpui_win_debug())
+                fprintf(stderr, "[ui] WM_CLOSE on hwnd=%p id=%lld swallowed, "
+                        "%d browser(s) still closing\n",
+                        (void *)hwnd, (long long)id, hpwv2_closing());
+            return 0;
+        }
         popup_close();
+        if (hpui_win_debug())
+            fprintf(stderr, "[ui] WM_CLOSE on hwnd=%p id=%lld\n", (void *)hwnd, (long long)id);
         if (e) fire(e, &e->cb_action, id, 0);
         if (e && e->cb_action.tag == HV_CLO) return 0;   /* handler decides */
         DestroyWindow(hwnd);
@@ -2357,12 +3364,597 @@ static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 tbl[i].id != id && IsWindow(tbl[i].hwnd))
                 windows_left++;
         if (e) { e->hwnd = NULL; }
+        if (hpui_win_debug())
+            fprintf(stderr, "[ui] WM_DESTROY id=%lld left=%d\n",
+                    (long long)id, windows_left);
         if (windows_left == 0) PostQuitMessage(0);
         return 0;
     }
     default:
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+/* =====================================================================
+ *  Canvas — an offscreen surface a script paints itself
+ * =====================================================================
+ *
+ *  Every other control in this library owns its pixels: the toolkit decides
+ *  what a button looks like. A canvas owns none — it keeps a backbuffer the
+ *  exact size of the control, hands the script GDI drawing calls that write
+ *  into it, and blits it on WM_PAINT. That is what makes an HTML/CSS engine
+ *  written in HolyPHP possible: it computes boxes and colours, this draws
+ *  them, and nothing in between decides anything.
+ *
+ *  Coordinates are logical 96-dpi pixels like everywhere else in the
+ *  library, so one box tree looks identical on a 100% and a 150% display.
+ *  Input events report the pointer in the same units (see HPUI_EV_*), and a
+ *  press captures the mouse so a drag that leaves the control still gets its
+ *  moves and its release — without that, a text selection broke the moment
+ *  the pointer crossed the editor's edge.
+ *
+ *  Fonts are a separate table from the widget cache: family, size, weight
+ *  and slant are all part of the key here, because a code editor needs a
+ *  monospace face at an exact size while the chrome beside it uses Segoe UI.
+ *  Both the table and the measure DC are dropped on a DPI change.
+ */
+
+typedef struct CvFont {
+    wchar_t fam[64];
+    int     pt;
+    bool    bold, italic;
+    HFONT   f;
+    int     lh;            /* line height, logical px */
+} CvFont;
+
+static CvFont *g_cvf = NULL;
+static size_t  g_ncvf = 0, g_capcvf = 0;
+static HDC     g_cv_dc = NULL;      /* scratch DC for measuring */
+
+static void cvfonts_drop(void) {
+    for (size_t i = 0; i < g_ncvf; i++)
+        if (g_cvf[i].f) DeleteObject(g_cvf[i].f);
+    g_ncvf = 0;
+    if (g_cv_dc) { DeleteDC(g_cv_dc); g_cv_dc = NULL; }
+}
+
+static HDC cv_measure_dc(void) {
+    if (!g_cv_dc) g_cv_dc = CreateCompatibleDC(NULL);
+    return g_cv_dc;
+}
+
+/* Cross a device pixel count into logical pixels (the inverse of sc()).
+ * Truncating rather than rounding keeps a drag that leaves the surface
+ * monotonic: -3px must not come back as -3 after scaling up and down. */
+/* Physical pixels -> the logical 96-dpi pixels a script lays out in. Rounds
+ * like hpui_client_size() above; truncating here and rounding there made a
+ * canvas report 784 logical pixels while its window's client area reported
+ * 783, and a UI that lays itself out from both ends up one pixel tall. */
+static int cv_unscale(int v) {
+    int d = g_dpi > 0 ? g_dpi : 96;
+    return (v * 96 + d / 2) / d;
+}
+
+/* Same crossing, but rounding UP. A width the layout reserves for a string
+ * has to be at least the width GDI will draw, or the last glyph is clipped:
+ * a 25px string is 31.25px at 125%, rounding to nearest reserved 31 and GDI
+ * dropped the final letter -- "Save" came out "Sav", every string on screen
+ * a character short. Rounding up costs at most one pixel of padding. */
+static int cv_unscale_up(int v) {
+    int d = g_dpi > 0 ? g_dpi : 96;
+    return (v * 96 + d - 1) / d;
+}
+
+static CvFont *cv_font_at(int64_t id) {
+    if (id <= 0 || (size_t)id > g_ncvf) return NULL;
+    return &g_cvf[id - 1];
+}
+
+/* Build (or find) a face. id is 1-based; 0 means "nothing" so a script can
+ * use 0 as a sentinel without colliding with a real handle. */
+int64_t hpui_font_id(const char *family, int pt, bool bold, bool italic) {
+    wchar_t fam[64];
+    MultiByteToWideChar(CP_UTF8, 0, family && *family ? family : "Segoe UI", -1, fam, 64);
+    if (pt <= 0) pt = 9;
+    if (pt > 200) pt = 200;
+    for (size_t i = 0; i < g_ncvf; i++)
+        if (g_cvf[i].pt == pt && g_cvf[i].bold == bold &&
+            g_cvf[i].italic == italic && wcscmp(g_cvf[i].fam, fam) == 0)
+            return (int64_t)i + 1;
+    if (g_ncvf == g_capcvf) {
+        g_capcvf = g_capcvf ? g_capcvf * 2 : 16;
+        g_cvf = (CvFont *)realloc(g_cvf, g_capcvf * sizeof(CvFont));
+    }
+    CvFont *c = &g_cvf[g_ncvf];
+    memset(c, 0, sizeof *c);
+    wcsncpy(c->fam, fam, 63);
+    c->pt = pt;
+    c->bold = bold;
+    c->italic = italic;
+    /* -MulDiv(pt, dpi, 72) is the point->pixel conversion that keeps a 10pt
+     * body text the same physical size at every display scale. */
+    c->f = CreateFontW(-MulDiv(pt, g_dpi, 72), 0, 0, 0,
+                       bold ? FW_SEMIBOLD : FW_NORMAL, italic ? TRUE : FALSE,
+                       FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_PRECIS,
+                       CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                       DEFAULT_PITCH | FF_DONTCARE, fam);
+    if (!c->f) c->f = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    TEXTMETRICW tm;
+    int lh = pt * g_dpi / 72 + 3;
+    HDC dc = cv_measure_dc();
+    if (dc) {
+        HFONT of = (HFONT)SelectObject(dc, c->f);
+        if (GetTextMetricsW(dc, &tm)) lh = tm.tmHeight + tm.tmExternalLeading;
+        SelectObject(dc, of);
+    }
+    c->lh = lh > 1 ? cv_unscale(lh) : 12;
+    g_ncvf++;
+    return (int64_t)g_ncvf;
+}
+
+int64_t hpui_font_w(int64_t id, const char *s) {
+    CvFont *c = cv_font_at(id);
+    HDC dc = cv_measure_dc();
+    if (!c || !dc || !s || !*s) return 0;
+    wchar_t *w = NULL;
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (n <= 1) return 0;
+    w = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)n);
+    if (!w) return 0;
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
+    HFONT of = (HFONT)SelectObject(dc, c->f);
+    SIZE sz = {0, 0};
+    GetTextExtentPoint32W(dc, w, n - 1, &sz);
+    SelectObject(dc, of);
+    free(w);
+    return (int64_t)cv_unscale_up(sz.cx);
+}
+
+int64_t hpui_font_h(int64_t id) {
+    CvFont *c = cv_font_at(id);
+    return c ? (int64_t)c->lh : 0;
+}
+
+static void cv_free_backbuffer(UiEntry *e) {
+    if (e->cv_dc) {
+        if (e->cv_old_bmp) SelectObject(e->cv_dc, e->cv_old_bmp);
+        DeleteDC(e->cv_dc);
+        e->cv_dc = NULL;
+    }
+    if (e->cv_bmp) { DeleteObject(e->cv_bmp); e->cv_bmp = NULL; }
+    e->cv_old_bmp = NULL;
+    e->cv_w = e->cv_h = 0;
+}
+
+/* Make sure the backbuffer matches the control's client size. */
+static bool cv_ensure(UiEntry *e) {
+    if (!e || !e->hwnd || !IsWindow(e->hwnd)) return false;
+    RECT rc;
+    GetClientRect(e->hwnd, &rc);
+    int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (e->cv_dc && w == e->cv_w && h == e->cv_h) return true;
+    cv_free_backbuffer(e);
+    HDC wdc = GetDC(e->hwnd);
+    HDC mem = wdc ? CreateCompatibleDC(wdc) : NULL;
+    HBITMAP bmp = wdc ? CreateCompatibleBitmap(wdc, w, h) : NULL;
+    if (wdc) ReleaseDC(e->hwnd, wdc);
+    if (!mem || !bmp) {
+        if (mem) DeleteDC(mem);
+        if (bmp) DeleteObject(bmp);
+        return false;
+    }
+    e->cv_old_bmp = (HBITMAP)SelectObject(mem, bmp);
+    e->cv_dc = mem;
+    e->cv_bmp = bmp;
+    e->cv_w = w;
+    e->cv_h = h;
+    SetBkMode(mem, TRANSPARENT);
+    /* A fresh surface starts as the theme background rather than black: a
+     * frame the script has only partly drawn should look like empty space in
+     * the app, not like a hole in the window. */
+    RECT all;
+    all.left = 0; all.top = 0; all.right = w; all.bottom = h;
+    fill_rect(mem, all, g_theme.bg);
+    return true;
+}
+
+/* The handle a script passed must be a live canvas, with a usable surface. */
+static UiEntry *cv_of(int64_t h) {
+    UiEntry *e = tbl_find(h);
+    if (!e || e->kind != HPUI_CANVAS || !e->hwnd || !IsWindow(e->hwnd)) return NULL;
+    if (!cv_ensure(e)) return NULL;
+    return e;
+}
+
+/* show the backbuffer now, without waiting for the paint queue: a script
+ * animating from a timer needs its frame on screen before the next tick */
+static void cv_present(UiEntry *e) {
+    if (!e->cv_dc || !e->hwnd) return;
+    HDC dc = GetDC(e->hwnd);
+    if (!dc) return;
+    BitBlt(dc, 0, 0, e->cv_w, e->cv_h, e->cv_dc, 0, 0, SRCCOPY);
+    ReleaseDC(e->hwnd, dc);
+}
+
+/* The callback slot behind an event number, keeping the original 1..5
+ * meanings so existing ui_on() bindings keep working on a canvas too. */
+static hval *cv_slot(UiEntry *e, int ev) {
+    switch (ev) {
+    case HPUI_EV_CLICK:  return &e->cb_click;
+    case HPUI_EV_CHANGE: return &e->cb_change;
+    case HPUI_EV_ACTION: return &e->cb_action;
+    case HPUI_EV_KEY:    return &e->cb_key;
+    case HPUI_EV_DRAG:   return &e->cb_drag;
+    default:
+        if (ev > 5 && ev < HPUI_EV_NEV) return &e->cb_ev[ev];
+        return NULL;
+    }
+}
+
+static void cv_fire(UiEntry *e, int ev, int64_t a1, int64_t a2, int64_t a3) {
+    hval *slot = cv_slot(e, ev);
+    if (!slot || slot->tag != HV_CLO || !slot->u.c) return;
+    hval args[3];
+    args[0] = hp_of_int(a1);
+    args[1] = hp_of_int(a2);
+    args[2] = hp_of_int(a3);
+    ui_call_guarded(*slot, args, 3);
+}
+
+/* A key press, with the character it produced as a STRING.
+ *
+ * The first argument is the virtual key, the second the text the key typed,
+ * the third the modifiers -- that is what every handler is written against
+ * (`key($vk, $ch, $mods)` inserts $ch). Handing the code point over as an
+ * int made the editor insert its number instead: pressing `a` typed "97".
+ * Keys that produce no text (Return, Escape, the arrows) send an empty
+ * string, so a handler can tell "typed nothing" from "typed a space". */
+static void cv_fire_key(UiEntry *e, int ev, int64_t vk, wchar_t ch, int64_t mods) {
+    hval *slot = cv_slot(e, ev);
+    if (!slot || slot->tag != HV_CLO || !slot->u.c) return;
+    char utf8[8];
+    int len = 0;
+    if (ch >= 32 && ch != 127) {
+        len = WideCharToMultiByte(CP_UTF8, 0, &ch, 1, utf8, (int)sizeof utf8, NULL, NULL);
+        if (len < 0) len = 0;
+    }
+    hval args[3];
+    args[0] = hp_of_int(vk);
+    args[1] = len > 0 ? hp_of_str(hp_str_new(utf8, (size_t)len)) : hp_of_str(hp_null_str());
+    args[2] = hp_of_int(mods);
+    ui_call_guarded(*slot, args, 3);
+}
+
+static void cv_mouse(UiEntry *e, int ev, LPARAM lp, int64_t button) {
+    cv_fire(e, ev, cv_unscale(GET_X_LPARAM(lp)), cv_unscale(GET_Y_LPARAM(lp)), button);
+}
+
+/* ---------------- drawing API ---------------- */
+
+int64_t hpui_draw_clear(int64_t h, int64_t rgb) {
+    UiEntry *e = cv_of(h);
+    if (!e) return -1;
+    RECT r;
+    r.left = 0; r.top = 0; r.right = e->cv_w; r.bottom = e->cv_h;
+    fill_rect(e->cv_dc, r, rgbv(rgb));
+    return 0;
+}
+
+int64_t hpui_draw_rect(int64_t h, int x, int y, int w, int ht, int64_t rgb) {
+    UiEntry *e = cv_of(h);
+    if (!e) return -1;
+    RECT r;
+    r.left = sc(x); r.top = sc(y);
+    r.right = sc(x + w); r.bottom = sc(y + ht);
+    if (r.right <= r.left || r.bottom <= r.top) return 0;
+    fill_rect(e->cv_dc, r, rgbv(rgb));
+    return 0;
+}
+
+int64_t hpui_draw_round(int64_t h, int x, int y, int w, int ht, int radius,
+                        int64_t fill, int64_t stroke, int sw) {
+    UiEntry *e = cv_of(h);
+    if (!e) return -1;
+    RECT r;
+    r.left = sc(x); r.top = sc(y);
+    r.right = sc(x + w); r.bottom = sc(y + ht);
+    if (r.right <= r.left || r.bottom <= r.top) return 0;
+    fill_round(e->cv_dc, r, sc(radius),
+               fill < 0 ? (COLORREF)-1 : rgbv(fill),
+               stroke < 0 ? (COLORREF)-1 : rgbv(stroke), sc(sw));
+    return 0;
+}
+
+int64_t hpui_draw_line(int64_t h, int x1, int y1, int x2, int y2,
+                       int64_t rgb, int w) {
+    UiEntry *e = cv_of(h);
+    if (!e) return -1;
+    HPEN pen = CreatePen(PS_SOLID, w > 0 ? sc(w) : 1, rgbv(rgb));
+    HPEN op = (HPEN)SelectObject(e->cv_dc, pen);
+    MoveToEx(e->cv_dc, sc(x1), sc(y1), NULL);
+    LineTo(e->cv_dc, sc(x2), sc(y2));
+    SelectObject(e->cv_dc, op);
+    DeleteObject(pen);
+    return 0;
+}
+
+/* Draw text in the box (x, y, w, ht).
+ *
+ * flags: 1 = ellipsis when it does not fit, 2 = centre vertically,
+ *        4 = right align, 8 = no clipping (draw past the box).
+ * The box is what makes this usable for a UI: a label knows where it may
+ * spill to, and GDI clips to it instead of overrunning its neighbour. */
+int64_t hpui_draw_text(int64_t h, int x, int y, int w, int ht, const char *s,
+                       int64_t rgb, int64_t fontid, int flags) {
+    UiEntry *e = cv_of(h);
+    CvFont *c = cv_font_at(fontid);
+    if (!e) return -1;
+    if (!s || !*s) return 0;
+    if (!c) c = cv_font_at(hpui_font_id("Segoe UI", g_theme.font_pt, false, false));
+    if (!c) return -1;
+    wchar_t *wbuf = NULL;
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (n <= 1) return 0;
+    wbuf = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)n);
+    if (!wbuf) return -1;
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, wbuf, n);
+
+    RECT r;
+    r.left = sc(x);
+    r.top = sc(y);
+    r.right = sc(x + w);
+    r.bottom = sc(y + ht);
+    UINT f = DT_SINGLELINE | DT_NOPREFIX;
+    f |= (flags & 2) ? DT_VCENTER : DT_TOP;
+    f |= (flags & 4) ? DT_RIGHT : DT_LEFT;
+    if (flags & 1) f |= DT_END_ELLIPSIS;
+    /* One device pixel of slack on a plain draw. The rect is a rounded
+     * crossing of a logical width; without the slack a string whose device
+     * width lands on .5 loses its last glyph (see cv_unscale_up). An
+     * ellipsised draw keeps its exact edge, because there the width IS the
+     * answer -- "Dan..." has to stop where the box stops. */
+    if (!(flags & 1)) r.right += 1;
+    if (flags & 8) {
+        f &= ~(UINT)DT_END_ELLIPSIS;
+        r.right = r.left + (int)hpui_font_w(fontid, s) + sc(4);
+        if (!(flags & 4)) r.left = sc(x);
+    }
+    SetBkMode(e->cv_dc, TRANSPARENT);
+    SetTextColor(e->cv_dc, rgbv(rgb));
+    HFONT of = (HFONT)SelectObject(e->cv_dc, c->f);
+    DrawTextW(e->cv_dc, wbuf, n - 1, &r, f);
+    SelectObject(e->cv_dc, of);
+    free(wbuf);
+    return 0;
+}
+
+int64_t hpui_draw_clip(int64_t h, int x, int y, int w, int ht) {
+    UiEntry *e = cv_of(h);
+    if (!e) return -1;
+    IntersectClipRect(e->cv_dc, sc(x), sc(y), sc(x + w), sc(y + ht));
+    return 0;
+}
+
+int64_t hpui_draw_unclip(int64_t h) {
+    UiEntry *e = cv_of(h);
+    if (!e) return -1;
+    SelectClipRgn(e->cv_dc, NULL);
+    return 0;
+}
+
+int64_t hpui_canvas_invalidate(int64_t h) {
+    UiEntry *e = tbl_find(h);
+    if (!e || !e->hwnd) return -1;
+    InvalidateRect(e->hwnd, NULL, FALSE);
+    return 0;
+}
+
+int64_t hpui_canvas_flush(int64_t h) {
+    UiEntry *e = cv_of(h);
+    if (!e) return -1;
+    cv_present(e);
+    return 0;
+}
+
+/* The colour a drawn pixel actually has, straight out of the backbuffer.
+ *
+ * A rendering engine is otherwise verified by looking at it, which no test
+ * can do: an HTML/CSS box tree can be laid out perfectly and painted onto a
+ * surface that is never blitted, or blitted one pixel off, and every unit
+ * test of the layout still passes. Reading a pixel back is what lets a test
+ * assert "the sidebar is 48px wide and dark grey" rather than "no crash".
+ * Returns -1 when the canvas or the coordinate is outside the surface. */
+int64_t hpui_canvas_pixel(int64_t h, int x, int y) {
+    UiEntry *e = cv_of(h);
+    if (!e) return -1;
+    int px = sc(x), py = sc(y);
+    if (px < 0 || py < 0 || px >= e->cv_w || py >= e->cv_h) return -1;
+    COLORREF c = GetPixel(e->cv_dc, px, py);
+    if (c == CLR_INVALID) return -1;
+    return (int64_t)((GetRValue(c) << 16) | (GetGValue(c) << 8) | GetBValue(c));
+}
+
+int64_t hpui_canvas_size(int64_t h, int64_t *ow, int64_t *oh) {
+    UiEntry *e = tbl_find(h);
+    if (!e || !e->hwnd) return -1;
+    RECT rc;
+    GetClientRect(e->hwnd, &rc);
+    if (ow) *ow = cv_unscale((int)(rc.right - rc.left));
+    if (oh) *oh = cv_unscale((int)(rc.bottom - rc.top));
+    return 0;
+}
+
+int64_t hpui_cursor_set(int64_t h, int64_t shape) {
+    UiEntry *e = tbl_find(h);
+    if (!e) return -1;
+    e->cv_cursor = (int)shape;
+    return 0;
+}
+
+/* ---------------- the canvas window procedure ---------------- */
+
+static void cv_apply_cursor(UiEntry *e) {
+    LPCWSTR id = IDC_ARROW;
+    switch (e->cv_cursor) {
+    case HPUI_CUR_IBEAM:   id = IDC_IBEAM; break;
+    case HPUI_CUR_HAND:    id = IDC_HAND; break;
+    case HPUI_CUR_SIZEWE:  id = IDC_SIZEWE; break;
+    case HPUI_CUR_SIZENS:  id = IDC_SIZENS; break;
+    case HPUI_CUR_SIZEALL: id = IDC_SIZEALL; break;
+    case HPUI_CUR_CROSS:   id = IDC_CROSS; break;
+    case HPUI_CUR_NO:      id = IDC_NO; break;
+    default: break;
+    }
+    SetCursor(LoadCursorW(NULL, id));
+}
+
+static LRESULT CALLBACK canvas_wndproc(HWND hw, UINT msg, WPARAM wp, LPARAM lp) {
+    UiEntry *e = entry_of(hw);
+    if (!e) return DefWindowProcW(hw, msg, wp, lp);
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;                       /* the blit covers everything */
+
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hw, &ps);
+        if (cv_ensure(e)) BitBlt(dc, 0, 0, e->cv_w, e->cv_h, e->cv_dc, 0, 0, SRCCOPY);
+        EndPaint(hw, &ps);
+        return 0;
+    }
+
+    case WM_SIZE:
+        /* A resize throws the old pixels away with the old buffer, so tell
+         * the script the new size and let it redraw. */
+        cv_ensure(e);
+        cv_fire(e, HPUI_EV_RESIZE, cv_unscale(LOWORD(lp)), cv_unscale(HIWORD(lp)), 0);
+        return 0;
+
+    case WM_MOUSEMOVE:
+        if (!e->cv_track) {
+            TRACKMOUSEEVENT t;
+            memset(&t, 0, sizeof t);
+            t.cbSize = sizeof t;
+            t.dwFlags = TME_LEAVE;
+            t.hwndTrack = hw;
+            TrackMouseEvent(&t);
+            e->cv_track = true;
+            cv_fire(e, HPUI_EV_ENTER, 0, 0, 0);
+        }
+        cv_mouse(e, HPUI_EV_MOVE, lp, 0);
+        return 0;
+
+    case WM_MOUSELEAVE:
+        e->cv_track = false;
+        cv_fire(e, HPUI_EV_LEAVE, 0, 0, 0);
+        return 0;
+
+    case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: {
+        int64_t button = msg == WM_LBUTTONDOWN ? 1 : (msg == WM_RBUTTONDOWN ? 2 : 3);
+        /* The canvas has no WS_TABSTOP: typing only reaches it after a click,
+         * which is exactly how a code editor is supposed to behave. */
+        SetFocus(hw);
+        if (button == 1) {
+            SetCapture(hw);
+            e->cv_captured = true;
+            e->cv_drag = true;
+        }
+        cv_mouse(e, HPUI_EV_DOWN, lp, button);
+        return 0;
+    }
+
+    case WM_LBUTTONDBLCLK:
+        cv_mouse(e, HPUI_EV_DBL, lp, 1);
+        return 0;
+
+    case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: {
+        int64_t button = msg == WM_LBUTTONUP ? 1 : (msg == WM_RBUTTONUP ? 2 : 3);
+        bool pressed = e->cv_drag;
+        if (button == 1 && e->cv_captured) {
+            e->cv_captured = false;
+            e->cv_drag = false;
+            ReleaseCapture();
+        }
+        cv_mouse(e, HPUI_EV_UP, lp, button);
+        /* A click is a press *and* a release, and it is reported after the
+         * release so a handler that acts on a click already knows the final
+         * pointer position. */
+        if (button == 1 && pressed) cv_mouse(e, HPUI_EV_CLICK, lp, 1);
+        return 0;
+    }
+
+    case WM_CAPTURECHANGED:
+        e->cv_captured = false;
+        e->cv_drag = false;
+        return 0;
+
+    case WM_MOUSEWHEEL: {
+        POINT pt;
+        pt.x = GET_X_LPARAM(lp);
+        pt.y = GET_Y_LPARAM(lp);
+        ScreenToClient(hw, &pt);
+        int notches = GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
+        if (notches == 0) notches = GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 1 : -1;
+        cv_fire(e, HPUI_EV_WHEEL, cv_unscale(pt.x), cv_unscale(pt.y), notches);
+        return 0;
+    }
+
+    case WM_KEYDOWN: {
+        BYTE state[256];
+        GetKeyboardState(state);
+        wchar_t buf[8];
+        int vk = (int)wp;
+        int n = ToUnicode(vk, (int)(lp >> 16), state, buf, 8, 0);
+        wchar_t ch = n > 0 ? buf[0] : 0;
+        if (ch < 32) ch = 0;
+        int mods = 0;
+        if (GetAsyncKeyState(VK_CONTROL) & 0x8000) mods |= 1;
+        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) mods |= 2;
+        if (GetAsyncKeyState(VK_MENU) & 0x8000) mods |= 4;
+        /* Ctrl+S is a shortcut, not text; the buffer must not receive the
+         * invisible 0x13 ToUnicode reports for it. Ctrl+Alt is the exception:
+         * that is AltGr, and on a German keyboard it is how `@`, `{` and `\`
+         * are typed -- throwing it away would make the editor unable to
+         * write its own language. */
+        bool ctrl = (mods & 1) != 0, alt = (mods & 4) != 0;
+        if (ctrl != alt) ch = 0;
+        cv_fire_key(e, HPUI_EV_KEY, vk, ch, mods);
+        return 0;    /* claim it: DefWindowProc would beep on Tab and arrows */
+    }
+
+    case WM_CHAR:
+        cv_fire(e, HPUI_EV_CHAR, (int64_t)wp, 0, 0);
+        return 0;
+
+    case WM_SETFOCUS:
+        cv_fire(e, HPUI_EV_FOCUS, 1, 0, 0);
+        return 0;
+    case WM_KILLFOCUS:
+        cv_fire(e, HPUI_EV_FOCUS, 0, 0, 0);
+        return 0;
+
+    case WM_GETDLGCODE:
+        /* A canvas is a text surface: it wants Tab, the arrows and every
+         * character. Without this the parent's dialog manager steals Tab and
+         * the arrow keys, and an editor cannot indent or move its caret. */
+        return DLGC_WANTCHARS | DLGC_WANTARROWS | DLGC_WANTTAB;
+
+    case WM_SETCURSOR:
+        if (LOWORD(lp) == HTCLIENT) {
+            cv_apply_cursor(e);
+            return TRUE;
+        }
+        break;
+
+    case WM_DESTROY:
+        cv_free_backbuffer(e);
+        return 0;
+    default: break;
+    }
+    return DefWindowProcW(hw, msg, wp, lp);
 }
 
 #endif /* _WIN32 */
@@ -2370,6 +3962,7 @@ static LRESULT CALLBACK ui_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 /* ================= non-Windows stubs (API-complete, inert) ================= */
 #ifndef _WIN32
 void hpui_init(void) {}
+int64_t hpui_dpi_scale(void) { return 96; }
 int64_t hpui_dispatch(int ms) { (void)ms; return 0; }
 void hpui_run_main(void) {}
 void hpui_quit(void) {}
@@ -2399,6 +3992,7 @@ int64_t hpui_ctrl_rect(int64_t h, int64_t *x, int64_t *y, int64_t *w, int64_t *h
     (void)h; *x = *y = *w = *ht = 0; return -1;
 }
 int64_t hpui_ctrl_focus(int64_t h) { (void)h; return -1; }
+int64_t hpui_ctrl_select_all(int64_t h) { (void)h; return -1; }
 int64_t hpui_list_add(int64_t h, const char *i) { (void)h; (void)i; return -1; }
 int64_t hpui_list_clear(int64_t h) { (void)h; return -1; }
 int64_t hpui_list_remove(int64_t h, int64_t i) { (void)h; (void)i; return -1; }
@@ -2422,12 +4016,21 @@ int64_t hpui_ctrl_set_bg(int64_t h, int64_t r) { (void)h; (void)r; return -1; }
 int64_t hpui_ctrl_set_fg(int64_t h, int64_t r) { (void)h; (void)r; return -1; }
 int64_t hpui_ctrl_accent(int64_t h, int64_t r) { (void)h; (void)r; return -1; }
 int64_t hpui_ctrl_radius(int64_t h, int64_t r) { (void)h; (void)r; return -1; }
+int64_t hpui_input_margin(int64_t h, int64_t l, int64_t r) {
+    (void)h; (void)l; (void)r; return -1;
+}
 int64_t hpui_ctrl_style(int64_t h, int64_t r) { (void)h; (void)r; return -1; }
 int64_t hpui_ctrl_font(int64_t h, int64_t s, bool b) { (void)h; (void)s; (void)b; return -1; }
 int64_t hpui_picture_load(int64_t h, const char *p) { (void)h; (void)p; return -1; }
+int64_t hpui_ctrl_pic(int64_t h, const char *p) { (void)h; (void)p; return -1; }
 int64_t hpui_theme_set(int64_t w, const int64_t *v, int n) { (void)w; (void)v; (void)n; return -1; }
 int64_t hpui_repaint(int64_t h) { (void)h; return -1; }
+int64_t hpui_ctrl_svg(int64_t h, const char *s) { (void)h; (void)s; return -1; }
+int64_t hpui_ctrl_raise(int64_t h) { (void)h; return -1; }
 int64_t hpui_on_event(int64_t h, int64_t e, hval c) { (void)h; (void)e; (void)c; return -1; }
+int64_t hpui_client_size(int64_t win, int64_t *a, int64_t *b) {
+    (void)win; if (a) *a = 0; if (b) *b = 0; return -1;
+}
 int64_t hpui_hwnd(int64_t win) { (void)win; return 0; }
 int64_t hpui_timer(int64_t ms, hval c) { (void)ms; (void)c; return -1; }
 int64_t hpui_msgbox(int64_t w, const char *t, const char *x, int ty) {
@@ -2442,4 +4045,46 @@ hval ui_clip_get(void) { return hp_null; }
 int64_t hpui_text_lines(const char *t, int pt, bool b, int mw) {
     (void)t; (void)pt; (void)b; (void)mw; return 1;
 }
+int64_t hpui_textw(const char *t, int pt, bool b) {
+    (void)t; (void)pt; (void)b; return (t ? (int64_t)strlen(t) * 8 : 0);
+}
+/* Canvas: API-complete but inert off Windows. A program that draws into a
+ * canvas still runs (and still gets its layout computed) on a machine with
+ * no window system - it just has nowhere to show the result. */
+int64_t hpui_font_id(const char *f, int pt, bool b, bool it) {
+    (void)f; (void)pt; (void)b; (void)it; return 0;
+}
+int64_t hpui_font_w(int64_t id, const char *s) { (void)id; (void)s; return 0; }
+int64_t hpui_font_h(int64_t id) { (void)id; return 12; }
+int64_t hpui_draw_clear(int64_t h, int64_t rgb) { (void)h; (void)rgb; return -1; }
+int64_t hpui_draw_rect(int64_t h, int x, int y, int w, int ht, int64_t rgb) {
+    (void)h; (void)x; (void)y; (void)w; (void)ht; (void)rgb; return -1;
+}
+int64_t hpui_draw_round(int64_t h, int x, int y, int w, int ht, int r,
+                        int64_t fill, int64_t stroke, int sw) {
+    (void)h; (void)x; (void)y; (void)w; (void)ht; (void)r;
+    (void)fill; (void)stroke; (void)sw; return -1;
+}
+int64_t hpui_draw_line(int64_t h, int x1, int y1, int x2, int y2,
+                       int64_t rgb, int w) {
+    (void)h; (void)x1; (void)y1; (void)x2; (void)y2; (void)rgb; (void)w; return -1;
+}
+int64_t hpui_draw_text(int64_t h, int x, int y, int w, int ht, const char *s,
+                       int64_t rgb, int64_t fontid, int flags) {
+    (void)h; (void)x; (void)y; (void)w; (void)ht; (void)s; (void)rgb;
+    (void)fontid; (void)flags; return -1;
+}
+int64_t hpui_draw_clip(int64_t h, int x, int y, int w, int ht) {
+    (void)h; (void)x; (void)y; (void)w; (void)ht; return -1;
+}
+int64_t hpui_draw_unclip(int64_t h) { (void)h; return -1; }
+int64_t hpui_canvas_pixel(int64_t h, int x, int y) {
+    (void)h; (void)x; (void)y; return -1;
+}
+int64_t hpui_canvas_invalidate(int64_t h) { (void)h; return -1; }
+int64_t hpui_canvas_flush(int64_t h) { (void)h; return -1; }
+int64_t hpui_canvas_size(int64_t h, int64_t *w, int64_t *ht) {
+    (void)h; if (w) *w = 0; if (ht) *ht = 0; return -1;
+}
+int64_t hpui_cursor_set(int64_t h, int64_t shape) { (void)h; (void)shape; return -1; }
 #endif

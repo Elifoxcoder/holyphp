@@ -3,12 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
 <title>Packages — HolyPHP</title>
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/style.css?v=6">
 </head>
 <body>
 <div class="layout">
-<script src="assets/nav.html.js"></script>
+<script src="assets/nav.html.js?v=3"></script>
 <main>
   <h1><span class="ph">Packages</span> — <code>hphp pkg</code></h1>
   <p class="lead">HolyPHP ships with its own package manager. Packages are plain
@@ -52,7 +53,7 @@ hphp pkg home                     # print the package home directory</code></pre
 <pre><code class="hphp">// app.hphp — after: hphp pkg install mathx
 import "mathx";
 
-echo "clamped: " . clampi(42, 0, 10) . "\n";   // 10</code></pre>
+echo "clamped: " . clampi(42, 0, 10);   // 10</code></pre>
 
   <h2>Run your own registry</h2>
   <p>The registry is a normal HolyPHP program using the socket builtins
@@ -73,7 +74,7 @@ HPHP_HOME=../store ../hphp.exe run server.hphp --store /var/hphp-packages
 <pre><code class="hphp">hphp pkg registry http://your-server:8930</code></pre>
 
   <h2>End-to-end walkthrough</h2>
-<pre><code class="hphp"># 1. author
+<pre class="fragment"><code class="hphp"># 1. author
 mkdir mathx && cd mathx && hphp pkg init
 #    ... edit mathx.hphp and hphp.json ...
 hphp pkg check                        # types + borrows
@@ -102,6 +103,7 @@ hphp run app.hphp                     # import "mathx" just works</code></pre>
   </ul>
 </main>
 </div>
-<script src="assets/site.js"></script>
+<script src="assets/site.js?v=4"></script>
+<script src="assets/theme.js?v=1"></script>
 </body>
 </html>

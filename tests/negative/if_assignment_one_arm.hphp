@@ -1,0 +1,5 @@
+function borrow_if_assign_one_arm(bool $condition): int {
+    if ($condition) { $workers = 2; }
+    return $workers;
+}
+echo borrow_if_assign_one_arm(true);

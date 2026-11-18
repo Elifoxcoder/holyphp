@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+  <title>HolyPHP Playground — Browser IDE + Execution</title>
+  <link rel="stylesheet" href="assets/style.css?v=6">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.css">
+  <style>
+    body { overflow: hidden; }
+    .playground-layout { display: flex; height: 100vh; flex-direction: column; }
+    .playground-header { background: var(--bg2); border-bottom: 1px solid var(--line); padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; }
+    .playground-title { font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+    .playground-actions { display: flex; gap: 10px; align-items: center; }
+    .btn { background: var(--bg3); color: var(--fg); border: 1px solid var(--line); padding: 6px 14px; border-radius: 4px; cursor: pointer; font-family: var(--sans); font-size: 13px; }
+    .btn:hover { background: var(--bg); border-color: var(--ember-dim); }
+    .btn-primary { background: var(--ember); color: #000; border-color: var(--ember); font-weight: 600; }
+    .btn-primary:hover { background: #ff8c4d; }
+    .playground-main { display: flex; flex: 1; overflow: hidden; }
+    .sidebar { width: 280px; background: var(--bg2); border-right: 1px solid var(--line); overflow-y: auto; flex-shrink: 0; }
+    .sidebar-section { padding: 12px; border-bottom: 1px solid var(--line); }
+    .sidebar-title { font-weight: 600; color: var(--purple-hi); margin-bottom: 10px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .example-item { padding: 6px 8px; margin: 2px 0; cursor: pointer; border-radius: 4px; font-size: 13px; }
+    .example-item:hover { background: var(--bg3); }
+    .editor-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+    .editor-tabs { background: var(--bg2); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; min-height: 36px; }
+    .editor-tab { padding: 8px 16px; background: var(--bg2); border-right: 1px solid var(--line); cursor: pointer; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+    .editor-tab.active { background: var(--bg); border-bottom: 2px solid var(--ember); }
+    .editor-tools { display: flex; align-items: center; gap: 7px; padding: 3px 8px; }
+    .editor-tools .btn { padding: 4px 9px; font-size: 11px; }
+    .editor-tools .btn[aria-pressed="true"] { color: var(--ember); border-color: var(--ember-dim); background: rgba(240, 130, 75, .12); }
+    .editor-shortcuts { color: var(--dim); font: 9px var(--mono); white-space: normal; max-width: 175px; line-height: 1.25; }
+    .editor-container { flex: 1; overflow: hidden; }
+    .CodeMirror { height: 100%; font-family: var(--mono); font-size: 13.5px; }
+    .CodeMirror-gutters { background: #25262d; border-right: 1px solid #3a3b45; }
+    .CodeMirror-linenumber { color: #777b88; }
+    .hphp-diagnostics-gutter { width: 14px; }
+    .hphp-diagnostic-dot { display: block; width: 7px; height: 7px; margin: 5px auto; border-radius: 50%; background: #ff6875; box-shadow: 0 0 7px rgba(255, 104, 117, .5); }
+    .hphp-diagnostic-dot.warning { background: #e6b85c; box-shadow: 0 0 7px rgba(230, 184, 92, .45); }
+    .CodeMirror .cm-hphp-error { text-decoration: underline wavy #ff6875; text-underline-offset: 2px; }
+    .CodeMirror .cm-hphp-warning { text-decoration: underline wavy #e6b85c; text-underline-offset: 2px; }
+    .CodeMirror .hphp-diagnostic-line { background: rgba(255, 104, 117, .055); }
+    .diagnostics-panel { max-height: 145px; overflow: auto; flex: none; border-top: 1px solid var(--line); background: #22232a; color: #e7e6e2; font: 12px/1.45 var(--mono); }
+    .diagnostics-panel[hidden] { display: none; }
+    .diagnostics-heading { position: sticky; top: 0; display: flex; justify-content: space-between; padding: 6px 12px; background: #2b2c34; color: #ff9aa1; border-bottom: 1px solid #3a3b45; font: 600 11px var(--sans); }
+    .diagnostics-list { list-style: none; margin: 0; padding: 0; }
+    .diagnostic-item { display: flex; gap: 8px; padding: 5px 12px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.04); }
+    .diagnostic-item:hover { background: #30313a; }
+    .diagnostic-location { flex: none; color: #a8aab5; }
+    .diagnostic-message { overflow-wrap: anywhere; color: #ffadb3; }
+    .diagnostic-item.warning .diagnostic-message { color: #f1cf83; }
+    .CodeMirror-hints { z-index: 110; max-width: min(560px, 70vw); border: 1px solid #4b4d58; border-radius: 7px; background: #24252c; box-shadow: 0 12px 30px rgba(0,0,0,.42); font: 12px var(--mono); }
+    .CodeMirror-hint { color: #e6e5e1; padding: 6px 10px; }
+    .CodeMirror-hint-active { color: #fff; background: #44395e; }
+    .CodeMirror-hint.hphp-hint-unsafe { color: #ff9aa1; }
+    .CodeMirror-hint.hphp-hint-snippet { color: #a8dfb2; }
+    .output-pane { width: 380px; background: var(--bg2); border-left: 1px solid var(--line); display: flex; flex-direction: column; flex-shrink: 0; }
+    .output-header { background: var(--bg3); padding: 10px 16px; border-bottom: 1px solid var(--line); font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+    .output-content { flex: 1; overflow-y: auto; padding: 16px; font-family: var(--mono); font-size: 13px; background: var(--code-bg); color: var(--green); white-space: pre-wrap; line-height: 1.5; }
+    .output-content.error { color: var(--red); }
+    .playground-policy-note { margin: 10px; padding: 9px 11px; border: 1px solid rgba(255, 105, 115, .45); border-radius: 7px; background: rgba(120, 20, 30, .18); color: #ff9aa1; font-size: 12px; line-height: 1.45; }
+    .output-content .ansi-span { display: inline; }
+    .io-row { border-top: 1px solid var(--line); background: var(--bg2); padding: 8px 12px; flex: none; }
+    .io-row label { display: block; font-size: 11px; letter-spacing: 0.5px; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; }
+    .io-row label .hint { text-transform: none; letter-spacing: 0; color: var(--dim); opacity: 0.8; }
+    .stdin-row { display: flex; gap: 8px; }
+    #stdin { flex: 1; min-width: 0; background: var(--code-bg); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; font-family: var(--mono); font-size: 13px; padding: 7px 8px; }
+    #stdin:focus { outline: none; border-color: var(--ember-dim); }
+    #stdin:disabled { opacity: 0.5; }
+    .output-actions { display: flex; gap: 8px; }
+    .btn:disabled { opacity: 0.45; cursor: default; }
+    .status-bar { background: var(--bg3); border-top: 1px solid var(--line); padding: 4px 16px; font-size: 11px; color: var(--dim); display: flex; justify-content: space-between; gap: 16px; }
+    #editorModeStatus { min-width: 100px; color: var(--purple-hi); font: 600 11px var(--mono); }
+    #diagnosticsStatus { flex: 1; text-align: center; }
+    .info-banner { background: linear-gradient(90deg, var(--ember-dim), var(--purple)); color: #fff; padding: 6px 20px; text-align: center; font-size: 13px; }
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; align-items: center; justify-content: center; }
+    .modal.active { display: flex; }
+    .modal-content { background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; }
+
+    /* inline SVG icon set — replaces the emoji glyphs */
+    .svg-sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+    .ico { width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .ico.solid { fill: currentColor; stroke: none; }
+    .i-ember { color: var(--ember); }
+    .btn { display: inline-flex; align-items: center; gap: 6px; }
+    .example-item { display: flex; align-items: center; gap: 8px; }
+    .info-banner { display: flex; align-items: center; justify-content: center; gap: 6px; }
+    .output-header > span, .editor-tab > span:first-child { display: inline-flex; align-items: center; gap: 6px; }
+
+    /* HolyPHP token colours — same palette as the docs highlighter */
+    .CodeMirror .cm-kw { color: var(--purple-hi); }
+    .CodeMirror .cm-type { color: var(--yellow); }
+    .CodeMirror .cm-fn { color: #61afef; }
+    .CodeMirror .cm-cls { color: #e5c07b; }
+    .CodeMirror .cm-str { color: var(--green); }
+    .CodeMirror .cm-num { color: #d19a66; }
+    .CodeMirror .cm-var { color: #e06c75; }
+    .CodeMirror .cm-op { color: #56b6c2; }
+    .CodeMirror .cm-com { color: #7a7f8f; font-style: italic; }
+    /* The editor is intentionally dark in both site themes, so use tokens
+       with enough contrast against CodeMirror's fixed dark background. */
+    .playground-page .CodeMirror { color: #f0eee8; }
+    .playground-page .CodeMirror .cm-kw { color: #c6adff; }
+    .playground-page .CodeMirror .cm-type, .playground-page .CodeMirror .cm-cls { color: #f2ce83; }
+    .playground-page .CodeMirror .cm-fn { color: #8fc8ff; }
+    .playground-page .CodeMirror .cm-str { color: #9bd7ae; }
+    .playground-page .CodeMirror .cm-num { color: #f0b47b; }
+    .playground-page .CodeMirror .cm-var { color: #ff969f; }
+    .playground-page .CodeMirror .cm-com { color: #adb2c2; }
+    .playground-page .output-content { color: #a8dfb2; }
+    .playground-page #stdin { color: #f0eee8; }
+    .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+    .modal-body { padding: 20px; }
+    @media (max-width: 1100px) {
+      .sidebar { width: 220px; }
+      .output-pane { width: 310px; }
+      .playground-header { padding: 8px 12px; }
+      .playground-actions { gap: 5px; }
+      .playground-actions .btn { padding: 5px 8px; }
+    }
+    @media (max-width: 760px) {
+      body { overflow: auto; }
+      .playground-layout { min-height: 100vh; height: auto; }
+      .playground-title > span:last-child, .sidebar { display: none; }
+      .playground-actions .btn:not(.btn-primary):not(.theme-toggle) { display: none; }
+      .playground-main { flex-direction: column; overflow: visible; }
+      .editor-pane { min-height: 55vh; }
+      .editor-container { min-height: 36vh; }
+      .output-pane { width: 100%; min-height: 32vh; border-left: 0; border-top: 1px solid var(--line); }
+      .output-content { min-height: 120px; }
+      .editor-tools .btn { padding: 4px 7px; }
+      .editor-tab { padding: 8px 10px; }
+      .status-bar { padding: 5px 8px; gap: 6px; font-size: 9px; }
+      #editorModeStatus { min-width: auto; }
+    }
+  </style>
+</head>
+
+<body class="playground-page">
+  <svg class="svg-sprite" aria-hidden="true" focusable="false"><defs>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></symbol>
+    <symbol id="i-book-open" viewBox="0 0 24 24"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
+    <symbol id="i-file-plus" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 18v-6"/><path d="M9 15h6"/></symbol>
+    <symbol id="i-file-text" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m5 3 14 9-14 9V3z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-smile" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><path d="M9 9h.01"/><path d="M15 9h.01"/></symbol>
+    <symbol id="i-hash" viewBox="0 0 24 24"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="M16 3l-2 18"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 2 9 5-9 5-9-5 9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></symbol>
+  </defs></svg>
+  <div class="playground-layout">
+    <div class="info-banner">
+      <svg class="ico solid" aria-hidden="true"><use href="#i-zap"></use></svg> HolyPHP Playground - Secure online compiler
+    </div>
+    <header class="playground-header">
+      <div class="playground-title">
+        <svg class="ico solid i-ember" aria-hidden="true"><use href="#i-code"></use></svg>
+        <span>Holy<span class="ph">PHP</span> Playground</span>
+        <span style="color: var(--dim); font-weight: 400;">| Browser IDE + Execution</span>
+      </div>
+      <div class="playground-actions">
+        <button class="btn" onclick="showDocs()"><svg class="ico" aria-hidden="true"><use href="#i-book"></use></svg>Docs</button>
+        <button class="btn" onclick="newFile()"><svg class="ico" aria-hidden="true"><use href="#i-file-plus"></use></svg>New</button>
+        <button class="btn" onclick="saveFile()"><svg class="ico" aria-hidden="true"><use href="#i-save"></use></svg>Save</button>
+        <button class="btn btn-primary" onclick="runCode()"><svg class="ico solid" aria-hidden="true"><use href="#i-play"></use></svg>Run (hphp run)</button>
+        <button class="btn" onclick="checkCode()"><svg class="ico" aria-hidden="true"><use href="#i-check"></use></svg>Check</button>
+        <button class="btn theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode"><span class="theme-toggle-icon" aria-hidden="true">☾</span><span class="theme-toggle-label" data-theme-label>Dark mode</span></button>
+      </div>
+    </header>
+    
+    <div class="playground-main">
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <div class="sidebar-title">Examples</div>
+          <div class="example-item" onclick="loadExample('hello')"><svg class="ico" aria-hidden="true"><use href="#i-smile"></use></svg>Hello World</div>
+          <div class="example-item" onclick="loadExample('fib')"><svg class="ico" aria-hidden="true"><use href="#i-hash"></use></svg>Fibonacci</div>
+          <div class="example-item" onclick="loadExample('classes')"><svg class="ico" aria-hidden="true"><use href="#i-layers"></use></svg>Classes &amp; Objects</div>
+          <div class="example-item" onclick="loadExample('arrays')"><svg class="ico" aria-hidden="true"><use href="#i-list"></use></svg>Arrays &amp; Maps</div>
+          <div class="example-item" onclick="loadExample('closures')"><svg class="ico" aria-hidden="true"><use href="#i-link"></use></svg>Closures</div>
+          <div class="example-item" onclick="loadExample('match')"><svg class="ico" aria-hidden="true"><use href="#i-target"></use></svg>Match Expressions</div>
+          <div class="example-item" onclick="loadExample('colors')"><svg class="ico" aria-hidden="true"><use href="#i-zap"></use></svg>Colors (print / println)</div>
+          <div class="example-item" onclick="loadExample('inputdemo')"><svg class="ico" aria-hidden="true"><use href="#i-send"></use></svg>Input (input)</div>
+          <div class="example-item" onclick="loadExample('ui')"><svg class="ico" aria-hidden="true"><use href="#i-image"></use></svg>GUI Demo (ui)</div>
+        </div>
+        <div class="sidebar-section">
+          <div class="sidebar-title">Quick Reference</div>
+          <div class="example-item" onclick="showRef('vars')">$variables, types</div>
+          <div class="example-item" onclick="showRef('functions')">Functions</div>
+          <div class="example-item" onclick="showRef('borrow')">Borrowing & Ownership</div>
+          <div class="example-item" onclick="showRef('imports')">Imports</div>
+        </div>
+        <div class="sidebar-section">
+          <div class="sidebar-title">Resources</div>
+          <div class="example-item" onclick="window.open('guide.html', '_blank')"><svg class="ico" aria-hidden="true"><use href="#i-book-open"></use></svg>Interactive Guide</div>
+          <div class="example-item" onclick="window.open('index.html', '_blank')"><svg class="ico" aria-hidden="true"><use href="#i-home"></use></svg>Docs Home</div>
+          <div class="example-item" onclick="window.open('lang.html', '_blank')"><svg class="ico" aria-hidden="true"><use href="#i-file-text"></use></svg>Language Ref</div>
+        </div>
+      </aside>
+      
+      <section class="editor-pane">
+        <div class="editor-tabs">
+          <div class="editor-tab active">
+            <span><svg class="ico" aria-hidden="true"><use href="#i-file"></use></svg></span>
+            <span id="filename">main.hphp</span>
+          </div>
+          <div class="editor-tools">
+            <span class="editor-shortcuts">Ctrl/⌘+Enter Run · Shift Check · Ctrl/⌘+Space Complete</span>
+            <button class="btn" id="completeBtn" type="button" title="Show completions (Ctrl/⌘+Space)">Complete</button>
+            <button class="btn" id="vimToggle" type="button" aria-pressed="false">Vim: Off</button>
+          </div>
+        </div>
+        <div class="editor-container">
+          <textarea id="codeEditor">// Welcome to HolyPHP Playground
+// Write your HolyPHP code here
+
+echo "Hello, HolyPHP!";
+
+$name = "Developer";
+echo "Welcome, {$name}!";
+
+// Try running with: hphp run main.hphp
+</textarea>
+        </div>
+        <section class="diagnostics-panel" id="diagnosticsPanel" hidden aria-live="polite">
+          <div class="diagnostics-heading"><span id="diagnosticsHeading">Problems</span><span>click a row to jump to it</span></div>
+          <ul class="diagnostics-list" id="diagnosticsList"></ul>
+        </section>
+      </section>
+      
+      <aside class="output-pane">
+        <div class="output-header">
+          <span><svg class="ico" aria-hidden="true"><use href="#i-send"></use></svg>Output</span>
+          <span class="output-actions">
+            <button class="btn" id="stopBtn" onclick="stopRun()" disabled>Stop</button>
+            <button class="btn" onclick="clearOutput()">Clear</button>
+          </span>
+        </div>
+        <div class="playground-policy-note" role="note">Playground safety: shell/process calls, raw memory/FFI, file writes and unconditional loops are blocked. Other loops have CPU/time limits and temporary storage is capped. Restricted code is shown in red and is not executed.</div>
+        <div class="output-content" id="output">Ready. Click "Run" — the program starts and you can answer input() right here.</div>
+        <div class="io-row">
+          <label for="stdin">Live input <span class="hint">— type while the program runs, Enter sends the line to input()</span></label>
+          <div class="stdin-row">
+            <input id="stdin" type="text" spellcheck="false" autocomplete="off"
+                   placeholder="waiting for the program…" disabled>
+            <button class="btn" id="sendBtn" onclick="sendInput()" disabled>Send</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+    
+    <footer class="status-bar">
+      <span id="editorModeStatus">-- INSERT --</span>
+      <span id="diagnosticsStatus">Checking as you type</span>
+      <span id="cursorStatus">Line: 1, Column: 1 | UTF-8 | HolyPHP</span>
+    </footer>
+  </div>
+
+  <div class="modal" id="refModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modalTitle">Reference</h3>
+        <button class="btn" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body" id="modalBody"></div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <!-- the PHP mode is not used: it only highlights text inside <?php ... ?> and HolyPHP files have no open tag. See the hphp mode below. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/comment/comment.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/keymap/vim.min.js"></script>
+  <script src="assets/playground-completions.js"></script>
+  <script>
+    let editor;
+    let vimEnabled = false;
+    let diagnosticMarks = [];
+    let diagnosticWidgets = [];
+    let diagnosticsTimer = null;
+    let diagnosticInFlight = false;
+    let diagnosticDirty = false;
+    let lastDiagnosticAt = 0;
+    let diagnosticRevision = 0;
+
+    const examples = {
+      hello: `echo "Hello, World!";
+echo "Welcome to HolyPHP!";`,
+      fib: `function fib(int $n): int {
+    if ($n < 2) {
+        return $n;
+    }
+    return fib($n - 1) + fib($n - 2);
+}
+
+for ($i = 0; $i < 12; $i++) {
+    echo "fib({$i}) = " . fib($i);
+}`,
+      classes: `class Counter {
+    pub int $count = 0;
+    
+    pub function bump(): void {
+        $this->count += 1;
+    }
+    
+    pub function get(): int {
+        return $this->count;
+    }
+}
+
+$c = new Counter();
+$c->bump();
+$c->bump();
+$c->bump();
+echo "Count: " . $c->get();`,
+      arrays: `\$nums = [5, 3, 8, 1, 9];
+sort(\$nums);
+echo "Sorted: " . implode(", ", \$nums);
+
+\$user = ["name" => "Ada", "lang" => "HolyPHP"];
+foreach (\$user as \$k => \$v) {
+    echo "{\$k} => {\$v}";
+}`,
+      closures: `\$base = 100;
+\$add = function(int \$x) use (\$base): int {
+    return \$base + \$x;
+};
+echo "Result: " . \$add(50);
+
+\$counter = 0;
+\$inc = function() use (&\$counter): void {
+    \$counter++;
+};
+\$inc(); \$inc(); \$inc();
+echo "Counter: {\$counter}";`,
+      match: `function describe(int \$n): string {
+    return match (\$n) {
+        0 => "zero",
+        1 => "one",
+        2, 3 => "small",
+        10 => "ten",
+        _ => "other"
+    };
+}
+
+for (\$i = 0; \$i < 5; \$i++) {
+    echo "{\$i}: " . describe(\$i);
+}
+echo "10: " . describe(10);
+echo "99: " . describe(99);`,
+      colors: `println("Hello World", GREEN);
+println("Something went wrong", RED);
+println("Watch out", YELLOW);
+println("Just info", BLUE);
+println("Fancy", MAGENTA);
+println("Bright cyan", BRIGHT_CYAN);
+print("plain print, no colour");
+println("");
+println("back to the default colour");`,
+      inputdemo: `println("What is your name?");
+$name = input("> ", GREEN);
+println("Hello, {$name}!");
+
+$city = input("Which city? ");
+println("You are in " . $city . ".");
+
+// press Run, then answer each input() in the "Live input" box below —
+// you type while the program is already running.`,
+      ui: `import "ui";
+
+\$app = new App("HolyPHP GUI");
+\$app->theme("midnight")->pad(20)->gap(10);
+
+\$app->heading("Hello from HolyPHP!");
+\$app->sub("Native desktop GUI");
+
+\$name = \$app->input("World");
+\$app->button("Say Hello", "primary", function() use (\$app, \$name) {
+    \$app->msg("Hello, " . \$name->content() . "!");
+});
+
+\$app->run();`
+    };
+    
+    const refs = {
+      vars: `<h4>Variables</h4>
+<pre><code class="hphp">$x = 5;           // inferred
+$x: int = 5;      // explicit
+$name = "Hello";  // string
+$ok = true;       // bool</code></pre>
+<h4>Types</h4>
+<p>int, float, bool, string, array, mixed, void, own&lt;T&gt;, Rc&lt;T&gt;, *T</p>`,
+      functions: `<h4>Functions</h4>
+<pre><code class="hphp">function add(int $a, int $b): int {
+    return $a + $b;
+}
+
+function greet(string $name = "World"): string {
+    return "Hello, {$name}!";
+}
+
+// by reference
+function bump(int &$x): void {
+    $x++;
+}</code></pre>`,
+      borrow: `<h4>Borrowing</h4>
+<pre><code class="hphp">// Immutable borrow
+function len(string $s): int { return strlen($s); }
+
+// Mutable borrow
+function inc(int &$x): void { $x++; }
+
+// Multiple immutable OK, one mutable only
+// Cannot have both at same time</code></pre>
+<h4>Ownership</h4>
+<p><code>own&lt;T&gt;</code> - moved on assignment<br>
+<code>Rc&lt;T&gt;</code> - reference counted<br>
+<code>*T</code> - raw pointer (unsafe only)</p>`,
+      imports: `<h4>Imports</h4>
+<pre><code class="hphp">import "ui";        // embedded library
+import "async";     // embedded library
+import "helpers";   // helpers.hphp in same dir
+import "ui";        // embedded library</code></pre>
+<p>Libraries ship embedded in the compiler binary.</p>`
+    };
+    
+    // HolyPHP mode for CodeMirror.
+    //
+    // The bundled PHP mode treats everything outside <?php ... ?> as HTML, and a
+    // .hphp file has no open tag at all — so the editor rendered every line with
+    // no token type and nothing was coloured. This mode is the same tokenizer
+    // the docs use (assets/site.js: hl_hphp), so the editor and the guide agree.
+    CodeMirror.defineMode("hphp", () => {
+      const KW = typeof HPHP_KEYWORDS !== "undefined" ? HPHP_KEYWORDS : new Set((
+        "function pub private public return if else elseif while for foreach as break continue " +
+        "switch case default match enum class extends implements interface new try catch finally " +
+        "throw use fn echo print import unsafe own Rc static const this null true false and or xor " +
+        "let mut int float bool string array mixed void exit die global include require"
+      ).split(/\s+/));
+      const TY = typeof HPHP_TYPES !== "undefined" ? HPHP_TYPES : new Set("int float bool string array mixed void own Rc".split(/\s+/));
+      return {
+        startState: () => ({}),
+        token(stream) {
+          if (stream.match("//")) { stream.skipToEnd(); return "com"; }
+          if (stream.peek() === "#") {
+            stream.next();
+            if (stream.match("[")) return "kw";   // #[attribute]
+            stream.skipToEnd();
+            return "com";
+          }
+          if (stream.match("/*")) {
+            while (!stream.eol()) {
+              if (stream.match("*/")) return "com";
+              stream.next();
+            }
+            return "com";
+          }
+          let quote = null;
+          if (stream.match('"')) quote = '"';
+          else if (stream.match("'")) quote = "'";
+          if (quote) {
+            while (!stream.eol()) {
+              const c = stream.next();
+              if (c === "\\") { stream.next(); continue; }
+              if (c === quote) break;
+            }
+            return "str";
+          }
+          if (stream.match(/^\$[A-Za-z_][A-Za-z0-9_]*/)) return "var";
+          if (stream.match(/^(?:0x[0-9a-fA-F]+|0b[01]+|[0-9]+(?:\.[0-9]+)?)/)) return "num";
+          const word = stream.match(/^[A-Za-z_][A-Za-z0-9_]*/);
+          if (word) {
+            const w = word[0];
+            if (KW.has(w)) return "kw";
+            if (TY.has(w)) return "type";
+            if (stream.match(/^[ \t]*\(/, false)) return "fn";   // a call
+            if (/^[A-Z]/.test(w)) return "cls";                  // a class name
+            return null;
+          }
+          if (stream.match(/^[=+\-*/%!<>?:&|^~]+/)) return "op";
+          stream.next();
+          return null;
+        }
+      };
+    });
+
+    document.addEventListener("DOMContentLoaded", () => {
+      editor = CodeMirror.fromTextArea(document.getElementById("codeEditor"), {
+        mode: "hphp",
+        theme: "material-darker",
+        lineNumbers: true,
+        matchBrackets: true,
+        autoCloseBrackets: true,
+        indentUnit: 4,
+        tabSize: 4,
+        lineWrapping: true,
+        lineComment: "//",
+        gutters: ["CodeMirror-linenumbers", "hphp-diagnostics-gutter"],
+        extraKeys: {
+          "Ctrl-Space": cm => showCompletions(true), "Cmd-Space": cm => showCompletions(true),
+          "Ctrl-Enter": () => runCode(), "Cmd-Enter": () => runCode(),
+          "Ctrl-Shift-Enter": () => checkCode(), "Cmd-Shift-Enter": () => checkCode(),
+          "Ctrl-S": () => saveFile(), "Cmd-S": () => saveFile(),
+          "Ctrl-/": "toggleComment", "Cmd-/": "toggleComment",
+          "Tab": cm => { if (!expandFori(cm)) cm.execCommand("defaultTab"); }
+        }
+      });
+      try { vimEnabled = localStorage.getItem("hphp-vim-mode") === "1"; } catch (_) {}
+      setVimMode(vimEnabled);
+      document.getElementById("vimToggle").addEventListener("click", () => setVimMode(!vimEnabled));
+      document.getElementById("completeBtn").addEventListener("click", () => showCompletions(true));
+      editor.on("cursorActivity", updateCursorStatus);
+      editor.on("change", () => { diagnosticRevision++; scheduleDiagnostics(); });
+      editor.on("inputRead", (_, change) => {
+        if (!change || !change.text || change.text.join("").length !== 1) return;
+        const token = editor.getTokenAt(editor.getCursor());
+        if (token.type && /string|comment/.test(token.type)) return;
+        const word = token.string.replace(/^\$/, "");
+        if (word.length >= 2) showCompletions(false);
+      });
+      editor.on("vim-mode-change", info => {
+        const el = document.getElementById("editorModeStatus");
+        if (el && vimEnabled) el.textContent = "-- " + (info && info.mode ? info.mode.toUpperCase() : "NORMAL") + " --";
+      });
+      installVimCommands();
+      updateCursorStatus();
+      scheduleDiagnostics();
+      const si = document.getElementById("stdin");
+      if (si) si.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); sendInput(); }
+      });
+    });
+    
+    function loadExample(name) {
+      if (examples[name]) {
+        editor.setValue(examples[name]);
+        document.getElementById('filename').textContent = name + '.hphp';
+        document.getElementById('output').textContent = 'Loaded example: ' + name + '.hphp\n\nClick "Run" for local execution instructions.';
+        document.getElementById('output').className = 'output-content';
+      }
+    }
+    
+    /* ---- ANSI rendering ------------------------------------------------
+     * The compiler colours print/println/input output with real ANSI codes.
+     * Those bytes arrive here verbatim, so the playground translates them to
+     * spans instead of dumping escape characters into the output pane. */
+    function escHtml(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    const ANSI_FG = {
+      30: '#5c6370', 31: '#e06c75', 32: '#98c379', 33: '#e5c07b',
+      34: '#61afef', 35: '#c678dd', 36: '#56b6c2', 37: '#abb2bf',
+      90: '#5c6370', 91: '#e06c75', 92: '#98c379', 93: '#e5c07b',
+      94: '#61afef', 95: '#c678dd', 96: '#56b6c2', 97: '#ffffff'
+    };
+
+    function ansiToHtml(text) {
+      const src = String(text).replace(/\r\n/g, '\n');
+      let out = '', fg = null, bold = false, last = 0, m;
+      const re = /\u001b\[([0-9;]*)m/g;
+      const flush = (chunk) => {
+        if (!chunk) return;
+        let style = '';
+        if (fg) style += 'color:' + fg + ';';
+        if (bold) style += 'font-weight:700;';
+        out += style ? '<span style="' + style + '">' + escHtml(chunk) + '</span>' : escHtml(chunk);
+      };
+      while ((m = re.exec(src)) !== null) {
+        flush(src.slice(last, m.index));
+        last = re.lastIndex;
+        const parts = (m[1] === '' ? '0' : m[1]).split(';').map(Number);
+        for (const c of parts) {
+          if (c === 0) { fg = null; bold = false; }
+          else if (c === 1) bold = true;
+          else if (c === 22) bold = false;
+          else if (c === 39) fg = null;
+          else if (ANSI_FG[c]) fg = ANSI_FG[c];
+        }
+      }
+      flush(src.slice(last));
+      return out;
+    }
+
+    function renderOutput(text, isError) {
+      const o = document.getElementById('output');
+      o.className = 'output-content' + (isError ? ' error' : '');
+      o.innerHTML = ansiToHtml(text === undefined || text === null ? '' : text);
+    }
+
+    const BLOCKED_PLAYGROUND_FEATURES = new Set([
+      'unsafe', 'malloc', 'free', 'memcpy', 'memset', 'ffi_load', 'ffi_call', 'heap_dump',
+      'shell_exec', 'exec', 'passthru', 'proc_open', 'proc_get_status', 'proc_start',
+      'proc_read', 'proc_read_err', 'proc_write', 'proc_alive', 'proc_exit', 'proc_close',
+      'proc_kill', 'system', 'popen', 'pcntl_exec', 'call_user_func',
+      'holy_maxout_start', 'holy_challenge_start', 'thr_spawn', 'thr_parallel_map',
+      'file_put_contents', 'fopen', 'fwrite', 'fclose', 'mkdir', 'rmdir', 'unlink',
+      'rename', 'copy', 'touch'
+    ]);
+
+    function restrictedPlaygroundFeature(source) {
+      const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|#[^\r\n]*|'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g, ' ');
+      if (code.includes('`')) return 'backtick shell syntax';
+      if (/\bwhile\s*\(\s*\(*\s*(?:true|1)\s*\)*\s*\)/i.test(code)) return 'unbounded while loop';
+      if (/\bfor\s*\(\s*;\s*;\s*\)/i.test(code)) return 'unbounded for loop';
+      const match = code.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) || [];
+      return match.map(name => name.toLowerCase()).find(name => BLOCKED_PLAYGROUND_FEATURES.has(name)) || null;
+    }
+
+    function rejectRestrictedPlaygroundCode(source) {
+      const feature = restrictedPlaygroundFeature(source);
+      if (!feature) return false;
+      renderOutput('Not allowed in the online playground: ' + feature + ' is restricted. Shell/process calls, raw memory/FFI, file writes and unconditional loops are disabled here.\n\nThis code was not sent to the compiler or executed.', true);
+      return true;
+    }
+
+    /* ---- live sessions ------------------------------------------------
+     * Run starts a session on the server: the program runs in a pseudo
+     * terminal and its output streams back over SSE, so input() can be
+     * answered while the program is already running. */
+    const live = { sid: null, es: null, text: "", render: null, watchdog: null, running: false, startedAt: 0 };
+
+    /* Activity watchdog — mirrors the server limits (idle 90 s, total 5 min).
+     * Every output chunk and every answer typed into the live box resets it,
+     * so a program waiting for input() survives while the visitor types
+     * instead of dying after a fixed minute. */
+    const IDLE_MS = 100000;
+    const TOTAL_MS = 320000;
+
+    function bumpWatchdog() {
+      if (!live.running) return;
+      if (live.watchdog) clearTimeout(live.watchdog);
+      const left = TOTAL_MS - (Date.now() - live.startedAt);
+      if (left <= 0) { stopRun(); return; }
+      live.watchdog = setTimeout(() => {
+        if (!live.running) return;
+        live.text += (Date.now() - live.startedAt >= TOTAL_MS)
+          ? "\n[playground] stopped: 5 minute time limit reached\n"
+          : "\n[playground] stopped: no input or output for 100 s\n";
+        stopRun();
+      }, Math.min(IDLE_MS, left));
+    }
+
+    function setRunning(on) {
+      live.running = on;
+      const stop = document.getElementById("stopBtn");
+      const input = document.getElementById("stdin");
+      const send = document.getElementById("sendBtn");
+      if (stop) stop.disabled = !on;
+      if (send) send.disabled = !on;
+      if (input) {
+        input.disabled = !on;
+        if (on) { input.placeholder = "type here and press Enter"; input.focus(); }
+        else input.placeholder = "waiting for the program…";
+      }
+    }
+
+    function scheduleRender() {
+      if (live.render) return;
+      live.render = setTimeout(() => { live.render = null; renderOutput(live.text, false); }, 60);
+    }
+
+    function finishRun(code) {
+      if (live.es) { live.es.close(); live.es = null; }
+      if (live.watchdog) { clearTimeout(live.watchdog); live.watchdog = null; }
+      if (code && code !== 0) live.text += "\n[program exited with code " + code + "]";
+      if (live.render) { clearTimeout(live.render); live.render = null; }
+      renderOutput(live.text || "(no output)", false);
+      live.sid = null;
+      setRunning(false);
+    }
+
+    function stopRun() {
+      if (live.sid) {
+        fetch("https://hphp.ch/api/live/stop", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sid: live.sid })
+        }).catch(() => {});
+      }
+      live.text += "\n[stopped]";
+      finishRun(0);
+    }
+
+    function sendInput() {
+      const el = document.getElementById("stdin");
+      if (!live.sid || !el) return;
+      const data = el.value + "\n";
+      el.value = "";
+      fetch("https://hphp.ch/api/live/input", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sid: live.sid, data })
+      }).catch(() => {});
+      bumpWatchdog();   /* typing counts as activity */
+      el.focus();
+    }
+
+    function runCode() {
+      const code = editor.getValue();
+      if (rejectRestrictedPlaygroundCode(code)) return;
+      if (live.es) { live.es.close(); live.es = null; }
+      live.sid = null;
+      live.text = "";
+      live.startedAt = Date.now();
+      renderOutput("Starting the program…\n", false);
+      setRunning(true);
+      /* compile + run may not hang the playground for ever */
+      bumpWatchdog();
+
+      fetch("https://hphp.ch/api/live/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: code, filename: "main.hphp" })
+      })
+      .then((r) => r.json())
+      .then((data) => {
+        if (!data.success || !data.sid) {
+          live.text = data.error || "Could not start the program.";
+          finishRun(0);
+          renderOutput(live.text, true);
+          return;
+        }
+        live.sid = data.sid;
+        const es = new EventSource("/api/live/events?sid=" + encodeURIComponent(data.sid));
+        live.es = es;
+        es.onmessage = (ev) => {
+          let msg;
+          try { msg = JSON.parse(ev.data); } catch (e) { return; }
+          if (msg.type === "out") { live.text += msg.text; scheduleRender(); bumpWatchdog(); }
+          else if (msg.type === "end") finishRun(msg.code || 0);
+        };
+        es.onerror = () => {
+          /* a finished session answers 410 — EventSource would retry forever */
+          if (live.es && live.es.readyState === EventSource.CLOSED) finishRun(0);
+        };
+      })
+      .catch((err) => {
+        live.text = "Error connecting to the runner: " + err.message;
+        finishRun(0);
+        renderOutput(live.text, true);
+      });
+    }
+    
+    const HPHP_WORDS = ("function pub private public return if else elseif while for foreach as break continue switch case default match enum class extends implements interface new try catch finally throw use fn echo print import unsafe own Rc static const this null true false and or xor let mut int float bool string array mixed void exit die global include require").split(/\s+/);
+    const HPHP_TYPES_LOCAL = "int float bool string array mixed void own Rc".split(/\s+/);
+
+    function setVimMode(on) {
+      vimEnabled = Boolean(on);
+      if (editor) editor.setOption("keyMap", vimEnabled ? "vim" : "default");
+      const button = document.getElementById("vimToggle");
+      if (button) { button.textContent = "Vim: " + (vimEnabled ? "On" : "Off"); button.setAttribute("aria-pressed", String(vimEnabled)); button.title = "Toggle authentic Vim keybindings (Esc normal, i insert, :w save, :run run, :check check, ,r run, ,c check)"; }
+      const status = document.getElementById("editorModeStatus");
+      if (status) status.textContent = vimEnabled ? "-- NORMAL --" : "INSERT · HolyPHP";
+      try { localStorage.setItem("hphp-vim-mode", vimEnabled ? "1" : "0"); } catch (_) {}
+      if (editor) editor.focus();
+    }
+
+    function installVimCommands() {
+      if (!CodeMirror.Vim) return;
+      CodeMirror.Vim.defineEx("write", "w", () => saveFile());
+      CodeMirror.Vim.defineEx("run", "run", () => runCode());
+      CodeMirror.Vim.defineEx("check", "check", () => checkCode());
+      CodeMirror.Vim.map("normal", ",r", () => runCode());
+      CodeMirror.Vim.map("normal", ",c", () => checkCode());
+      CodeMirror.Vim.map("normal", ",w", () => saveFile());
+      CodeMirror.Vim.map("insert", "<Tab>", cm => { if (!expandFori(cm)) cm.execCommand("defaultTab"); });
+    }
+
+    function expandFori(cm) {
+      const cur = cm.getCursor(), line = cm.getLine(cur.line);
+      const from = { line: cur.line, ch: cur.ch - 4 };
+      if (cur.ch < 4 || line.slice(cur.ch - 4, cur.ch) !== "fori") return false;
+      const indent = (line.match(/^\s*/) || [""])[0];
+      cm.replaceRange("for ($i = 0; $i < $n; $i++) {\n" + indent + "    \n" + indent + "}", from, cur, "input");
+      cm.setCursor({ line: cur.line + 1, ch: indent.length + 4 });
+      return true;
+    }
+
+    function localCompletions(source) {
+      const out = new Set(HPHP_WORDS.concat(HPHP_TYPES_LOCAL));
+      (window.HPHP_BUILTINS || []).forEach(item => out.add(item.name));
+      for (const m of source.matchAll(/\$[A-Za-z_][A-Za-z0-9_]*/g)) out.add(m[0]);
+      for (const m of source.matchAll(/\bfunction\s+([A-Za-z_][A-Za-z0-9_]*)/g)) out.add(m[1]);
+      for (const m of source.matchAll(/\b(?:class|enum|interface)\s+([A-Za-z_][A-Za-z0-9_]*)/g)) out.add(m[1]);
+      return out;
+    }
+
+    function showCompletions(manual) {
+      if (!editor || !CodeMirror.showHint) return;
+      const cur = editor.getCursor(), token = editor.getTokenAt(cur);
+      const word = token.string || "";
+      const from = { line: cur.line, ch: token.start }, to = { line: cur.line, ch: token.end };
+      const prefix = word.startsWith("$") ? word.slice(1) : word;
+      if (!manual && prefix.length < 2) return;
+      const source = editor.getValue(), builtins = window.HPHP_BUILTINS || [];
+      const candidates = [];
+      if (prefix.toLowerCase() === "fori" || "fori".startsWith(prefix.toLowerCase())) {
+        candidates.push({ text: "fori", displayText: "fori     for loop template · Tab to expand", className: "hphp-hint-snippet" });
+      }
+      for (const name of localCompletions(source)) {
+        if (!name.toLowerCase().startsWith(prefix.toLowerCase()) || name === word) continue;
+        const builtin = builtins.find(item => item.name === name);
+        const unsafe = builtin && builtin.unsafe;
+        candidates.push({ text: name, displayText: name + (builtin ? "  " + (builtin.signature || "") + (unsafe ? "  · restricted in Playground" : "") : ""), className: unsafe ? "hphp-hint-unsafe" : "" });
+      }
+      candidates.sort((a,b) => (a.text === "fori" ? -1 : b.text === "fori" ? 1 : a.text.localeCompare(b.text)));
+      if (!candidates.length) return;
+      CodeMirror.showHint(editor, () => ({ list: candidates.slice(0, 80), from, to }), { completeSingle: false, closeOnUnfocus: true });
+    }
+
+    function clearDiagnostics() {
+      diagnosticMarks.forEach(mark => mark.clear()); diagnosticMarks = [];
+      diagnosticWidgets.forEach(widget => editor.removeLineWidget(widget)); diagnosticWidgets = [];
+      editor.clearGutter("hphp-diagnostics-gutter");
+    }
+
+    function showDiagnostics(items, status) {
+      clearDiagnostics();
+      const panel = document.getElementById("diagnosticsPanel"), list = document.getElementById("diagnosticsList");
+      list.replaceChildren();
+      document.getElementById("diagnosticsStatus").textContent = status;
+      if (!items.length) { panel.hidden = true; return; }
+      panel.hidden = false;
+      document.getElementById("diagnosticsHeading").textContent = items.length + (items.length === 1 ? " problem" : " problems");
+      items.forEach(item => {
+        if (item.line != null && item.line >= 0 && item.line < editor.lineCount()) {
+          const lineText = editor.getLine(item.line), ch = Math.min(Math.max(item.column || 0, 0), lineText.length);
+          const end = Math.min(lineText.length, Math.max(ch + 1, ch + (item.length || 1)));
+          if (end > ch) diagnosticMarks.push(editor.markText({line:item.line,ch}, {line:item.line,ch:end}, {className:item.warning ? "cm-hphp-warning" : "cm-hphp-error"}));
+          const dot = document.createElement("span"); dot.className = "hphp-diagnostic-dot" + (item.warning ? " warning" : ""); dot.title = item.message;
+          editor.setGutterMarker(item.line, "hphp-diagnostics-gutter", dot);
+        }
+        const li = document.createElement("li"); li.className = "diagnostic-item" + (item.warning ? " warning" : "");
+        const loc = document.createElement("span"); loc.className = "diagnostic-location"; loc.textContent = item.line == null ? "HolyPHP" : (item.line + 1) + ":" + ((item.column || 0) + 1);
+        const msg = document.createElement("span"); msg.className = "diagnostic-message"; msg.textContent = item.message;
+        li.append(loc, msg);
+        if (item.line != null) li.addEventListener("click", () => { editor.focus(); editor.setCursor(item.line, item.column || 0); editor.scrollIntoView({line:item.line,ch:item.column||0}, 100); });
+        list.appendChild(li);
+      });
+    }
+
+    function parseDiagnostics(text) {
+      const items = [], seen = new Set();
+      for (const line of String(text || "").split(/\r?\n/)) {
+        const m = line.match(/(?:^|\s)(?:[^\s:]+\.hphp|hphpc:)?(?::(\d+)(?::(\d+))?)?:?\s*(error|warning):\s*(.*)/i)
+          || line.match(/(?:^|\s)([^\s:]+\.hphp):(\d+):(\d+):\s*(.*)/i);
+        if (!m) continue;
+        let ln, col, severity, message;
+        if (/^(error|warning)$/i.test(m[3] || "")) { ln = m[1] ? Number(m[1])-1 : null; col = m[2] ? Number(m[2])-1 : 0; severity=m[3].toLowerCase(); message=m[4]; }
+        else { ln=Number(m[2])-1; col=Number(m[3])-1; severity="error"; message=m[4]; }
+        const key=[ln,col,message].join(":"); if (seen.has(key)) continue; seen.add(key);
+        items.push({line:Number.isFinite(ln)?ln:null,column:Math.max(0,col||0),warning:severity==="warning",message:message.trim()||line.trim()});
+      }
+      if (!items.length && text && /\b(error|failed|cannot|not found|undefined|borrow)\b/i.test(text)) items.push({line:null,column:0,warning:false,message:String(text).trim().slice(0,500)});
+      return items;
+    }
+
+    function scheduleDiagnostics() {
+      if (!editor) return;
+      clearTimeout(diagnosticsTimer);
+      diagnosticDirty = true;
+      diagnosticsTimer = setTimeout(runDiagnostics, 1200);
+    }
+
+    function runDiagnostics() {
+      if (!diagnosticDirty || diagnosticInFlight) return;
+      const wait = Math.max(0, 4500 - (Date.now() - lastDiagnosticAt));
+      if (wait) { diagnosticsTimer = setTimeout(runDiagnostics, wait); return; }
+      const code = editor.getValue();
+      if (!code.trim()) { diagnosticDirty=false; showDiagnostics([], "No problems"); return; }
+      const restricted = restrictedPlaygroundFeature(code);
+      if (restricted) { diagnosticDirty=false; showDiagnostics([{line:null,column:0,warning:false,message:"Restricted in Playground: " + restricted + ". This source was not sent."}], "Restricted code"); return; }
+      diagnosticDirty=false; diagnosticInFlight=true; lastDiagnosticAt=Date.now();
+      const revision=diagnosticRevision;
+      document.getElementById("diagnosticsStatus").textContent="Checking…";
+      fetch("/api/check", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code,filename:"main.hphp"})})
+        .then(r=>r.json().then(data=>({status:r.status,data})))
+        .then(({status,data})=>{
+          if (revision !== diagnosticRevision) return;
+          const output=data.output||data.error||"";
+          const items=parseDiagnostics(output);
+          if (status===429) showDiagnostics([{line:null,message:"Check limit reached. Automatic checks will retry shortly."}], "Rate limited");
+          else if (data.success) showDiagnostics([], "No problems · compiler and borrow check passed");
+          else showDiagnostics(items.length?items:[{line:null,message:output||"Compiler check failed."}], items.length?"Problems found":"Check failed");
+        })
+        .catch(()=>{ if(revision===diagnosticRevision) document.getElementById("diagnosticsStatus").textContent="Compiler check unavailable"; })
+        .finally(()=>{ diagnosticInFlight=false; if(diagnosticDirty) scheduleDiagnostics(); });
+    }
+
+    function updateCursorStatus() {
+      if (!editor) return;
+      const c=editor.getCursor(); document.getElementById("cursorStatus").textContent="Line: " + (c.line+1) + ", Column: " + (c.ch+1) + " | UTF-8 | HolyPHP";
+    }
+
+    function checkCode() {
+      const code = editor.getValue();
+      if (rejectRestrictedPlaygroundCode(code)) return;
+      renderOutput('Checking...\n', false);
+
+      fetch('https://hphp.ch/api/check', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ code: code, filename: 'main.hphp' })
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.success) {
+          renderOutput(data.output || 'OK (types and borrows check)', false);
+        } else {
+          renderOutput(data.error || 'Type or borrow check failed.', true);
+        }
+      })
+      .catch(error => {
+        renderOutput('Error connecting to checker: ' + error.message, true);
+      });
+    }
+    
+    function clearOutput() {
+      live.text = "";
+      document.getElementById('output').textContent = 'Output cleared.';
+      document.getElementById('output').className = 'output-content';
+    }
+    
+    function newFile() {
+      if (confirm('Create a new file? Current changes will be lost.')) {
+        editor.setValue('// New HolyPHP file\n\necho "Hello, HolyPHP!";');
+        document.getElementById('filename').textContent = 'main.hphp';
+        document.getElementById('output').textContent = 'New file created.';
+      }
+    }
+    
+    function saveFile() {
+      const code = editor.getValue();
+      const blob = new Blob([code], {type: 'text/plain'});
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = document.getElementById('filename').textContent;
+      a.click();
+      document.getElementById('output').textContent = 'File saved as ' + document.getElementById('filename').textContent;
+    }
+    
+    function showDocs() {
+      window.open('index.html', '_blank');
+    }
+    
+    function showRef(type) {
+      document.getElementById('modalTitle').textContent = 'Quick Reference';
+      document.getElementById('modalBody').innerHTML = refs[type] || '<p>No reference available.</p>';
+      document.getElementById('refModal').classList.add('active');
+      // Highlight code blocks
+      setTimeout(() => {
+        document.querySelectorAll('#modalBody pre code.hphp').forEach(el => {
+          if (typeof hl_hphp !== 'undefined') {
+            el.innerHTML = hl_hphp(el.textContent);
+          }
+        });
+      }, 100);
+    }
+    
+    function closeModal() {
+      document.getElementById('refModal').classList.remove('active');
+    }
+    
+    document.getElementById('refModal').addEventListener('click', (e) => {
+      if (e.target.id === 'refModal') closeModal();
+    });
+  </script>
+  <script src="assets/site.js?v=4"></script>
+<script src="assets/theme.js?v=1"></script>
+</body>
+
+</html>

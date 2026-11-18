@@ -94,30 +94,79 @@ document.addEventListener("DOMContentLoaded", () => {
     el.innerHTML = hl_hphp(el.textContent);
   });
 
-  // copy button on every pre
+  // Copy only the code source. Reading pre.innerText would also copy the
+  // button label and any other UI text placed inside the pre element.
   document.querySelectorAll("pre").forEach(pre => {
+    if (document.body.classList.contains("playground-page") || pre.dataset.noCopy === "true" || pre.closest(".CodeMirror") || pre.querySelector(".copy-btn")) return;
     const btn = document.createElement("button");
-    btn.textContent = "copy";
+    btn.type = "button";
+    btn.textContent = "Copy code";
     btn.className = "copy-btn";
+    btn.setAttribute("aria-label", "Copy code block");
     btn.addEventListener("click", () => {
-      navigator.clipboard.writeText(pre.innerText).then(() => {
-        btn.textContent = "ok!";
-        setTimeout(() => (btn.textContent = "copy"), 1200);
+      const code = pre.querySelector("code");
+      const source = code ? code.textContent : pre.cloneNode(true).textContent;
+      navigator.clipboard.writeText(source).then(() => {
+        btn.textContent = "Copied";
+        setTimeout(() => (btn.textContent = "Copy code"), 1400);
+      }).catch(() => {
+        btn.textContent = "Select and copy";
+        setTimeout(() => (btn.textContent = "Copy code"), 1800);
       });
     });
     pre.style.position = "relative";
-    btn.style.cssText =
-      "position:absolute;top:8px;right:8px;background:#22242d;color:#9a97a3;border:1px solid #2c2e38;" +
-      "border-radius:5px;font-size:11px;padding:2px 9px;cursor:pointer;opacity:0;transition:opacity .15s";
-    pre.addEventListener("mouseenter", () => (btn.style.opacity = 1));
-    pre.addEventListener("mouseleave", () => (btn.style.opacity = 0));
     pre.appendChild(btn);
   });
 
-  // current-page nav highlight
-  const here = location.pathname.split("/").pop() || "index.html";
-  document.querySelectorAll("nav.side a.item").forEach(a => {
-    const t = a.getAttribute("href");
-    if (t === here || (here === "" && t === "index.html")) a.classList.add("on");
-  });
+  // Guide navigation: track the current lesson and mark ordinary chapters.
+  const guideSidebar = document.querySelector(".guide-sidebar");
+  if (guideSidebar) {
+    const lessonLinks = [...guideSidebar.querySelectorAll("[data-guide-section]")];
+    const lessonSections = lessonLinks
+      .map(link => document.getElementById(link.dataset.guideSection))
+      .filter(Boolean);
+    if (lessonSections.length) {
+      const updateCurrentLesson = () => {
+        const readingLine = window.innerHeight * 0.38;
+        let index = 0;
+        lessonSections.forEach((section, i) => {
+          if (section.getBoundingClientRect().top <= readingLine) index = i;
+        });
+        lessonLinks.forEach((link, i) => {
+          const active = i === index;
+          link.classList.toggle("active", active);
+          if (active) link.setAttribute("aria-current", "step");
+          else link.removeAttribute("aria-current");
+        });
+      };
+      window.addEventListener("scroll", updateCurrentLesson, { passive: true });
+      window.addEventListener("resize", updateCurrentLesson);
+      window.addEventListener("hashchange", () => setTimeout(updateCurrentLesson, 100));
+      window.addEventListener("load", updateCurrentLesson, { once: true });
+      updateCurrentLesson();
+      requestAnimationFrame(() => requestAnimationFrame(updateCurrentLesson));
+    } else {
+      const current = guideSidebar.querySelector(`[href="${location.pathname.split("/").pop()}"]`);
+      if (current) current.classList.add("active");
+    }
+  }
+
+  // Reveal content as it enters view; users with reduced motion get the
+  // normal static layout without transitions.
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const revealItems = document.querySelectorAll(".story-card, .capability, .hub-card, .safety-panel, .cta-band, .guide-step, .development-step");
+  if (!reduceMotion && "IntersectionObserver" in window) {
+    const revealObserver = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add("is-visible");
+        revealObserver.unobserve(entry.target);
+      });
+    }, { threshold: 0.08, rootMargin: "0px 0px -36px 0px" });
+    revealItems.forEach((item, index) => {
+      item.classList.add("reveal-on-scroll");
+      item.style.transitionDelay = `${Math.min(index % 4, 3) * 55}ms`;
+      revealObserver.observe(item);
+    });
+  }
 });

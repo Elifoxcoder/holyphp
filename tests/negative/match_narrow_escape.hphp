@@ -1,0 +1,17 @@
+// match_narrow_escape.hphp — must FAIL sema: a narrowing an arm proved must
+// not escape the arm.
+//
+// The "a" arm pins the subject to the string member for the body of that arm
+// only. Once the match is over, $x is a string|int again.
+
+function need_string(string $s): int {
+    return strlen($s);
+}
+
+function probe(string|int $x): int {
+    $r = match ($x) {
+        "a" => need_string($x),
+        _ => 0,
+    };
+    return $r + need_string($x);   /* error: $x is string|int here again */
+}

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script><meta name="description" content="How HolyPHP is developed: compiler pipeline, runtime, libraries, releases and how to contribute."><title>Development — HolyPHP</title><link rel="stylesheet" href="assets/style.css?v=6"></head>
+<body><script src="assets/nav.html.js?v=3"></script><main>
+  <div class="section-kicker">Development</div><h1>One language. <span style="color:var(--ember)">Built all the way down.</span></h1>
+  <p class="lead">HolyPHP is an open-source language project with a compiler, runtime, native libraries, package tools and editor support. This page explains how those pieces fit together and where to follow the work.</p>
+  <div class="safety-panel" style="margin:30px 0"><div><div class="section-kicker" style="color:#c5a4ee">The pipeline</div><h2>Source in. Native program out.</h2><p>The compiler reads <code>.hphp</code> source, checks it, emits C and invokes the platform toolchain to produce an executable.</p></div><pre><code>hello.hphp
+    ↓  lex · parse
+    ↓  type &amp; borrow checks
+    ↓  C code generation
+    ↓  platform compiler + linker
+app.exe / app</code></pre></div>
+  <h2>Project components</h2><div class="development-steps">
+    <div class="development-step"><span class="number">01</span><div><h3>Compiler</h3><p>The C11 compiler implementation lives in <code>src/hphpc/</code>: lexer, parser, semantic analysis, code generation, diagnostics and command-line tooling.</p></div></div>
+    <div class="development-step"><span class="number">02</span><div><h3>Runtime</h3><p>Runtime and built-in implementations live in <code>src/hphpc/runtime/</code>. The build generates <code>runtime_embed.h</code> so the compiler can carry runtime sources within its binary.</p></div></div>
+    <div class="development-step"><span class="number">03</span><div><h3>Libraries</h3><p>HolyPHP libraries are organized as packages under <code>packages/lib/</code>. The build can embed their source into the compiler; installed binaries may differ in which libraries they carry.</p></div></div>
+    <div class="development-step"><span class="number">04</span><div><h3>Tools and learning resources</h3><p>The repository includes a package registry, a browser Playground, a VS Code extension, examples and the documentation site.</p></div></div>
+  </div>
+  <h2>Get involved</h2><div class="hub-grid">
+    <a class="hub-card" href="https://github.com/Elifoxcoder/holyphp" target="_blank" rel="noopener"><small>Source repository ↗</small><h2>Explore the code</h2><p>Browse compiler sources, issues, discussions and project changes.</p></a>
+    <a class="hub-card" href="https://github.com/Elifoxcoder/holyphp/tree/main/examples" target="_blank" rel="noopener"><small>Examples ↗</small><h2>Learn by reading</h2><p>See how programs and library demos are written in HolyPHP.</p></a>
+    <a class="hub-card" href="docs.html" target="_blank" rel="noopener"><small>Documentation ↗</small><h2>Understand the language</h2><p>Read the language reference, CLI guide and library documentation.</p></a>
+  </div>
+  <section><h2>Build from source</h2><p>Check out the repository and follow its build instructions for your platform. The Windows/MinGW and Linux builds have separate scripts because their linkers and system libraries differ.</p><pre><code>git clone https://github.com/Elifoxcoder/holyphp
+cd holyphp
+# Read the current build notes in README.md and AGENTS.md
+bash scripts/build.sh</code></pre><p>For contributions, use the project’s current issue and review process in GitHub. Compiler and library behavior is evolving, so include a minimal program that demonstrates a bug or proposed change.</p></section>
+  <p class="release-note">Development status and release availability can differ. The GitHub Releases page is the source for downloadable public builds; the repository contains newer work in progress when present.</p>
+  <div class="hero-actions"><a class="button-link" href="https://github.com/Elifoxcoder/holyphp" target="_blank" rel="noopener">Visit the repository ↗</a><a class="button-link secondary" href="docs.html" target="_blank" rel="noopener">Open docs ↗</a></div>
+</main><script src="assets/site.js?v=4"></script><script src="assets/theme.js?v=1"></script>
+</body></html>

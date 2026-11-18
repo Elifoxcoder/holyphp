@@ -6,7 +6,8 @@
  *   - arrays/maps are runtime-managed COW structures (harr*)
  *   - strings are hstr* (length-prefixed)
  *   - own<T>  -> T* with move-only discipline (enforced by sema)
- *   - Rc<T>   -> T* with refcounting via hp_rc_inc/hp_rc_dec
+ *   - Rc<T>   -> T* with compile-time shared-ownership checks; runtime RC
+ *                hooks are placeholders and do not reclaim objects yet
  *   - &T/&mut -> plain C pointer to the variable
  *   - exceptions use setjmp/longjmp-based try frames
  *   - closures are structs with captured environment
@@ -78,7 +79,7 @@ static void emit_dot_chain(Codegen *g, Expr **parts, int lo, int hi, Buf *dst) {
     buf_init(&b);
     emit_dot_chain(g, parts, lo, mid, &a);
     emit_dot_chain(g, parts, mid, hi, &b);
-    buf_printf(dst, "hp_str_concat_v(hv(%s), hv(%s))", buf_take(&a), buf_take(&b));
+    buf_printf(dst, "hp_str_join_v(hv(%s), hv(%s))", buf_take(&a), buf_take(&b));
 }
 static const char *ctype_of(const Type *t);
 
@@ -126,6 +127,9 @@ static const char *ctype_of(const Type *t) {
     case TY_STRING: return "hstr*";
     case TY_VOID: return "void";
     case TY_MIXED: case TY_TUPLE: case TY_OPTION: case TY_RESULT: return "hval";
+    /* a nullable/union slot holds an hval: the tag says whether there is a
+     * value, the payload carries it */
+    case TY_NULL: case TY_NULLABLE: case TY_UNION: return "hval";
     case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET: return "harr*";
     case TY_REF: case TY_MUTREF: return fmt("%s*", ctype_of(t->elem));
     case TY_PTR: return "void*";
@@ -146,9 +150,37 @@ static const char *ctype_of(const Type *t) {
     }
 }
 
+static bool type_is_move_pointer(const Type *t) {
+    if (!t) return false;
+    if (t->kind == TY_ARRAY || t->kind == TY_VEC || t->kind == TY_MAP ||
+        t->kind == TY_SET || t->kind == TY_STRING || t->kind == TY_CLASS ||
+        t->kind == TY_STRUCT || t->kind == TY_INTERFACE)
+        return true;
+    if (t->kind == TY_OWN && t->elem) {
+        TypeKind k = t->elem->kind;
+        return k == TY_ARRAY || k == TY_STRING || k == TY_CLASS ||
+               k == TY_STRUCT || k == TY_INTERFACE;
+    }
+    return false;
+}
+
 static const char *var_name(void *sym) {
     if (!sym) return "hp_missing_var";
     return fmt("v%u", ((VarSym *)sym)->uid);
+}
+
+/* C name of a parameter in the signature.
+ *
+ * A by-value parameter a closure captured by reference is not used under its
+ * own name in the body: the prologue puts its value in a heap box that the
+ * closure env aliases (see emit_auto_decls), and the box takes the parameter's
+ * name so every access site keeps working. So such a parameter arrives under
+ * `<name>_arg` instead. */
+static const char *param_slot_name(Param *pm) {
+    if (!pm || !pm->sym) return "hp_missing_var";
+    VarSym *v = (VarSym *)pm->sym;
+    if (v->captured_byref && !pm->by_ref) return fmt("%s_arg", var_name(v));
+    return var_name(v);
 }
 
 /* C type of a pointer-to-parameter: used for by-ref parameters, where the
@@ -170,10 +202,121 @@ static const char *s_php_round_half_up, *s_php_round_half_down, *s_php_round_hal
 static const char *s_php_os, *s_php_eol, *s_php_version, *s_php_sapi, *s_php_uname;
 static const char *s_php_bool_true, *s_php_bool_false, *s_php_null;
 static const char *s_php_file_append, *s_php_file_ignore_new_lines, *s_php_file_skip_empty_lines, *s_php_file_use_include_path;
+static const char *s_ansi_reset, *s_ansi_black, *s_ansi_red, *s_ansi_green, *s_ansi_yellow, *s_ansi_blue, *s_ansi_magenta, *s_ansi_cyan, *s_ansi_white;
+static const char *s_ansi_bright_black, *s_ansi_bright_red, *s_ansi_bright_green, *s_ansi_bright_yellow, *s_ansi_bright_blue, *s_ansi_bright_magenta, *s_ansi_bright_cyan, *s_ansi_bright_white;
 static const char *s_json_pretty_print, *s_json_unescaped_slashes, *s_json_numeric_check, *s_json_force_object;
 
 /* Convert any typed value into an hval for runtime calls. */
+/* Is this type carried in an hval slot?
+ *
+ * mixed and Option/Result are dynamic values, and so is a nullable or union
+ * slot: the tag says whether a value is there, the payload carries it. */
+static bool type_is_hval_slot(const Type *t) {
+    if (!t) return false;
+    switch (t->kind) {
+    case TY_MIXED: case TY_OPTION: case TY_RESULT:
+    case TY_NULL: case TY_NULLABLE: case TY_UNION:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* Is this read of a nullable/union slot narrowed to a concrete type?
+ *
+ * The slot keeps holding an hval, but the branch that proved the value is
+ * there works with the payload itself, so the read has to project it. */
+static bool narrowed_read_needs_projection(const Expr *e) {
+    if (!e || e->kind != EX_VAR || !e->u.var.sym) return false;
+    const Type *slot = ((VarSym *)e->u.var.sym)->type;
+    if (!slot) return false;
+    if (slot->kind != TY_NULLABLE && slot->kind != TY_UNION) return false;
+    const Type *t = e->type;
+    if (!t) return false;
+    switch (t->kind) {
+    case TY_NULL: case TY_NULLABLE: case TY_UNION: case TY_MIXED:
+        return false;               /* still an hval */
+    default:
+        return true;
+    }
+}
+
+/* Project a narrowed hval slot to the concrete type the branch works with. */
+static void project_narrowed(Buf *dst, const Type *t, const char *slot) {
+    if (!t) { buf_printf(dst, "%s", slot); return; }
+    switch (t->kind) {
+    case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64: case TY_ENUM:
+        buf_printf(dst, "(%s).u.i", slot); break;
+    case TY_FLOAT: case TY_F32: case TY_F64:
+        buf_printf(dst, "(%s).u.f", slot); break;
+    case TY_BOOL:
+        buf_printf(dst, "(%s).u.b", slot); break;
+    case TY_STRING:
+        buf_printf(dst, "(%s).u.s", slot); break;
+    case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET:
+        buf_printf(dst, "(%s).u.a", slot); break;
+    case TY_CLASS: case TY_STRUCT:
+        buf_printf(dst, "((struct %s *)((%s).u.p))", t->name, slot); break;
+    case TY_INTERFACE:
+        buf_printf(dst, "((hobj *)((%s).u.p))", slot); break;
+    default:
+        buf_printf(dst, "%s", slot); break;
+    }
+}
+
+/* Does this expression's generated C form have the type hval?
+ *
+ * Most expressions do not: a variable holding an int is emitted as an
+ * int64_t, an array as an harr*, and so on, and the reader can trust the
+ * AST's inferred type. The exception is a variable a closure captured by
+ * reference (`use (&$x)`): it lives in a heap box and is emitted as `(*box)`,
+ * which is an *hval lvalue*. Its inferred type still says int / string /
+ * array, so any consumer that trusted the type either handed an hval to a
+ * function expecting an int64_t (a hard C error, "incompatible type for
+ * argument") or boxed the value a second time. Ask about the shape of the
+ * expression, not about its type.
+ *
+ * An untyped `&$x` parameter is the same story: it arrives as an hval*.
+ */
+static bool emits_hval_lvalue(const Expr *e) {
+    if (!e || e->kind != EX_VAR || !e->u.var.sym) return false;
+    VarSym *v = (VarSym *)e->u.var.sym;
+    /* a narrowed nullable box is projected to its payload, not read as hval */
+    if (narrowed_read_needs_projection(e)) return false;
+    if (v->captured_byref) return true;
+    if (v->is_param_ref && (!v->type || v->type->kind == TY_MIXED)) return true;
+    return false;
+}
+
+/* Is this expression's generated C form an hval?
+ *
+ * It is not the same question as "is its type mixed": a closure literal is a
+ * TY_FN but emits an `hclosure*`, while an array element read from a typed
+ * array can carry the element's own type and still come back as an hval from
+ * the runtime. Every conversion decision in emit_to_type() has to ask THIS
+ * question - asking the other one boxed a fresh closure (making the C
+ * compiler reject a pointer dereference) and left PHP-style values unboxed in
+ * typed slots. */
+static bool c_form_is_hval(const Expr *e) {
+    if (!e) return false;
+    if (emits_hval_lvalue(e)) return true;          /* use (&$x) box, untyped &$p */
+    const Type *t = e->type;
+    if (!t) return false;
+    if (t->kind == TY_FN) return false;             /* closures are pointers */
+    return type_is_hval_slot(t);
+}
+
+/* the PHP-style scalar cast for a target type (hp_val_to_int/str/...) */
+static const char *hval_cast_fn(const Type *want) {
+    if (type_is_integral(want->kind)) return "hp_val_to_int";
+    if (want->kind == TY_BOOL) return "hp_val_to_bool";
+    if (type_is_numeric(want->kind)) return "hp_val_to_float";
+    return "hp_val_to_str";
+}
+
 static void to_hval(Codegen *g, Expr *e, Buf *dst) {
+    /* an hval lvalue (by-ref capture box) is already an hval */
+    if (emits_hval_lvalue(e)) { emit_expr(g, e, dst); return; }
     Buf b;
     buf_init(&b);
     /* bool literals must box as HV_BOOL: under C11 true/false are plain
@@ -221,6 +364,86 @@ static void to_hval(Codegen *g, Expr *e, Buf *dst) {
     free(b.data);
 }
 
+/* Box a value into a nullable slot, in the shape the slot's member says.
+ *
+ * A nullable slot holds one member type, and a narrowed read projects that
+ * member out of the payload - so the payload has to be in the member's
+ * shape. An int in a ?float slot is stored as a float, the way the type
+ * says it is; without that the narrowed read would pull an int out of a
+ * float payload, and `===` against a float would not match either. */
+static void to_hval_member(Codegen *g, Expr *e, const Type *mem, Buf *dst) {
+    if (!mem) { to_hval(g, e, dst); return; }
+    if (!e) { buf_puts(dst, "hp_null"); return; }
+    if (e->kind == EX_NULL) { buf_puts(dst, "hp_null"); return; }
+    /* a dynamic value: convert it to the member's shape first */
+    if (c_form_is_hval(e)) {
+        Buf b;
+        buf_init(&b);
+        emit_expr(g, e, &b);
+        const char *src = buf_take(&b);
+        char *boxed = NULL;
+        switch (mem->kind) {
+        case TY_STRING: boxed = fmt("hp_of_str(hp_val_to_str(%s))", src); break;
+        case TY_BOOL:   boxed = fmt("hp_of_bool(hp_val_to_bool(%s))", src); break;
+        case TY_FLOAT: case TY_F32: case TY_F64:
+            boxed = fmt("hp_of_float(hp_val_to_float(%s))", src);
+            break;
+        case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64:
+            boxed = fmt("hp_of_int(hp_val_to_int(%s))", src);
+            break;
+        default:
+            /* an object/array payload is the same shape in the box and in
+             * the member, so the value goes in as it is */
+            boxed = xstrdup(src);
+            break;
+        }
+        /* a null stays null - the slot is nullable, that is the point */
+        buf_printf(dst, "(hp_tag(%s) == HV_NULL ? hp_null : %s)", src, boxed);
+        free(boxed);
+        free(b.data);
+        return;
+    }
+    const Type *t = e->type;
+    if (!t || t->kind == mem->kind) { to_hval(g, e, dst); return; }
+    /* a plain value in another shape: convert it before boxing */
+    Buf b;
+    buf_init(&b);
+    emit_expr(g, e, &b);
+    const char *src = buf_take(&b);
+    switch (mem->kind) {
+    case TY_FLOAT: case TY_F32: case TY_F64:
+        buf_printf(dst, "hp_of_float((double)(%s))", src);
+        break;
+    case TY_BOOL:
+        buf_printf(dst, "hp_of_bool((%s) != 0)", src);
+        break;
+    default:
+        buf_printf(dst, "hp_of_int((int64_t)(%s))", src);
+        break;
+    }
+    free(b.data);
+}
+
+/* Box a bare C value (a parameter slot, by name) into an hval. Mirrors
+ * to_hval(), but takes a type and an expression string instead of an Expr. */
+static const char *box_param_value(const Type *t, const char *expr) {
+    switch (t ? t->kind : TY_MIXED) {
+    case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64: case TY_ENUM:
+        return fmt("hp_of_int(%s)", expr);
+    case TY_FLOAT: case TY_F32: case TY_F64:
+        return fmt("hp_of_float(%s)", expr);
+    case TY_BOOL: return fmt("hp_of_bool(%s)", expr);
+    case TY_STRING: return fmt("hp_of_str(%s)", expr);
+    case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET:
+        return fmt("hp_of_arr(%s)", expr);
+    case TY_FN: return fmt("hp_of_clo(%s)", expr);
+    case TY_CLASS: case TY_STRUCT: case TY_INTERFACE:
+        return fmt("hp_of_ptr(%s)", expr);
+    case TY_PTR: return fmt("hp_of_ptr((void*)%s)", expr);
+    default: return fmt("hv(%s)", expr);   /* mixed: already an hval */
+    }
+}
+
 /* If a builtin's hval result is consumed as a scalar, project it. */
 static void project_hval(Buf *dst, const Type *ret) {
     if (!ret) return;
@@ -266,10 +489,12 @@ static int builtin_min_args(const char *name) {
     if (strcmp(name, "mysql_connect") == 0) return 1;
     if (strcmp(name, "hash_hmac") == 0) return 3;
     if (strcmp(name, "mktime") == 0) return 6;
+    /* color-aware io builtins: color argument is optional */
+    if (strcmp(name, "print") == 0) return 1;
+    if (strcmp(name, "println") == 0) return 1;
+    if (strcmp(name, "input") == 0) return 1;
     return 0; /* 0 = no optional-arg protocol known */
-}
-
-/* the C arity of a builtin implementation (max args it accepts) */
+}/* the C arity of a builtin implementation (max args it accepts) */
 static int builtin_max_args(const char *name) {
     if (strcmp(name, "substr") == 0) return 3;
     if (strcmp(name, "ltrim") == 0 || strcmp(name, "rtrim") == 0) return 2;
@@ -277,6 +502,7 @@ static int builtin_max_args(const char *name) {
     if (strcmp(name, "str_replace") == 0) return 3;
     if (strcmp(name, "md5") == 0 || strcmp(name, "sha1") == 0) return 2;
     if (strcmp(name, "implode") == 0) return 2;
+
     if (strcmp(name, "array_slice") == 0) return 3;
     if (strcmp(name, "str_split") == 0) return 2;
     if (strcmp(name, "number_format") == 0) return 4;
@@ -297,6 +523,7 @@ static int builtin_max_args(const char *name) {
     if (strcmp(name, "date") == 0) return 2;
     if (strcmp(name, "json_encode") == 0 || strcmp(name, "json_encode_pretty") == 0) return 2;
     if (strcmp(name, "json_decode") == 0) return 2;
+
     if (strcmp(name, "http_post") == 0) return 3;
     if (strcmp(name, "mysql_connect") == 0) return 5;
     if (strcmp(name, "hash_hmac") == 0) return 4;
@@ -305,10 +532,29 @@ static int builtin_max_args(const char *name) {
         strcmp(name, "preg_split") == 0 || strcmp(name, "preg_grep") == 0) return 2;
     if (strcmp(name, "preg_replace") == 0) return 3;
     if (strcmp(name, "mysql_query") == 0 || strcmp(name, "mysql_exec") == 0) return 2;
+    /* the embedded-Chromium calls that gained optional parameters: a view id
+     * plus what to do, where to put the window, or how wide it may be */
+    if (strcmp(name, "ui_browser_fit") == 0) return 3;
+    if (strcmp(name, "ui_browser_devtools") == 0) return 2;
+    if (strcmp(name, "ui_browser_devtools_fit") == 0) return 5;
+    /* color-aware io builtins: max 2 args (text/prompt + optional color) */
+    if (strcmp(name, "print") == 0) return 2;
+    if (strcmp(name, "println") == 0) return 2;
+    if (strcmp(name, "input") == 0) return 2;
     return -1;
 }
 
-/* min args for the new optional-arg builtins */
+/* color-aware io builtins are emitted under their underscore-prefixed C
+ * names; emit_classical_io_builtin rewrites hpbi_print/println/input into
+ * hpbi_print_color/println_color/readline_color so the color arg is passed
+ * as the second parameter. */
+static const char *emit_classical_io_builtin_name(Codegen *g, const char *name, PtrVec args) {
+    (void)g; (void)args;
+    if (strcmp(name, "print") == 0) return "hpbi_print_color";
+    if (strcmp(name, "println") == 0) return "hpbi_println_color";
+    if (strcmp(name, "input") == 0) return "hpbi_readline_color";
+    return name;
+}
 
 /* ---------------- string literals ---------------- */
 static void emit_c_string(const char *s, size_t n, Buf *dst) {
@@ -393,6 +639,19 @@ static bool fold_int_binop(TokKind op, long long a, long long b, long long *out)
     case T_CARET: *out = a ^ b; return true;
     default: return false;   /* T_SLASH: PHP / is float division, never fold */
     }
+}
+
+/* An operand already emitted as C text, boxed for a runtime hval call.
+ *
+ * A bool literal must go through hp_of_bool: under C11 `true`/`false` are
+ * macros for the ints 1/0, so hv() tags them HV_INT. That made
+ * `"x" == false` true (0 == 0 numerically) and `"x" == true` false - the
+ * bool branch of hp_val_eq never ran. */
+static void hv_operand(const Expr *e, const char *s, Buf *dst) {
+    if (e && e->kind == EX_BOOL)
+        buf_printf(dst, "hp_of_bool(%s)", e->u.boolean.b ? "true" : "false");
+    else
+        buf_printf(dst, "hv(%s)", s);
 }
 
 static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
@@ -537,12 +796,19 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
         else buf_printf(dst, "hp_powv(hv(%s), hv(%s))", ls, rs);
         break;
     case T_DOT:
-        buf_printf(dst, "hp_str_concat_v(hv(%s), hv(%s))", ls, rs);
+        buf_printf(dst, "hp_str_join_v(hv(%s), hv(%s))", ls, rs);
         break;
     case T_EQ:
         if (numeric) buf_printf(dst, "((%s) == (%s))", ls, rs);
         else if (strings) buf_printf(dst, "hp_str_eq(%s, %s)", ls, rs);
-        else buf_printf(dst, "hp_streq(hv(%s), hv(%s))", ls, rs);
+        else {
+            Buf bl, br;
+            buf_init(&bl); buf_init(&br);
+            hv_operand(e->u.bin.l, ls, &bl);
+            hv_operand(e->u.bin.r, rs, &br);
+            buf_printf(dst, "hp_streq(%s, %s)", buf_take(&bl), buf_take(&br));
+            free(bl.data); free(br.data);
+        }
         break;
     case T_EQ2:
         /* identity: tag and value must both match */
@@ -551,33 +817,42 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
         } else if (numeric && lt->kind == rt->kind) {
             buf_printf(dst, "((%s) == (%s))", ls, rs);
         } else {
-            /* bool literals need explicit hp_of_bool boxing: C11 true/false
-             * are ints, so hv() would tag them HV_INT */
-            bool lb = e->u.bin.l->kind == EX_BOOL;
-            bool rb = e->u.bin.r->kind == EX_BOOL;
-            char lw[256], rw[256];
-            snprintf(lw, sizeof lw, lb ? "hp_of_bool(%s)" : "hv(%s)",
-                     lb ? (e->u.bin.l->u.boolean.b ? "true" : "false") : ls);
-            snprintf(rw, sizeof rw, rb ? "hp_of_bool(%s)" : "hv(%s)",
-                     rb ? (e->u.bin.r->u.boolean.b ? "true" : "false") : rs);
-            buf_printf(dst, "hp_ident_eq(%s, %s)", lw, rw);
+            Buf bl, br;
+            buf_init(&bl); buf_init(&br);
+            hv_operand(e->u.bin.l, ls, &bl);
+            hv_operand(e->u.bin.r, rs, &br);
+            buf_printf(dst, "hp_ident_eq(%s, %s)", buf_take(&bl), buf_take(&br));
+            free(bl.data); free(br.data);
         }
         break;
     case T_NEQ: case T_NEQ2:
-        if (op == T_NEQ2 && !(numeric && lt->kind == rt->kind) && !strings) {
-            bool lb = e->u.bin.l->kind == EX_BOOL;
-            bool rb = e->u.bin.r->kind == EX_BOOL;
-            char lw[256], rw[256];
-            snprintf(lw, sizeof lw, lb ? "hp_of_bool(%s)" : "hv(%s)",
-                     lb ? (e->u.bin.l->u.boolean.b ? "true" : "false") : ls);
-            snprintf(rw, sizeof rw, rb ? "hp_of_bool(%s)" : "hv(%s)",
-                     rb ? (e->u.bin.r->u.boolean.b ? "true" : "false") : rs);
-            buf_printf(dst, "(!hp_ident_eq(%s, %s))", lw, rw);
+        if (op == T_NEQ2 && strings) {
+            buf_printf(dst, "(!hp_str_eq(%s, %s))", ls, rs);
             break;
         }
-        if (numeric) buf_printf(dst, "((%s) != (%s))", ls, rs);
-        else if (strings) buf_printf(dst, "(!hp_str_eq(%s, %s))", ls, rs);
-        else buf_printf(dst, "(!hp_streq(hv(%s), hv(%s)))", ls, rs);
+        if (op == T_NEQ2 && numeric && lt->kind == rt->kind) {
+            buf_printf(dst, "((%s) != (%s))", ls, rs);
+            break;
+        }
+        if (op == T_NEQ) {
+            if (numeric) { buf_printf(dst, "((%s) != (%s))", ls, rs); break; }
+            if (strings) { buf_printf(dst, "(!hp_str_eq(%s, %s))", ls, rs); break; }
+            Buf bl, br;
+            buf_init(&bl); buf_init(&br);
+            hv_operand(e->u.bin.l, ls, &bl);
+            hv_operand(e->u.bin.r, rs, &br);
+            buf_printf(dst, "(!hp_streq(%s, %s))", buf_take(&bl), buf_take(&br));
+            free(bl.data); free(br.data);
+            break;
+        }
+        {
+            Buf bl, br;
+            buf_init(&bl); buf_init(&br);
+            hv_operand(e->u.bin.l, ls, &bl);
+            hv_operand(e->u.bin.r, rs, &br);
+            buf_printf(dst, "(!hp_ident_eq(%s, %s))", buf_take(&bl), buf_take(&br));
+            free(bl.data); free(br.data);
+        }
         break;
     case T_LT:
         if (lf || rf) buf_printf(dst, "hp_lt_f((%s), (%s))", ls, rs);
@@ -611,8 +886,26 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
     free((void *)rs);
 }
 
+static void emit_builtin_call_body(Codegen *g, const char *name, PtrVec args,
+                                   const Type *ret, Buf *dst);
+
+/* Builtin calls project their hval result onto the C type the caller
+ * wants, and that projection REWRITES the buffer it is handed (see
+ * emit_index). Emit into a private buffer first, so a projection can never
+ * reach back into text the caller had already written - an argument left
+ * inside the enclosing call would be wrapped instead of the result. */
 static void emit_builtin_call(Codegen *g, const char *name, PtrVec args,
                               const Type *ret, Buf *dst) {
+    Buf out;
+    buf_init(&out);
+    emit_builtin_call_body(g, name, args, ret, &out);
+    char *code = buf_take(&out);
+    buf_puts(dst, code);
+    free(code);
+}
+
+static void emit_builtin_call_body(Codegen *g, const char *name, PtrVec args,
+                                   const Type *ret, Buf *dst) {
     if (strcmp(name, "max") == 0 || strcmp(name, "min") == 0) {
         /* single array argument: pass it as-is (PHP max([1,2,3]));
          * otherwise pack the variadic args into a runtime array */
@@ -895,17 +1188,28 @@ static void emit_builtin_call(Codegen *g, const char *name, PtrVec args,
         project_hval(dst, ret);
         return;
     }
-    const char *cname = name;   /* emitted C name (aliases below) */
-    if (strcmp(name, "date") == 0) cname = "date2";
-    else if (strcmp(name, "json_encode") == 0) cname = "json_encode2";
-    else if (strcmp(name, "json_decode") == 0) cname = "json_decode2";
-    else if (strcmp(name, "json_encode_pretty") == 0) cname = "json_encode2";
-    buf_printf(dst, "hpbi_%s(", cname);
+    /* color-aware classical IO builtins use their own C names; the
+     * generic hpbi_<name> heuristic below would otherwise call
+     * hpbi_print(hpbi_input), which does not exist. */
+    if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0 ||
+        strcmp(name, "input") == 0) {
+        const char *cname3 = emit_classical_io_builtin_name(g, name, args);
+        buf_printf(dst, "%s(", cname3);
+    } else {
+        const char *cname2 = name;   /* emitted C name (aliases below) */
+        if (strcmp(name, "date") == 0) cname2 = "date2";
+        else if (strcmp(name, "json_encode") == 0) cname2 = "json_encode2";
+        else if (strcmp(name, "json_decode") == 0) cname2 = "json_decode2";
+        else if (strcmp(name, "json_encode_pretty") == 0) cname2 = "json_encode2";
+        buf_printf(dst, "hpbi_%s(", cname2);
+    }
     for (size_t i = 0; i < args.len; i++) {
         if (i) buf_puts(dst, ", ");
         to_hval(g, args.items[i], dst);
     }
     {
+        /* print/println/input take an optional trailing colour: a 1-arg call
+         * still has to reach the C function as (text, hp_null). */
         int mn = builtin_min_args(name), mx = builtin_max_args(name);
         if (mx >= 0 && (int)args.len < mx && (int)args.len >= mn)
             for (int i = (int)args.len; i < mx; i++) buf_puts(dst, ", hp_null");
@@ -919,8 +1223,10 @@ static void emit_builtin_call(Codegen *g, const char *name, PtrVec args,
  * runtime conversion. Statically-typed bools stay untouched. */
 static void emit_cond(Codegen *g, Expr *cond, Buf *dst) {
     const Type *ct = cond->type;
+    /* a dynamic value is truthiness-tested: null, "" and 0 are falsy */
     bool boxed = !ct || ct->kind == TY_MIXED || ct->kind == TY_OPTION ||
-                 ct->kind == TY_RESULT;
+                 ct->kind == TY_RESULT || ct->kind == TY_NULL ||
+                 ct->kind == TY_NULLABLE || ct->kind == TY_UNION;
     if (boxed) {
         Buf c;
         buf_init(&c);
@@ -967,6 +1273,87 @@ static void emit_missing_defaults(Codegen *g, AstFn *fn, size_t nargs, Buf *dst)
     }
 }
 
+/* ---------------- by-reference arguments ----------------
+ *
+ * A by-ref parameter compiles to a pointer to the parameter's C type, so the
+ * caller has to hand it the address of a slot of exactly that type. The
+ * caller's variable may live in one of four shapes:
+ *
+ *   plain local     int64_t v, hstr* v ... -> &v
+ *   program global  the file-scope slot    -> &v
+ *   closure box     hval *v, value (*v)    -> the box pointer itself for a
+ *                                            mixed parameter, the address of
+ *                                            the matching union member for a
+ *                                            typed one
+ *   by-ref param    T *v, value (*v)       -> v (already such a pointer)
+ *
+ * The boxed shapes hold an hval, so a typed parameter gets the address of the
+ * union member carrying its type - and the box is coerced to that type first,
+ * which also fixes the tag. Without the coercion a counter a closure captured
+ * by reference (`use (&$n)`) could not be passed to `bump(int &$x)` at all,
+ * and a box holding null would hand out an int64_t that still reads as null.
+ */
+static void emit_byref_arg(Codegen *g, Expr *arg, Param *pm, Buf *dst) {
+    if (arg->kind != EX_VAR || !arg->u.var.sym) {
+        fatal("%s:%zu:%zu: by-ref argument must be a variable",
+              arg->tok.file ? arg->tok.file : "?", arg->tok.line, arg->tok.col);
+        return;
+    }
+    VarSym *v = (VarSym *)arg->u.var.sym;
+    const char *vname = var_name(v);
+    const Type *pt = pm ? pm->resolved : NULL;
+    const char *want = ctype_of(pt);             /* "hval" when mixed/untyped */
+    const char *have = ctype_of(v->type);
+    bool aligned = strcmp(want, have) == 0;
+    bool is_ptr_slot = v->is_param_ref || v->captured_byref;
+    if (aligned) {
+        if (is_ptr_slot)
+            buf_puts(dst, vname);               /* the pointer itself aliases */
+        else
+            buf_printf(dst, "&%s", vname);
+        return;
+    }
+    /* the only other aliasable shape is an hval slot (a closure's use(&$x)
+     * box, a `global $x` file-scope slot, or an untyped &$x parameter) */
+    if (strcmp(have, "hval") != 0) {
+        fatal("%s:%zu:%zu: cannot pass $%s by reference: %s is not an %s slot",
+              arg->tok.file ? arg->tok.file : "?", arg->tok.line, arg->tok.col,
+              v->name ? v->name : "?", have, want);
+        return;
+    }
+    const char *L = v->captured_byref || v->is_param_ref
+                        ? fmt("(*%s)", vname)
+                        : fmt("%s", vname);
+    switch (pt ? pt->kind : TY_MIXED) {
+    case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64: case TY_ENUM:
+        buf_printf(dst, "((%s) = hp_of_int(hp_val_to_int(%s)), &(%s).u.i)", L, L, L);
+        break;
+    case TY_FLOAT: case TY_F32: case TY_F64:
+        buf_printf(dst, "((%s) = hp_of_float(hp_val_to_float(%s)), &(%s).u.f)", L, L, L);
+        break;
+    case TY_BOOL:
+        buf_printf(dst, "((%s) = hp_of_bool(hp_val_to_bool(%s)), &(%s).u.b)", L, L, L);
+        break;
+    case TY_STRING:
+        buf_printf(dst, "((%s) = hp_of_str(hp_val_to_str(%s)), &(%s).u.s)", L, L, L);
+        break;
+    case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET:
+        buf_printf(dst, "((%s) = hp_of_arr(hp_val_to_arr(%s)), &(%s).u.a)", L, L, L);
+        break;
+    case TY_FN:
+        buf_printf(dst, "((%s) = hp_of_clo((%s).u.c), &(%s).u.c)", L, L, L);
+        break;
+    case TY_CLASS: case TY_STRUCT: case TY_OWN: case TY_RC:
+    case TY_INTERFACE: case TY_PTR:
+        buf_printf(dst, "((%s) = hp_of_ptr((%s).u.p), (%s *)&(%s).u.p)",
+                   L, L, ctype_of(pt), L);
+        break;
+    default:
+        buf_printf(dst, "&%s", L);              /* mixed slot aliases directly */
+        break;
+    }
+}
+
 static void emit_call(Codegen *g, Expr *e, Buf *dst) {
     if (e->builtin) {
         emit_builtin_call(g, e->builtin, e->u.call.args, e->type, dst);
@@ -976,34 +1363,27 @@ static void emit_call(Codegen *g, Expr *e, Buf *dst) {
     if (fn) {
         buf_printf(dst, "%s(", mangle_fn(fn->name));
         for (size_t i = 0; i < e->u.call.args.len; i++) {
-            if (i) buf_puts(dst, ", ");            Expr *arg = e->u.call.args.items[i];
+            if (i) buf_puts(dst, ", ");
+            Expr *arg = e->u.call.args.items[i];
             const Type *at = arg->type;
             Param *pm = (i < fn->params.len) ? fn->params.items[i] : NULL;
             if (pm && pm->by_ref) {
-                /* PHP by-ref call: the argument must be a variable; pass
-                 * &slot (typed pointer) so callee writes reach the caller.
-                 * Closure params already arrive as pointers (byref slots or
-                 * boxed hval*) and are re-aliased directly. */
-                if (arg->kind == EX_VAR && arg->u.var.sym) {
-                    VarSym *asym = (VarSym *)arg->u.var.sym;
-                    const char *an = var_name(asym);
-                    if (asym->is_param_ref || asym->captured_byref ||
-                        asym->is_program_global)
-                        buf_printf(dst, "%s", an);   /* already hval* or int64_t* */
-                    else
-                        buf_printf(dst, "&%s", an);
-                } else {
-                    fatal("%s:%zu:%zu: by-ref argument must be a variable",
-                          e->tok.file ? e->tok.file : "?", e->tok.line, e->tok.col);
-                }
+                /* PHP by-ref call: pass a pointer to the caller's slot so the
+                 * callee's writes reach it (see emit_byref_arg) */
+                emit_byref_arg(g, arg, pm, dst);
                 continue;
             }
-            if (pm && at && (at->kind == TY_ARRAY || at->kind == TY_VEC ||
+            if (pm && at && !sema_type_is_linear(at) && (at->kind == TY_ARRAY || at->kind == TY_VEC ||
                              at->kind == TY_MAP || at->kind == TY_SET) &&
                 pm->resolved && pm->resolved->kind != TY_MIXED) {
-                /* COW: clone array-typed args into value-param slots */
+                /* COW: clone array-typed args into value-param slots. A
+                 * by-ref capture box emits an hval, so it has to be unboxed
+                 * before the clone sees it. */
                 const char *as = emit_expr_str(g, arg);
-                buf_printf(dst, "hp_arr_clone(%s)", as);
+                if (emits_hval_lvalue(arg))
+                    buf_printf(dst, "hp_arr_clone(hp_val_to_arr(%s))", as);
+                else
+                    buf_printf(dst, "hp_arr_clone(%s)", as);
                 free((void *)as);
             } else {
                 /* converts boxed/mixed args into the param's type and boxes
@@ -1064,7 +1444,10 @@ static void emit_method(Codegen *g, Expr *e, Buf *dst) {
             for (size_t i = 0; i < e->u.method.args.len; i++) {
                 buf_puts(dst, ", ");
                 Param *pm = (i < m->params.len) ? m->params.items[i] : NULL;
-                emit_arg(g, e->u.method.args.items[i], pm ? pm->resolved : NULL, dst);
+                if (pm && pm->by_ref)
+                    emit_byref_arg(g, (Expr *)e->u.method.args.items[i], pm, dst);
+                else
+                    emit_arg(g, e->u.method.args.items[i], pm ? pm->resolved : NULL, dst);
             }
             emit_missing_defaults(g, m, e->u.method.args.len, dst);
             buf_puts(dst, ")");
@@ -1093,7 +1476,10 @@ static void emit_method(Codegen *g, Expr *e, Buf *dst) {
         for (size_t i = 0; i < e->u.method.args.len; i++) {
             buf_puts(dst, ", ");
             Param *pm = (i < m->params.len) ? m->params.items[i] : NULL;
-            emit_arg(g, e->u.method.args.items[i], pm ? pm->resolved : NULL, dst);
+            if (pm && pm->by_ref)
+                emit_byref_arg(g, (Expr *)e->u.method.args.items[i], pm, dst);
+            else
+                emit_arg(g, e->u.method.args.items[i], pm ? pm->resolved : NULL, dst);
         }
         emit_missing_defaults(g, m, e->u.method.args.len, dst);
         buf_puts(dst, ")");
@@ -1135,7 +1521,10 @@ static void emit_static(Codegen *g, Expr *e, Buf *dst) {
         for (size_t i = 0; i < e->u.staticcall.args.len; i++) {
             if (i) buf_puts(dst, ", ");
             Param *pm = (i < m->params.len) ? m->params.items[i] : NULL;
-            emit_arg(g, e->u.staticcall.args.items[i], pm ? pm->resolved : NULL, dst);
+            if (pm && pm->by_ref)
+                emit_byref_arg(g, (Expr *)e->u.staticcall.args.items[i], pm, dst);
+            else
+                emit_arg(g, e->u.staticcall.args.items[i], pm ? pm->resolved : NULL, dst);
         }
         if (m) emit_missing_defaults(g, m, e->u.staticcall.args.len, dst);
         buf_puts(dst, ")");
@@ -1176,28 +1565,47 @@ static void emit_field(Codegen *g, Expr *e, Buf *dst) {
 }
 
 static void emit_index(Codegen *g, Expr *e, Buf *dst) {
-    Buf o, ix;
-    buf_init(&o); buf_init(&ix);
+    Buf o, ix, out;
+    buf_init(&o); buf_init(&ix); buf_init(&out);
     emit_expr(g, e->u.index.obj, &o);
     if (e->u.index.idx) emit_expr(g, e->u.index.idx, &ix);
     else buf_puts(&ix, "(int64_t)0");
     const Type *ot = e->u.index.obj->type;
     const Type *it = e->u.index.idx ? e->u.index.idx->type : NULL;
-    if (ot && ot->kind == TY_STRING) {
-        /* PHP "char at": yields a 1-char string as an hval; the trailing
-         * project_hval unboxes it when the consumer wants hstr*. */
-        buf_printf(dst, "hp_of_str(hp_str_char_at(%s, %s))", buf_take(&o), buf_take(&ix));
+    if (e->is_move_source && sema_type_is_linear(e->type) && ot &&
+        (ot->kind == TY_ARRAY || ot->kind == TY_VEC || ot->kind == TY_MAP || ot->kind == TY_SET)) {
+        buf_printf(&out, "hp_arr_take(%s, hv(%s))", buf_take(&o), buf_take(&ix));
+    }
+    else if (ot && ot->kind == TY_STRING) {
+        /* PHP "char at": yields a 1-char string as an hval; the projection
+         * below unboxes it when the consumer wants hstr*. */
+        buf_printf(&out, "hp_of_str(hp_str_char_at(%s, %s))", buf_take(&o), buf_take(&ix));
     }
     else if ((ot && ot->kind == TY_MIXED) || (it && it->kind == TY_MIXED))
         /* container or index is mixed (PHP-style dynamic access):
          * route through the generic runtime helper. */
-        buf_printf(dst, "hp_arr_get_v(hv(%s), hv(%s))", buf_take(&o), buf_take(&ix));
+        buf_printf(&out, "hp_arr_get_v(hv(%s), hv(%s))", buf_take(&o), buf_take(&ix));
     else
-        buf_printf(dst, "hp_arr_get(%s, hv(%s))", buf_take(&o), buf_take(&ix));
-    project_hval(dst, e->type);
+        buf_printf(&out, "hp_arr_get(%s, hv(%s))", buf_take(&o), buf_take(&ix));
+    /* Project into OUR buffer, never into the caller's.
+     *
+     * project_hval() REWRITES the buffer it is handed: for a class-typed
+     * element it takes the whole contents and wraps them in a cast. A caller
+     * that shares its output buffer has already written into it by the time
+     * this runs - emitting `f($obj->kids[$i])` has put `hpu_f(` there - so the
+     * cast landed around the CALL:
+     *     ((struct N *)((hpu_f(hp_arr_get(...))).u.p))
+     * and the argument stayed an unboxed hval, which the C compiler rejected.
+     * Building the fragment in a private buffer keeps the projection inside
+     * the expression it belongs to. */
+    project_hval(&out, e->type);
+    {
+        char *code = buf_take(&out);
+        buf_puts(dst, code);
+        free(code);
+    }
     free(o.data); free(ix.data);
 }
-
 static void emit_array_lit(Codegen *g, Expr *e, Buf *dst) {
     if (e->u.map.vals.len) {
         size_t n = e->u.map.vals.len * 2;
@@ -1227,22 +1635,58 @@ static void emit_match_expr(Codegen *g, Expr *e, Buf *dst) {
     buf_puts(dst, "(");
     for (size_t i = 0; i < e->u.matchexpr.cases.len; i++) {
         MatchCase *mc = e->u.matchexpr.cases.items[i];
+
+        /* An arm matches through two kinds of pattern.
+         *
+         * A value pattern is compared with the subject by === (hp_match_any),
+         * and a type test (`$x is T`) is a condition in its own right: it
+         * evaluates to the bool the checker already narrowed on, so it is
+         * used as it stands instead of being compared with the subject. */
         Buf pats;
         buf_init(&pats);
+        size_t npats = 0;
         for (size_t k = 0; k < mc->patterns.len; k++) {
-            if (k) buf_puts(&pats, ", ");
-            to_hval(g, mc->patterns.items[k], &pats);
+            Expr *pat = mc->patterns.items[k];
+            if (pat->kind == EX_IS) continue;
+            if (npats) buf_puts(&pats, ", ");
+            to_hval(g, pat, &pats);
+            npats++;
         }
+
+        Buf cond;
+        buf_init(&cond);
+        if (npats) {
+            char *pv = buf_take(&pats);
+            buf_printf(&cond, "hp_val_to_bool(hp_match_any(hv(%s), (hval[]){%s}, %zu))",
+                       subj, pv, npats);
+            free(pv);
+        }
+        for (size_t k = 0; k < mc->patterns.len; k++) {
+            Expr *pat = mc->patterns.items[k];
+            if (pat->kind != EX_IS) continue;
+            Buf is;
+            buf_init(&is);
+            emit_expr(g, pat, &is);
+            char *iv = buf_take(&is);
+            if (cond.len) buf_puts(&cond, " || ");
+            /* an `is` test already emits a C condition, not a value */
+            buf_printf(&cond, "(%s)", iv);
+            free(iv);
+        }
+        if (!cond.len) buf_puts(&cond, "0");   /* unreachable: sema rejects it */
+
         Buf body;
         buf_init(&body);
         emit_expr(g, mc->body, &body);
-        buf_puts(dst, "hp_val_to_bool(hp_match_any(hv(");
-        buf_puts(dst, subj);
-        buf_printf(dst, "), (hval[]){%s}, %zu)) ? (", buf_take(&pats), mc->patterns.len);
-        buf_puts(dst, buf_take(&body));
+        char *cv = buf_take(&cond);
+        buf_puts(dst, cv);
+        free(cv);
+        buf_puts(dst, " ? (");
+        char *bv = buf_take(&body);
+        buf_puts(dst, bv);
+        free(bv);
         buf_puts(dst, ") : ");
         free(pats.data);
-        free(body.data);
     }
     if (e->u.matchexpr.dflt) {
         emit_expr(g, e->u.matchexpr.dflt, dst);
@@ -1257,6 +1701,7 @@ static void emit_match_expr(Codegen *g, Expr *e, Buf *dst) {
 static void emit_stmt(Codegen *g, Stmt *s);
 static void emit_block(Codegen *g, PtrVec stmts);
 static const char *zero_init_of(const Type *t);
+static const char *zero_init_decl_of(const Type *t);
 
 static const char *closure_c_name(AstFn *fn) {
     return fmt("closure_%zu", (size_t)((uintptr_t)fn) & 0xffffff);
@@ -1478,7 +1923,7 @@ static void emit_closure(Codegen *g, AstFn *fn) {
                 continue;
             }
             line(g, "%s %s = %s;", ctype_of(v->type),
-                 var_name(v), zero_init_of(v->type));
+                 var_name(v), zero_init_decl_of(v->type));
         }
         free(syms.items);
     }
@@ -1621,7 +2066,7 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             if (!e->u.assign.value) {
                 /* typed declaration without initializer: "$x: int;" */
                 const Type *zt = tgt->u.var.sym ? ((VarSym *)tgt->u.var.sym)->type : NULL;
-                buf_printf(dst, "(%s = %s)", name, zero_init_of(zt));
+                buf_printf(dst, "(%s = %s)", name, zero_init_decl_of(zt));
                 return;
             }
             Buf v;
@@ -1630,19 +2075,27 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             const Type *vt = e->u.assign.value->type;
             bool is_arr_v = vt && (vt->kind == TY_ARRAY || vt->kind == TY_VEC ||
                                    vt->kind == TY_MAP || vt->kind == TY_SET);
-            if (tgt_is_box && is_arr_v) {
+            if (tgt_is_box && is_arr_v && !sema_type_is_linear(vt)) {
                 /* the slot is an hval but the value is a bare harr*: box it */
                 buf_printf(dst, "(%s = hp_of_arr(hp_arr_clone(%s)))",
                            name, buf_take(&v));
             }
-            else if (!tgt_is_box && is_arr_v) {
+            else if (!tgt_is_box && is_arr_v && !sema_type_is_linear(vt)) {
                 buf_printf(dst, "(%s = hp_arr_clone(%s))", name, buf_take(&v));
             }
             else {
                 free(v.data);
                 buf_init(&v);
                 const Type *tt = tgt->u.var.sym ? ((VarSym *)tgt->u.var.sym)->type : NULL;
-                emit_to_type(g, e->u.assign.value, tt, &v);
+                /* The C slot is an hval whenever the target is a box - a
+                 * `use (&$x)` capture or file-scope storage - and that is
+                 * true of the *symbol*, not of the type sema inferred for
+                 * it. `$pulse = ($pulse + 4) % 100;` inside a closure is the
+                 * case that exposed it: the value is an int64_t, the slot is
+                 * an hval, and the raw value cannot be assigned to it. Box
+                 * it (to_hval) instead of projecting it to its own type. */
+                if (tgt_is_box) to_hval(g, e->u.assign.value, &v);
+                else emit_to_type(g, e->u.assign.value, tt, &v);
                 buf_printf(dst, "(%s = %s)", name, buf_take(&v));
             }
             free(v.data);
@@ -1654,10 +2107,10 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             bool dboxed = tgt_is_box || !tgt->u.var.sym || !dt ||
                           dt->kind == TY_MIXED;
             if (dboxed) /* concat yields hstr*: box it for the hval slot */
-                buf_printf(dst, "((%s) = hp_of_str(hp_str_concat_v(hv(%s), hv(%s))))",
+                buf_printf(dst, "((%s) = hp_of_str(hp_str_append_v(hv(%s), hv(%s))))",
                            name, name, buf_take(&v));
             else
-                buf_printf(dst, "(%s = hp_str_concat_v(hv(%s), hv(%s)))", name, name, buf_take(&v));
+                buf_printf(dst, "(%s = hp_str_append_v(hv(%s), hv(%s)))", name, name, buf_take(&v));
             free(v.data);
         } else if (op == T_POWASSIGN) {
             Buf v;
@@ -1710,6 +2163,18 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
                 buf_printf(dst, "((%s) = %s((%s), hv(%s)))",
                            name, rop, name, buf_take(&v));
             }
+            else if (cboxed || hvalslot) {
+                /* The remaining compound operators (%%, <<, >>, ...) have no
+                 * value-space helper, so compute in integer space and box the
+                 * result. Without this they were emitted as a plain C compound
+                 * assignment on an hval - `(*v) %= 4` - which is not even
+                 * valid C, let alone PHP. */
+                const char *iop = op == T_PERCENTASSIGN ? "%" :
+                                  op == T_SHLASSIGN ? "<<" :
+                                  op == T_SHRASSIGN ? ">>" : "+";
+                buf_printf(dst, "((%s) = hp_of_int(hp_val_to_int(%s) %s hp_val_to_int(hv(%s))))",
+                           name, name, iop, buf_take(&v));
+            }
             else if (cvt && cvt->kind == TY_MIXED && tt2 &&
                 (type_is_integral(tt2->kind) || tt2->kind == TY_BOOL))
                 buf_printf(dst, "(%s %s hp_val_to_int(%s))", name, c_op, buf_take(&v));
@@ -1719,6 +2184,40 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
                 buf_printf(dst, "(%s %s %s)", name, c_op, buf_take(&v));
             free(v.data);
         }
+        return;
+    }
+    if (tgt->kind == EX_DEREF) {
+        Buf l, v;
+        buf_init(&l); buf_init(&v);
+        emit_expr(g, tgt, &l);
+        if (op == T_ASSIGN || op == T_QQASSIGN)
+            emit_to_type(g, e->u.assign.value, tgt->type, &v);
+        else
+            emit_expr(g, e->u.assign.value, &v);
+        const char *ls = buf_take(&l), *vs = buf_take(&v);
+        const char *assign_op = op == T_PLUSASSIGN ? "+=" :
+                                op == T_MINUSASSIGN ? "-=" :
+                                op == T_STARASSIGN ? "*=" :
+                                op == T_SLASHASSIGN ? "/=" :
+                                op == T_PERCENTASSIGN ? "%=" :
+                                op == T_SHLASSIGN ? "<<=" :
+                                op == T_SHRASSIGN ? ">>=" :
+                                op == T_DOTASSIGN ? "=" : "=";
+        if (op == T_DOTASSIGN) {
+            buf_printf(dst, "(%s = hp_str_append_v(hv(%s), hv(%s)))", ls, ls, vs);
+        } else if (op == T_POWASSIGN) {
+            const Type *tt = tgt->type;
+            if (tt && (type_is_integral(tt->kind) || tt->kind == TY_BOOL))
+                buf_printf(dst, "(%s = hp_val_to_int(hp_powv(hv(%s), hv(%s))))", ls, ls, vs);
+            else
+                buf_printf(dst, "(%s = hp_val_to_float(hp_powv(hv(%s), hv(%s))))", ls, ls, vs);
+        } else if (op == T_QQASSIGN) {
+            buf_printf(dst, "((%s) = (%s))", ls, vs);
+        } else {
+            buf_printf(dst, "((%s) %s (%s))", ls, assign_op, vs);
+        }
+        free((void *)ls); free((void *)vs);
+        free(l.data); free(v.data);
         return;
     }
     if (tgt->kind == EX_INDEX) {
@@ -1792,10 +2291,10 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
                 emit_expr(g, e->u.assign.value, &v);
                 if (fboxed)
                     buf_printf(dst,
-                        "((%s) = hp_of_str(hp_str_concat_v(hv(%s), hv(%s))))",
+                        "((%s) = hp_of_str(hp_str_append_v(hv(%s), hv(%s))))",
                         lval, lval, buf_take(&v));
                 else
-                    buf_printf(dst, "(%s = hp_str_concat_v(hv(%s), hv(%s)))",
+                    buf_printf(dst, "(%s = hp_str_append_v(hv(%s), hv(%s)))",
                                lval, lval, buf_take(&v));
             } else if (op == T_POWASSIGN) {
                 emit_expr(g, e->u.assign.value, &v);
@@ -1914,8 +2413,25 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
         else if (e->u.var.name && (strncmp(e->u.var.name, "PHP_", 4) == 0 ||
                                    strncmp(e->u.var.name, "JSON_", 5) == 0 ||
                                    strcmp(e->u.var.name, "M_PI") == 0 ||
-                                   strcmp(e->u.var.name, "M_E") == 0)) {
-            /* PHP_* predefined constants, resolved in sema */
+                                   strcmp(e->u.var.name, "M_E") == 0 ||
+                                   strcmp(e->u.var.name, "RESET") == 0 ||
+                                   strcmp(e->u.var.name, "BLACK") == 0 ||
+                                   strcmp(e->u.var.name, "RED") == 0 ||
+                                   strcmp(e->u.var.name, "GREEN") == 0 ||
+                                   strcmp(e->u.var.name, "YELLOW") == 0 ||
+                                   strcmp(e->u.var.name, "BLUE") == 0 ||
+                                   strcmp(e->u.var.name, "MAGENTA") == 0 ||
+                                   strcmp(e->u.var.name, "CYAN") == 0 ||
+                                   strcmp(e->u.var.name, "WHITE") == 0 ||
+                                   strcmp(e->u.var.name, "BRIGHT_BLACK") == 0 ||
+                                   strcmp(e->u.var.name, "BRIGHT_RED") == 0 ||
+                                   strcmp(e->u.var.name, "BRIGHT_GREEN") == 0 ||
+                                   strcmp(e->u.var.name, "BRIGHT_YELLOW") == 0 ||
+                                   strcmp(e->u.var.name, "BRIGHT_BLUE") == 0 ||
+                                   strcmp(e->u.var.name, "BRIGHT_MAGENTA") == 0 ||
+                                   strcmp(e->u.var.name, "BRIGHT_CYAN") == 0 ||
+                                   strcmp(e->u.var.name, "BRIGHT_WHITE") == 0)) {
+            /* PHP_* predefined constants + ANSI color constants */
             if (e->u.var.name == s_php_int_max) buf_puts(dst, "(int64_t)9223372036854775807LL");
             else if (e->u.var.name == s_php_int_min) buf_puts(dst, "(int64_t)(-9223372036854775807LL - 1)");
             else if (e->u.var.name == s_php_int_size) buf_puts(dst, "(int64_t)8");
@@ -1945,6 +2461,24 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
             else if (e->u.var.name == s_php_file_ignore_new_lines) buf_puts(dst, "(int64_t)2");
             else if (e->u.var.name == s_php_file_skip_empty_lines) buf_puts(dst, "(int64_t)4");
             else if (e->u.var.name == s_php_file_use_include_path) buf_puts(dst, "(int64_t)1");
+            /* ANSI color constants: integer codes 0..16 */
+            else if (e->u.var.name == s_ansi_reset)       buf_puts(dst, "(int64_t)0");
+            else if (e->u.var.name == s_ansi_black)       buf_puts(dst, "(int64_t)1");
+            else if (e->u.var.name == s_ansi_red)         buf_puts(dst, "(int64_t)2");
+            else if (e->u.var.name == s_ansi_green)       buf_puts(dst, "(int64_t)3");
+            else if (e->u.var.name == s_ansi_yellow)      buf_puts(dst, "(int64_t)4");
+            else if (e->u.var.name == s_ansi_blue)        buf_puts(dst, "(int64_t)5");
+            else if (e->u.var.name == s_ansi_magenta)     buf_puts(dst, "(int64_t)6");
+            else if (e->u.var.name == s_ansi_cyan)        buf_puts(dst, "(int64_t)7");
+            else if (e->u.var.name == s_ansi_white)       buf_puts(dst, "(int64_t)8");
+            else if (e->u.var.name == s_ansi_bright_black)   buf_puts(dst, "(int64_t)9");
+            else if (e->u.var.name == s_ansi_bright_red)     buf_puts(dst, "(int64_t)10");
+            else if (e->u.var.name == s_ansi_bright_green)   buf_puts(dst, "(int64_t)11");
+            else if (e->u.var.name == s_ansi_bright_yellow)  buf_puts(dst, "(int64_t)12");
+            else if (e->u.var.name == s_ansi_bright_blue)    buf_puts(dst, "(int64_t)13");
+            else if (e->u.var.name == s_ansi_bright_magenta) buf_puts(dst, "(int64_t)14");
+            else if (e->u.var.name == s_ansi_bright_cyan)    buf_puts(dst, "(int64_t)15");
+            else if (e->u.var.name == s_ansi_bright_white)   buf_puts(dst, "(int64_t)16");
             else buf_puts(dst, "hp_null");
             break;
         }
@@ -1954,15 +2488,44 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
                 buf_puts(dst, "hp_argc");
             else
                 buf_puts(dst, "hp_argv");
-        }        else if (e->u.var.sym && ((VarSym *)e->u.var.sym)->captured_byref)
-            buf_printf(dst, "(*%s)", var_name(e->u.var.sym));   /* heap box */
-        else if (e->u.var.sym && ((VarSym *)e->u.var.sym)->is_param_ref)
-            buf_printf(dst, "(*%s)", var_name(e->u.var.sym));   /* by-ref param */
-        else
-            buf_printf(dst, "%s", var_name(e->u.var.sym));
+        }        else {
+            /* the slot the value lives in: a plain variable, a heap box for
+             * a by-ref capture, or a by-ref parameter */
+            const char *slot = var_name(e->u.var.sym);
+            if (e->u.var.sym && ((VarSym *)e->u.var.sym)->captured_byref)
+                slot = fmt("(*%s)", slot);
+            else if (e->u.var.sym && ((VarSym *)e->u.var.sym)->is_param_ref)
+                slot = fmt("(*%s)", slot);
+            if (narrowed_read_needs_projection(e)) {
+                /* the branch proved the value is there: read the payload out
+                 * of the slot instead of the slot itself */
+                Buf b;
+                buf_init(&b);
+                project_narrowed(&b, e->type, slot);
+                buf_printf(dst, "%s", buf_take(&b));
+                free(b.data);
+            } else if (e->is_move_source && type_is_move_pointer(e->type)) {
+                buf_printf(dst, "((%s)hp_move_ptr(&(%s)))", ctype_of(e->type), slot);
+            } else if (e->is_move_source && e->type &&
+                       (e->type->kind == TY_TUPLE || e->type->kind == TY_OPTION ||
+                        e->type->kind == TY_RESULT || e->type->kind == TY_UNION ||
+                        e->type->kind == TY_NULLABLE || e->type->kind == TY_MIXED)) {
+                buf_printf(dst, "hp_move_hval(&(%s))", slot);
+            } else {
+                buf_printf(dst, "%s", slot);
+            }
+        }
         break;
     case EX_INDEX: emit_index(g, e, dst); break;
-    case EX_FIELD: emit_field(g, e, dst); break;
+    case EX_FIELD:
+        if (e->is_move_source && type_is_move_pointer(e->type)) {
+            Buf field;
+            buf_init(&field);
+            emit_field(g, e, &field);
+            buf_printf(dst, "((%s)hp_move_ptr(&(%s)))", ctype_of(e->type), buf_take(&field));
+            free(field.data);
+        } else emit_field(g, e, dst);
+        break;
     case EX_CALL: emit_call(g, e, dst); break;
     case EX_METHOD: emit_method(g, e, dst); break;
     case EX_STATIC: emit_static(g, e, dst); break;
@@ -2145,6 +2708,24 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
                 continue;
             }
             const Type *t = v->type;
+            if (sema_type_is_linear(t) && type_is_move_pointer(t)) {
+                if (t && (t->kind == TY_ARRAY || t->kind == TY_VEC ||
+                          t->kind == TY_MAP || t->kind == TY_SET ||
+                          (t->kind == TY_OWN && t->elem && t->elem->kind == TY_ARRAY)))
+                    buf_printf(dst, "hp_of_arr((harr*)hp_move_ptr(&%s))", var_name(v));
+                else if (t && ((t->kind == TY_STRING) ||
+                               (t->kind == TY_OWN && t->elem && t->elem->kind == TY_STRING)))
+                    buf_printf(dst, "hp_of_str((hstr*)hp_move_ptr(&%s))", var_name(v));
+                else
+                    buf_printf(dst, "hp_of_ptr(hp_move_ptr(&%s))", var_name(v));
+                continue;
+            }
+            if (sema_type_is_linear(t) && t &&
+                (t->kind == TY_TUPLE || t->kind == TY_OPTION || t->kind == TY_RESULT ||
+                 t->kind == TY_UNION || t->kind == TY_NULLABLE || t->kind == TY_MIXED)) {
+                buf_printf(dst, "hp_move_hval(&%s)", var_name(v));
+                continue;
+            }
             switch (t ? t->kind : TY_MIXED) {
             case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64:
                 buf_printf(dst, "hp_of_int(%s)", var_name(v));
@@ -2208,6 +2789,7 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
         case TY_BOOL: tag = "HV_BOOL"; break;
         case TY_STRING: tag = "HV_STR"; break;
         case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET: tag = "HV_ARR"; break;
+        case TY_NULL: tag = "HV_NULL"; break;
         default: tag = "HV_OBJ"; break;
         }
         buf_printf(dst, "(hp_tag(%s) == %s)", buf_take(&o), tag);
@@ -2256,7 +2838,8 @@ static void emit_foreach(Codegen *g, Stmt *s) {
                  is_map ? "hp_map_iter" : "hp_arr_iter", iter);
         /* declare the loop variable with its sema-resolved C type */
         const Type *vt = s->u.foreach.vsym ? ((VarSym *)s->u.foreach.vsym)->type : NULL;
-        line(g, "%s %s = %s;", ctype_of(vt ? vt : ty_mixed), v, zero_init_of(vt ? vt : ty_mixed));
+        line(g, "%s %s = %s;", ctype_of(vt ? vt : ty_mixed), v,
+             zero_init_decl_of(vt ? vt : ty_mixed));
         line(g, "while (hp_foreach_next(&ctx%d, &hpv_tmp)) {", id);
         switch (vt ? vt->kind : TY_MIXED) {
         case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64: case TY_ENUM:
@@ -2335,36 +2918,81 @@ static void try_syms(Stmt *s, PtrVec *out) {
     free(raw.items);
 }
 
-/* Emit $val for a slot declared as $want. When the value is hval-typed
- * (untyped property, map entry, mixed param, bare `callable`) and the slot is
- * a scalar, the hval has to be unboxed — PHP does this conversion at runtime
- * and so do we, via hp_val_to_int/str/... */
+/* project an hval expression to the C type of t (try-helper returns) */
+static const char *proj_hval_expr(const Type *t, const char *expr) {
+    if (!t || t->kind == TY_VOID || t->kind == TY_MIXED || t->kind == TY_OPTION ||
+        t->kind == TY_RESULT || t->kind == TY_TUPLE ||
+        t->kind == TY_NULL || t->kind == TY_NULLABLE || t->kind == TY_UNION)
+        return fmt("%s", expr); /* already an hval */
+    switch (t->kind) {
+    case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64: case TY_ENUM:
+        return fmt("(%s).u.i", expr);
+    case TY_FLOAT: case TY_F32: case TY_F64: return fmt("(%s).u.f", expr);
+    case TY_BOOL: return fmt("(%s).u.b", expr);
+    case TY_STRING: return fmt("(%s).u.s", expr);
+    case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET: return fmt("(%s).u.a", expr);
+    default: return fmt("((%s)((%s).u.p))", ctype_of(t), expr);
+    }
+}
+
+/* Emit $val for a slot declared as $want.
+ *
+ * The question that matters here is not what type sema inferred but whether
+ * the expression's generated C form is an hval: a PHP-style value slot, a
+ * `use (&$x)` capture box and a closure are all different, and each has to be
+ * converted its own way. $want is what the *slot* needs. */
 static void emit_to_type(Codegen *g, Expr *val, const Type *want, Buf *dst) {
-    bool value_is_box = val && val->type &&
-        (val->type->kind == TY_MIXED || val->type->kind == TY_OPTION ||
-         val->type->kind == TY_RESULT || val->type->kind == TY_FN);
     bool want_scalar = want && (type_is_numeric(want->kind) || want->kind == TY_BOOL ||
                                 want->kind == TY_STRING);
-    if (value_is_box && want_scalar) {
+    bool want_arr = want && (want->kind == TY_ARRAY || want->kind == TY_VEC ||
+                             want->kind == TY_MAP || want->kind == TY_SET);
+    /* hval in C, heading for something that is not an hval slot: project it.
+     *
+     * The scalar case is PHP's runtime conversion (hp_val_to_int/str/...).
+     * Arrays and objects need their payload pulled out of the value. Getting
+     * only the scalar case right left `$stack = array_slice($stack, 0, $k);`
+     * emitting an hval where the field is an harr*, and passing an array
+     * element (`$n->kids[$i]`) to a function taking a class pointer was the
+     * same gap from the other side. */
+    if (c_form_is_hval(val)) {
+        if (want && want->kind == TY_NULLABLE) {
+            /* a nullable slot is an hval slot, but the value goes in in the
+             * member's shape */
+            to_hval_member(g, val, want->elem, dst);
+            return;
+        }
         Buf v;
         buf_init(&v);
         emit_expr(g, val, &v);
-        const char *conv = type_is_integral(want->kind) ? "hp_val_to_int" :
-                           want->kind == TY_BOOL ? "hp_val_to_bool" :
-                           type_is_numeric(want->kind) ? "hp_val_to_float" :
-                           "hp_val_to_str";
-        buf_printf(dst, "%s(hv(%s))", conv, buf_take(&v));
+        const char *src = buf_take(&v);
+        if (!want || want->kind == TY_MIXED) {
+            buf_printf(dst, "%s", src);
+        } else if (want_scalar) {
+            buf_printf(dst, "%s(%s)", hval_cast_fn(want), src);
+        } else if (want_arr) {
+            buf_printf(dst, "hp_val_to_arr(%s)", src);
+        } else {
+            buf_printf(dst, "%s", proj_hval_expr(want, src));
+        }
         free(v.data);
         return;
     }
-    /* assigning into a by-ref box (target is mixed/hval): box the value.
-     * Only when the slot is actually mixed — a typed scalar slot must stay
-     * in its C representation (boxing it breaks int64_t/bool fields). */
-    bool want_box = !want || want->kind == TY_MIXED;
-    if (!value_is_box && want_box) {
-        /* any typed value heading for an hval slot (by-ref box, untyped
-         * property, mixed var) must be boxed — to_hval covers scalars,
-         * strings, arrays, closures and objects alike */
+    /* assigning into a value slot (untyped property, mixed param, by-ref box):
+     * box the value. Only when the slot is actually mixed - a typed scalar
+     * slot must stay in its C representation (boxing it breaks int64_t fields),
+     * and a closure is a plain hclosure* until something asks for an hval.
+     * A nullable/union slot is an hval slot too, so it takes the value the
+     * same way. */
+    bool want_box = !want || want->kind == TY_MIXED ||
+                    want->kind == TY_NULLABLE || want->kind == TY_UNION ||
+                    want->kind == TY_NULL;
+    if (want_box) {
+        if (want && want->kind == TY_NULLABLE) {
+            /* the slot holds one member - the payload is in its shape */
+            to_hval_member(g, val, want->elem, dst);
+            return;
+        }
+        /* to_hval covers scalars, strings, arrays, closures and objects */
         to_hval(g, val, dst);
         return;
     }
@@ -2382,27 +3010,21 @@ static void emit_to_type(Codegen *g, Expr *val, const Type *want, Buf *dst) {
     emit_expr(g, val, dst);
 }
 
-/* project an hval expression to the C type of t (try-helper returns) */
-static const char *proj_hval_expr(const Type *t, const char *expr) {
-    if (!t || t->kind == TY_VOID || t->kind == TY_MIXED || t->kind == TY_OPTION ||
-        t->kind == TY_RESULT || t->kind == TY_TUPLE)
-        return fmt("%s", expr); /* already an hval */
-    switch (t->kind) {
-    case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64: case TY_ENUM:
-        return fmt("(%s).u.i", expr);
-    case TY_FLOAT: case TY_F32: case TY_F64: return fmt("(%s).u.f", expr);
-    case TY_BOOL: return fmt("(%s).u.b", expr);
-    case TY_STRING: return fmt("(%s).u.s", expr);
-    case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET: return fmt("(%s).u.a", expr);
-    default: return fmt("(%s)(%s).u.p", ctype_of(t), expr);
-    }
-}
-
 static void emit_stmt(Codegen *g, Stmt *s) {
     switch (s->kind) {
+    case ST_GLOBAL:
+        /* `global` only binds names to file-scope slots in sema/codegen
+         * prologues; there is no statement-level C to emit. */
+        break;
     case ST_LET: {
         VarSym *v = s->u.let.sym;
-        const Type *t = s->u.let.ann ? s->u.let.ann : s->u.let.init->type;
+        const Type *t = s->u.let.ann ? s->u.let.ann
+                                     : (s->u.let.init ? s->u.let.init->type : NULL);
+        if (!s->u.let.init) {
+            /* `let mut $x: T;` - a slot and no value (see sema) */
+            if (v && !v->is_auto && t) line(g, "%s %s;", ctype_of(t), var_name(v));
+            break;
+        }
         Buf init;
         buf_init(&init);
         if (v && v->is_auto) {
@@ -2417,6 +3039,11 @@ static void emit_stmt(Codegen *g, Stmt *s) {
                 emit_expr(g, s->u.let.init, &init);
             }
             line(g, "%s = %s;", vn, buf_take(&init));
+        } else if (t && type_is_hval_slot(t)) {
+            /* the binding is an hval slot (mixed, nullable, union): the value
+             * has to be boxed into it, the way an assignment does */
+            emit_to_type(g, s->u.let.init, t, &init);
+            line(g, "%s %s = %s;", ctype_of(t), var_name(v), buf_take(&init));
         } else {
             emit_expr(g, s->u.let.init, &init);
             line(g, "%s %s = %s;", ctype_of(t), var_name(v), buf_take(&init));
@@ -2485,6 +3112,7 @@ static void emit_stmt(Codegen *g, Stmt *s) {
             line(g, "hp_echo(%s);", buf_take(&v));
             free(v.data);
         }
+        line(g, "hp_echo_newline();");
         break;
     }
     case ST_PRINT: {
@@ -2589,6 +3217,49 @@ static void emit_stmt(Codegen *g, Stmt *s) {
             {
                 /* default arm runs last (PHP executes it whenever no case
                  * matched, so scanning order stays intuitive) */
+                for (size_t i = 0; i < s->u.switch_.cases.len; i++) {
+                    SwitchCase *cse = s->u.switch_.cases.items[i];
+                    if (!cse->is_default) continue;
+                    emit_block(g, cse->body);
+                }
+            }
+            g->loop_depth--;
+            g->depth--;
+            line(g, "} while (0);");
+            break;
+        }
+        bool cond_dyn = s->u.switch_.cond->type &&
+                        (s->u.switch_.cond->type->kind == TY_NULLABLE ||
+                         s->u.switch_.cond->type->kind == TY_UNION ||
+                         s->u.switch_.cond->type->kind == TY_MIXED);
+        if (cond_dyn) {
+            /* a nullable/union/mixed subject holds an hval, so the cases
+             * compare with PHP's loose == (hp_val_eq) - the way the string
+             * path compares with hp_str_eq */
+            line(g, "do {");
+            g->depth++;
+            g->loop_depth++;
+            line(g, "hval hp_sw_v = hv(%s);", buf_take(&c));
+            free(c.data);
+            for (size_t i = 0; i < s->u.switch_.cases.len; i++) {
+                SwitchCase *cse = s->u.switch_.cases.items[i];
+                if (cse->is_default) continue;
+                for (size_t k = 0; k < cse->patterns.len; k++) {
+                    Buf p;
+                    buf_init(&p);
+                    to_hval(g, cse->patterns.items[k], &p);
+                    line(g, k == 0 ? "if (hp_val_eq(hp_sw_v, %s)) {" :
+                          "} else if (hp_val_eq(hp_sw_v, %s)) {", buf_take(&p));
+                    free(p.data);
+                }
+                g->depth++;
+                emit_block(g, cse->body);
+                g->depth--;
+                line(g, "break;");
+                line(g, "}");
+            }
+            {
+                /* default arm runs last, whenever no case matched */
                 for (size_t i = 0; i < s->u.switch_.cases.len; i++) {
                     SwitchCase *cse = s->u.switch_.cases.items[i];
                     if (!cse->is_default) continue;
@@ -2923,7 +3594,7 @@ static void emit_fn(Codegen *g, AstFn *fn) {
             /* by-ref param: the caller passes &slot (typed pointer) */
             buf_printf(&hdr, "%s *%s", ctype_of(pm->resolved), var_name(pm->sym));
         } else {
-            buf_printf(&hdr, "%s %s", ctype_of(pm->resolved), var_name(pm->sym));
+            buf_printf(&hdr, "%s %s", ctype_of(pm->resolved), param_slot_name(pm));
         }
         first = false;
     }
@@ -2948,7 +3619,7 @@ static void emit_fn(Codegen *g, AstFn *fn) {
         if (pm->by_ref) {
             buf_printf(&hdr, "%s *%s", ctype_of(pm->resolved), var_name(pm->sym));
         } else {
-            buf_printf(&hdr, "%s %s", ctype_of(pm->resolved), var_name(pm->sym));
+            buf_printf(&hdr, "%s %s", ctype_of(pm->resolved), param_slot_name(pm));
         }
         first = false;
     }
@@ -2972,6 +3643,7 @@ static void emit_fn(Codegen *g, AstFn *fn) {
  * or top-level block). Here: collect syms declared anywhere inside. */static void collect_syms_stmt(PtrVec *syms, Stmt *s);
 static void collect_syms_expr(PtrVec *syms, Expr *e);
 static const char *zero_init_of(const Type *t);
+static const char *zero_init_decl_of(const Type *t);
 static void collect_globals_stmt(PtrVec *syms, Stmt *s);
 static bool is_global_alias(VarSym *v);   /* file-scope `global $x;` alias */
 static bool is_global_alias(VarSym *v) { return v && v->is_global_alias; }
@@ -3072,7 +3744,7 @@ static void collect_syms_stmt(PtrVec *syms, Stmt *s) {
             collect_syms_expr(syms, s->u.echo.exprs.items[i]);
         break;
     case ST_LET:
-        collect_syms_expr(syms, s->u.let.init);
+        if (s->u.let.init) collect_syms_expr(syms, s->u.let.init);
         if (s->u.let.sym) ptrvec_push(syms, s->u.let.sym);
         break;
     case ST_RETURN: collect_syms_expr(syms, s->u.ret.value); break;
@@ -3162,9 +3834,31 @@ static const char *zero_init_of(const Type *t) {
         return "hp_null_arr()";
     case TY_MIXED:
         return "hp_null";
+    /* a nullable/union slot starts out empty: hp_null is the hval that says
+     * "no value" (a zeroed hval would read as the integer 0) */
+    case TY_NULL: case TY_NULLABLE: case TY_UNION:
+        return "hp_null";
     default:
         return "0"; /* pointers (struct X*, hclosure*) accept 0 */
     }
+}
+
+/* The value a declared-but-uninitialised VARIABLE starts with.
+ *
+ * Arrays get a *fresh*, unshared empty array instead of the
+ * hp_null_arr() singleton that zero_init_of hands out. The singleton has
+ * exactly one owner (rc == 1), so the copy-on-write in hp_arr_push has
+ * nothing to clone: the first push into a local that was never assigned
+ * writes into the singleton, and then every other "empty" array in the
+ * process sees that element. Fresh scalars have no such problem - they are
+ * immutable in C - so only containers are special-cased. */
+static const char *zero_init_decl_of(const Type *t) {
+    if (t) switch (t->kind) {
+    case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET:
+        return "hp_arr_new()";
+    default: break;
+    }
+    return zero_init_of(t);
 }
 
 /* Walk for ST_GLOBAL statements only; push their shared VarSyms. Recurses
@@ -3254,12 +3948,25 @@ static void emit_auto_decls(Codegen *g, AstFn *fn) {
             line(g, "hval *%s = hp_box_new();", var_name(v));
         } else {
             line(g, "%s %s = %s;", ctype_of(v->type),
-                 var_name(v), zero_init_of(v->type));
+                 var_name(v), zero_init_decl_of(v->type));
         }
+    }
+    /* A by-value parameter that a closure captured by reference under its own
+     * name needs a box of its own: the box holds the parameter's value and is
+     * shared with the closure env, so writes from the closure persist across
+     * calls while the caller's variable is untouched - which is exactly what
+     * capturing a value parameter by reference means in PHP. */
+    for (size_t i = 0; i < fn->params.len; i++) {
+        Param *pm = fn->params.items[i];
+        VarSym *ps = (VarSym *)pm->sym;
+        if (!ps || !ps->captured_byref || pm->by_ref) continue;
+        line(g, "hval *%s = hp_box_new();", var_name(ps));
+        line(g, "*%s = %s;", var_name(ps), box_param_value(pm->resolved, param_slot_name(pm)));
     }
 }
 
 static const char *zero_init_of(const Type *t);
+static const char *zero_init_decl_of(const Type *t);
 
 static void emit_fn_body(Codegen *g, AstFn *fn, const Type *self_type) {
     (void)self_type;
@@ -3277,6 +3984,8 @@ static void emit_fn_body(Codegen *g, AstFn *fn, const Type *self_type) {
             line(g, "return hp_arr_new();");
         else if (ret->kind == TY_CLASS || ret->kind == TY_STRUCT)
             line(g, "return 0;");  /* unreachable fallback: null object */
+        else if (ret->kind == TY_REF || ret->kind == TY_MUTREF || ret->kind == TY_PTR)
+            line(g, "return NULL;"); /* unreachable fallback: null pointer */
         else if ((ret->kind == TY_OWN || ret->kind == TY_RC) && ret->elem &&
                  (ret->elem->kind == TY_CLASS || ret->elem->kind == TY_STRUCT))
             line(g, "return 0;");
@@ -3651,7 +4360,7 @@ static void cg_visit_stmt(PtrVec *out, Stmt *s) {
     if (!s) return;
     switch (s->kind) {
     case ST_EXPR: cg_visit_expr(out, s->u.expr.expr); break;
-    case ST_LET: cg_visit_expr(out, s->u.let.init); break;
+    case ST_LET: if (s->u.let.init) cg_visit_expr(out, s->u.let.init); break;
     case ST_RETURN: cg_visit_expr(out, s->u.ret.value); break;
     case ST_ECHO:
         for (size_t i = 0; i < s->u.echo.exprs.len; i++)
@@ -3740,6 +4449,24 @@ void codegen_emit(Program *prog, Buf *out) {
     s_php_file_ignore_new_lines = intern("PHP_FILE_IGNORE_NEW_LINES");
     s_php_file_skip_empty_lines = intern("PHP_FILE_SKIP_EMPTY_LINES");
     s_php_file_use_include_path = intern("PHP_FILE_USE_INCLUDE_PATH");
+    /* ANSI color constants for print / println / input */
+    s_ansi_reset       = intern("RESET");
+    s_ansi_black       = intern("BLACK");
+    s_ansi_red         = intern("RED");
+    s_ansi_green       = intern("GREEN");
+    s_ansi_yellow      = intern("YELLOW");
+    s_ansi_blue        = intern("BLUE");
+    s_ansi_magenta     = intern("MAGENTA");
+    s_ansi_cyan        = intern("CYAN");
+    s_ansi_white       = intern("WHITE");
+    s_ansi_bright_black   = intern("BRIGHT_BLACK");
+    s_ansi_bright_red     = intern("BRIGHT_RED");
+    s_ansi_bright_green   = intern("BRIGHT_GREEN");
+    s_ansi_bright_yellow  = intern("BRIGHT_YELLOW");
+    s_ansi_bright_blue    = intern("BRIGHT_BLUE");
+    s_ansi_bright_magenta = intern("BRIGHT_MAGENTA");
+    s_ansi_bright_cyan    = intern("BRIGHT_CYAN");
+    s_ansi_bright_white   = intern("BRIGHT_WHITE");
     for (int tb = 0; tb < 8; tb++)
         buf_init(&g.try_bufs[tb]); /* file-scope try-helper defs, flushed at EOF */
 
@@ -3922,7 +4649,7 @@ void codegen_emit(Program *prog, Buf *out) {
                     line(&g, "hval *%s = hp_box_new();", var_name(v));
             } else {
                 line(&g, "%s %s = %s;", ctype_of(v->type),
-                     var_name(v), zero_init_of(v->type));
+                     var_name(v), zero_init_decl_of(v->type));
             }
         }
     }

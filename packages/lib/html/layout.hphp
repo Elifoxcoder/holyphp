@@ -1,0 +1,854 @@
+// =====================================================================
+//  HolyHTML — layout: turns a styled tree into boxes and lines
+// =====================================================================
+//
+//  Part of lib/html (import "html"). Everything above this file decides
+//  *what* things are; this file decides where they are and how big.
+//
+//      Box     a border box: an element that occupies space
+//      Atom    one word, or one run of spaces, of inline content
+//      Line    the atoms that ended up on one line, with their geometry
+//
+//  A block container holds either boxes (block/flex children) or atoms
+//  (text and inline elements). Mixing them is allowed: a run of inline
+//  content between two block children becomes an ANONYMOUS box, marked so
+//  paint knows not to draw a background for something the document never
+//  wrote. That is what makes `<div>text<div>more</div></div>` behave the
+//  obvious way without inventing a second kind of layout node.
+//
+//  HtmlLayout runs in two passes:
+//
+//      measure(box, availW, availH)    bottom-up sizes, no positions
+//      place(box, x, y)                top-down positions
+//
+//  Two passes rather than one is what makes both "height: auto from
+//  content" and flex work: a parent has to know how big a child is before
+//  it can place it, and a flex item has to know how much room the parent
+//  gave it before it can wrap its own content.
+//
+//  Known simplifications, all deliberate:
+//
+//    * `inline-block` is a block box with a shrink-to-fit width: it starts
+//      its own row instead of flowing with the text, but does not stretch.
+//      An inline-block nested in text contributes its text to the line.
+//    * Margins do not collapse. A UI stylesheet leans on padding, and
+//      collapsing would move boxes in ways that surprise more often than
+//      it helps.
+//    * Alignment is whole-pixel and left-to-right only.
+//    * `flex-wrap` is not implemented (a wrapping toolbar is a grid).
+//    * A trailing newline in `white-space: pre` does not create a trailing
+//      empty line.
+// =====================================================================
+
+class Atom {
+    pub string $text = "";
+    pub Style $st = null;
+    pub int $font = 0;
+    pub int $w = 0;
+    pub bool $space = false;     // a run of spaces: dropped at a line end
+    pub bool $brk = false;       // a forced break (newline in white-space: pre)
+    pub bool $chip = false;      // came from an inline element, not the block
+                                 // (`own` is a keyword: it means move semantics)
+    pub HNode $node = null;
+    pub int $order = 0;
+}
+
+class Line {
+    pub [Atom] $atoms = [];
+    pub int $x = 0;
+    pub int $y = 0;
+    pub int $w = 0;
+    pub int $h = 0;
+    pub int $ord = 0;            // document order of the first atom
+}
+
+class Box {
+    pub HNode $node = null;
+    pub Style $st = null;
+    pub bool $anon = false;         // generated wrapper: no background/border
+    pub Box $up = null;
+    pub [Box] $kids = [];
+    pub [Box] $abs = [];            // out-of-flow children, painted last
+    pub [Atom] $atoms = [];
+    pub [Line] $lines = [];
+
+    pub int $x = 0;                 // border-box origin, absolute
+    pub int $y = 0;
+    pub int $w = 0;                 // border-box size
+    pub int $h = 0;
+    pub int $cw = 0;                // content size
+    pub int $ch = 0;
+    pub int $ord = 0;
+    pub int $scrollX = 0;
+    pub int $scrollY = 0;
+    pub int $scrollW = 0;           // content extent, for scrolling
+    pub int $scrollH = 0;
+
+    pub function cx(): int { return $this->x + $this->bwL() + $this->padL(); }
+    pub function cy(): int { return $this->y + $this->bwT() + $this->padT(); }
+    pub function bwL(): int { return $this->anon ? 0 : $this->st->bwL; }
+    pub function bwR(): int { return $this->anon ? 0 : $this->st->bwR; }
+    pub function bwT(): int { return $this->anon ? 0 : $this->st->bwT; }
+    pub function bwB(): int { return $this->anon ? 0 : $this->st->bwB; }
+    pub function padL(): int { return $this->anon ? 0 : $this->st->padL; }
+    pub function padR(): int { return $this->anon ? 0 : $this->st->padR; }
+    pub function padT(): int { return $this->anon ? 0 : $this->st->padT; }
+    pub function padB(): int { return $this->anon ? 0 : $this->st->padB; }
+    pub function overW(): int { return $this->bwL() + $this->bwR() + $this->padL() + $this->padR(); }
+    pub function overH(): int { return $this->bwT() + $this->bwB() + $this->padT() + $this->padB(); }
+
+    /** Does this box clip and scroll its content? */
+    pub function clips(): bool {
+        if ($this->anon) { return false; }
+        return $this->st->overflow == "auto" || $this->st->overflow == "scroll" ||
+               $this->st->overflow == "hidden";
+    }
+
+    /** See the box's own text, or its subtree's, as one string. */
+    pub function text(): string {
+        if ($this->node == null) { return ""; }
+        return html_text_of($this->node);
+    }
+}
+
+/** All text under a node, whitespace collapsed. */
+function html_text_of(HNode $n): string {
+    $out = "";
+    for ($i = 0; $i < count($n->kids); $i++) {
+        $c = $n->kids[$i];
+        if ($c->kind == 1) { $out .= $c->text; continue; }
+        $out .= html_text_of($c);
+    }
+    return trim($out);
+}
+
+// ---------------------------------------------------------------------
+//  The layout pass
+// ---------------------------------------------------------------------
+
+/* Named HtmlLayout, not Layout: the ui library has a Layout of its own (the
+ * box a widget stacks in), and HolyPHP has one namespace per program. An
+ * HTML view inside a desktop window imports both. */
+class HtmlLayout {
+    pub FontCache $fonts = null;
+    pub HtmlTheme $th = null;
+    pub [CssSheet] $sheets = [];
+    pub HState $hs = null;
+    pub int $vw = 0;
+    pub int $vh = 0;
+    pub [Box] $all = [];        // every box in document order: hit test + paint
+    pub int $measures = 0;
+
+    /** Lay out a whole document against a viewport. */
+    pub function run(HNode $root): Box {
+        $st = style_root($this->th);
+        $st->font = $this->fonts->get($st->family, $st->fontPx, $st->bold, $st->italic);
+        $st->display = "block";
+        $st->width = dim_px($this->vw);
+        $b = $this->build($root, $st, null);
+        if ($b == null) { return null; }
+        $this->measure($b, $this->vw, $this->vh, false);
+        if ($b->h < $this->vh) {
+            $b->h = $this->vh;
+            $b->ch = $b->h - $b->overH();
+            if ($b->ch < 0) { $b->ch = 0; }
+        }
+        $this->place($b, 0, 0);
+        return $b;
+    }
+
+    // ---- build: nodes to boxes + atoms -------------------------------
+    pub function build(HNode $n, Style $st, Box $up): Box {
+        $b = new Box();
+        $b->node = $n;
+        $b->st = $st;
+        $b->ord = $n->order;
+        $b->up = $up;
+        $this->all[] = $b;
+        if ($st->display == "flex") {
+            $b->kids = $this->build_flex($n, $st, $b);
+            return $b;
+        }
+        $this->build_flow($b, $n, $st);
+        return $b;
+    }
+
+    /** Block flow: block children become boxes, text and inline elements
+     *  become atoms.
+     *
+     *  An element whose children are all inline keeps those atoms itself:
+     *  that is what a block container for inline content *is*. An anonymous
+     *  box only appears when inline content is interleaved with block
+     *  children, where document order has to be preserved. */
+    pub function build_flow(Box $b, HNode $n, Style $st) {
+        $pending: [Atom];
+        $sawBlock = false;
+        $i = 0;
+        while ($i < count($n->kids)) {
+            $c = $n->kids[$i];
+            if ($c->kind == 1) {
+                $pending = $this->atoms_of($c->text, $st, $c, $pending, false);
+                $i = $i + 1;
+                continue;
+            }
+            $cs = style_compute($c, $this->sheets, $this->hs, $st, $this->th);
+            $cs->font = $this->fonts->get($cs->family, $cs->fontPx, $cs->bold, $cs->italic);
+            if ($cs->display == "none") { $i = $i + 1; continue; }
+            if ($cs->display == "inline") {
+                $pending = $this->collect_inline($c, $cs, $pending);
+                $i = $i + 1;
+                continue;
+            }
+            /* a block-level child: anything inline collected so far has to
+             * become a box of its own before it */
+            $pending = $this->flush_atoms($b, $pending, $st);
+            $sawBlock = true;
+            $cb = $this->build($c, $cs, $b);
+            if ($cs->position == "absolute" || $cs->position == "fixed") {
+                $this->abs_ancestor($b)->abs[] = $cb;
+            } else {
+                $b->kids[] = $cb;
+            }
+            $i = $i + 1;
+        }
+        if (count($pending) > 0) {
+            if ($sawBlock) { $pending = $this->flush_atoms($b, $pending, $st); }
+            else { $b->atoms = $pending; }
+        }
+    }
+
+    /** Flex container: an element per child, and one anonymous item per
+     *  run of inline content between them. */
+    pub function build_flex(HNode $n, Style $st, Box $b): [Box] {
+        $out: [Box];
+        $pending: [Atom];
+        for ($i = 0; $i < count($n->kids); $i++) {
+            $c = $n->kids[$i];
+            if ($c->kind == 1) {
+                $pending = $this->atoms_of($c->text, $st, $c, $pending, false);
+                continue;
+            }
+            $cs = style_compute($c, $this->sheets, $this->hs, $st, $this->th);
+            $cs->font = $this->fonts->get($cs->family, $cs->fontPx, $cs->bold, $cs->italic);
+            if ($cs->display == "none") { continue; }
+            if ($cs->display == "inline") {
+                /* A flex item is blockified: `display: inline` on a child of
+                 * a flex container means a block-level box, not a run of text
+                 * merged with its siblings. Letting it merge collapses every
+                 * toolbar - the spans lose their boxes, and their padding,
+                 * their background and their click targets go with them: the
+                 * whole title bar becomes one anonymous line of words that
+                 * cannot be clicked and is cut off where the line ends. */
+                $cs->display = "block";
+            }
+            if (count($pending) > 0) {
+                $item = $this->anon_item($b, $pending, $st);
+                $out[] = $item;
+                array_splice($pending, 0, count($pending));
+            }
+            $cb = $this->build($c, $cs, $b);
+            if ($cs->position == "absolute" || $cs->position == "fixed") {
+                $this->abs_ancestor($b)->abs[] = $cb;
+            } else {
+                $out[] = $cb;
+            }
+        }
+        if (count($pending) > 0) { $out[] = $this->anon_item($b, $pending, $st); }
+        return $out;
+    }
+
+    /** A flex item that the document never wrote: it carries an inline run
+     *  and inherits from the container, but owns no background. */
+    pub function anon_item(Box $parent, [Atom] $into, Style $st): Box {
+        $b = new Box();
+        $b->anon = true;
+        $b->st = style_derive($st, $this->th);
+        $b->st->font = $st->font;
+        $b->up = $parent;
+        $b->ord = $into[0]->order;
+        $b->atoms = $into;
+        $this->all[] = $b;
+        return $b;
+    }
+
+    /** The nearest ancestor an absolute child is positioned against. */
+    pub function abs_ancestor(Box $b): Box {
+        $p = $b;
+        while ($p != null) {
+            if ($p->st != null && $p->st->position != "static") { return $p; }
+            $p = $p->up;
+        }
+        return $b;
+    }
+
+    /** An inline element's children contribute atoms, styled with it. */
+    pub function collect_inline(HNode $n, Style $st, [Atom] $into): [Atom] {
+        $list: [Atom];
+        $list = $into;
+        for ($i = 0; $i < count($n->kids); $i++) {
+            $c = $n->kids[$i];
+            if ($c->kind == 1) {
+                $list = $this->atoms_of($c->text, $st, $c, $list, true);
+                continue;
+            }
+            $cs = style_compute($c, $this->sheets, $this->hs, $st, $this->th);
+            $cs->font = $this->fonts->get($cs->family, $cs->fontPx, $cs->bold, $cs->italic);
+            if ($cs->display == "none") { continue; }
+            /* inline or inline-block: both put text on this line, with
+             * their own styling (see the note at the top of the file) */
+            $list = $this->collect_inline($c, $cs, $list);
+        }
+        return $list;
+    }
+
+    /** Text into word / space / break atoms under one style. */
+    /** Text into word / space / break atoms under one style. `$own` marks
+     *  text that belongs to an inline element - that is what tells paint to
+     *  draw the element's background behind the words and nobody else's. */
+    pub function atoms_of(string $text, Style $st, HNode $node, [Atom] $into, bool $own): [Atom] {
+        /* `pre` and `pre-wrap` both preserve the whitespace as written; the
+         * soft-wrap decision is a separate question, answered in make_lines */
+        $pre = ($st->whiteSpace == "pre" || $st->whiteSpace == "pre-wrap");
+        $buf = "";
+        $i = 0;
+        $n = strlen($text);
+        while ($i < $n) {
+            $c = substr($text, $i, 1);
+            $isSpace = ($c == " " || $c == "\t" || $c == "\n" || $c == "\r" || $c == "\f");
+            if ($isSpace && !$pre) {
+                if ($buf != "") { $into[] = $this->atom($buf, $st, $node, false, $own); $buf = ""; }
+                if (count($into) > 0) { $into[] = $this->atom(" ", $st, $node, true, $own); }
+                while ($i < $n) {
+                    $d = substr($text, $i, 1);
+                    if ($d != " " && $d != "\t" && $d != "\n" && $d != "\r" && $d != "\f") { break; }
+                    $i = $i + 1;
+                }
+                continue;
+            }
+            if ($pre && $c == "\n") {
+                if ($buf != "") { $into[] = $this->atom($buf, $st, $node, false, $own); $buf = ""; }
+                $br = $this->atom("", $st, $node, false, $own);
+                $br->brk = true;
+                $into[] = $br;
+                $i = $i + 1;
+                continue;
+            }
+            $buf .= $c;
+            $i = $i + 1;
+        }
+        if ($buf != "") { $into[] = $this->atom($buf, $st, $node, false, $own); }
+        return $into;
+    }
+
+    pub function atom(string $text, Style $st, HNode $node, bool $space, bool $own): Atom {
+        $a = new Atom();
+        $a->text = $text;
+        $a->st = $st;
+        $a->font = $st->font;
+        $a->space = $space;
+        $a->chip = $own;
+        $a->node = $node;
+        $a->order = $node == null ? 0 : $node->order;
+        $a->w = $space ? $this->fonts->width($st->font, " ")
+                       : $this->fonts->width($st->font, $text);
+        return $a;
+    }
+
+    /** Close an inline run into an anonymous block box and hand back an
+     *  empty list for the next run. */
+    pub function flush_atoms(Box $b, [Atom] $into, Style $st): [Atom] {
+        $empty: [Atom];
+        if (count($into) == 0) { return $empty; }
+        $a = new Box();
+        $a->anon = true;
+        $a->st = $st;
+        $a->up = $b;
+        $a->ord = $into[0]->order;
+        $a->atoms = $into;
+        $b->kids[] = $a;
+        $this->all[] = $a;
+        return $empty;
+    }
+
+    /** Measure with an auto width meaning "shrink to fit" instead of
+     *  "fill the parent". Flex items along the main axis, inline-blocks
+     *  and out-of-flow boxes all size themselves from their content. */
+    pub function measure_fit(Box $b, int $availW, int $availH) {
+        $this->measure($b, $availW, $availH, true);
+    }
+
+    // ---- measure ------------------------------------------------------
+    /** Size a subtree. `availW` and `availH` are the containing block's
+     *  content sizes: a percentage resolves against them here. */
+    pub function measure(Box $b, int $availW, int $availH, bool $shrinkAuto) {
+        $this->measures = $this->measures + 1;
+        $st = $b->st;
+        $overW = $b->overW();
+        $overH = $b->overH();
+
+        $minW = $st->minW->isAuto() ? 0 : dim_resolve($st->minW, $availW, $st->fontPx);
+        $maxW = $st->maxW->isAuto() ? 0 : dim_resolve($st->maxW, $availW, $st->fontPx);
+        $minH = $st->minH->isAuto() ? 0 : dim_resolve($st->minH, $availH, $st->fontPx);
+        $maxH = $st->maxH->isAuto() ? 0 : dim_resolve($st->maxH, $availH, $st->fontPx);
+
+        /* --- width: fill, explicit, or shrink to fit --- */
+        $shrink = false;
+        $w = 0;
+        if (!$st->width->isAuto()) {
+            $w = dim_resolve($st->width, $availW, $st->fontPx);
+        } else if ($shrinkAuto || $st->display == "inline-block" ||
+                   $st->position == "absolute" || $st->position == "fixed") {
+            $shrink = true;
+            $w = 0;
+        } else {
+            $w = $availW;                       /* a block fills its parent */
+        }
+        if ($w < 0) { $w = 0; }
+        if ($maxW > 0 && $w > $maxW) { $w = $maxW; }
+        if ($w < $minW) { $w = $minW; }
+        $b->w = $w;
+        $b->cw = $w - $overW;
+        if ($b->cw < 0) { $b->cw = 0; }
+
+        if ($shrink) {
+            $fit = $this->intrinsic_w($b) + $overW;
+            if ($maxW > 0 && $fit > $maxW) { $fit = $maxW; }
+            if ($fit > $availW) { $fit = $availW; }
+            if ($fit < $minW) { $fit = $minW; }
+            if ($fit < 0) { $fit = 0; }
+            $b->w = $fit;
+            $b->cw = $fit - $overW;
+            if ($b->cw < 0) { $b->cw = 0; }
+        }
+
+        /* --- height: known before the content, because children of a
+         *     fixed-height box resolve `100%` against it --- */
+        $hSpec = -1;
+        if (!$st->height->isAuto()) { $hSpec = dim_resolve($st->height, $availH, $st->fontPx); }
+        $contentH = ($hSpec >= 0) ? $hSpec - $overH : $availH;
+        if ($contentH < 0) { $contentH = 0; }
+
+        /* --- content ---
+         * A box can be measured more than once: another flex item growing
+         * changes how much room this one gets. Lines are rebuilt from
+         * scratch each time - appending to the previous pass would leave
+         * the box with two generations of lines in it. */
+        array_splice($b->lines, 0, count($b->lines));
+        if (count($b->atoms) > 0) {
+            $this->make_lines($b, $b->cw);
+        } else if ($st->display == "flex") {
+            $this->measure_flex($b, $b->cw, $contentH, false);
+        } else {
+            for ($i = 0; $i < count($b->kids); $i++) {
+                $k = $b->kids[$i];
+                if ($k->st->position == "absolute" || $k->st->position == "fixed") { continue; }
+                $this->measure($k, $b->cw, $contentH, false);
+            }
+        }
+
+        /* --- out of flow: measured, not placed ---
+         * A popup still has to be SIZED here, even though its position comes
+         * from place_abs() later and it contributes nothing to its parent's
+         * height. Skipping this step left every `position: absolute` box at
+         * zero by zero: the command palette, the completion popup and every
+         * dropdown laid out perfectly and drew nothing at all. */
+        for ($i = 0; $i < count($b->abs); $i++) {
+            $this->measure($b->abs[$i], $b->cw, $contentH, true);
+        }
+
+        /* --- height from the content, then the constraints --- */
+        $h = $hSpec;
+        if ($h < 0) { $h = $this->content_h($b) + $overH; }
+        if ($maxH > 0 && $h > $maxH) { $h = $maxH; }
+        if ($h < $minH) { $h = $minH; }
+        if ($h < 0) { $h = 0; }
+        $b->h = $h;
+        $b->ch = $h - $overH;
+        if ($b->ch < 0) { $b->ch = 0; }
+        $b->scrollW = $this->content_w($b);
+        $b->scrollH = $this->content_h($b);
+    }
+
+    /** Total height of the content: lines if there are any, else the
+     *  stacked children with their margins. */
+    pub function content_h(Box $b): int {
+        if (count($b->lines) > 0) {
+            $y = 0;
+            for ($i = 0; $i < count($b->lines); $i++) {
+                $end = $b->lines[$i]->y + $b->lines[$i]->h;
+                if ($end > $y) { $y = $end; }
+            }
+            return $y;
+        }
+        if ($b->st->display == "flex" && $b->st->dir == "row") {
+            /* A row justifies across: its height is the tallest item, the way
+             * flexbox says. Summing the items made a row container as tall as
+             * a column of them (a two-pane app measured twice its height). */
+            $y = 0;
+            for ($i = 0; $i < count($b->kids); $i++) {
+                $k = $b->kids[$i];
+                if ($k->st->position == "absolute" || $k->st->position == "fixed") { continue; }
+                $kh = dim_resolve($k->st->marT, $b->cw, $k->st->fontPx) + $k->h +
+                      dim_resolve($k->st->marB, $b->cw, $k->st->fontPx);
+                if ($kh > $y) { $y = $kh; }
+            }
+            return $y;
+        }
+        $y = 0;
+        for ($i = 0; $i < count($b->kids); $i++) {
+            $k = $b->kids[$i];
+            if ($k->st->position == "absolute" || $k->st->position == "fixed") { continue; }
+            $y = $y + dim_resolve($k->st->marT, $b->cw, $k->st->fontPx) + $k->h +
+                 dim_resolve($k->st->marB, $b->cw, $k->st->fontPx);
+        }
+        return $y;
+    }
+
+    /** Total width of the content, for a scrollable box. */
+    pub function content_w(Box $b): int {
+        if (count($b->atoms) > 0) { return $this->intrinsic_w($b); }
+        $w = 0;
+        for ($i = 0; $i < count($b->kids); $i++) {
+            $k = $b->kids[$i];
+            $end = dim_resolve($k->st->marL, $b->cw, $k->st->fontPx) + $k->w;
+            if ($end > $w) { $w = $end; }
+        }
+        return $w;
+    }
+
+    /** The max-content width: the width this box would take if nothing
+     *  ever wrapped. Used by shrink-to-fit only, so it deliberately reads
+     *  explicit widths rather than measuring the subtree again. */
+    pub function intrinsic_w(Box $b): int {
+        if (count($b->atoms) > 0) {
+            $w = 0;
+            for ($i = 0; $i < count($b->atoms); $i++) { $w = $w + $b->atoms[$i]->w; }
+            return $w;
+        }
+        $row = $b->st->display == "flex" && $b->st->dir == "row";
+        $w = 0;
+        for ($i = 0; $i < count($b->kids); $i++) {
+            $k = $b->kids[$i];
+            if ($k->st->position == "absolute" || $k->st->position == "fixed") { continue; }
+            $kw = $k->st->width->isAuto() ? ($this->intrinsic_w($k) + $k->overW())
+                                          : dim_resolve($k->st->width, 0, $k->st->fontPx);
+            if ($row) {
+                $w = $w + $kw + dim_resolve($k->st->marL, 0, $k->st->fontPx) +
+                     dim_resolve($k->st->marR, 0, $k->st->fontPx);
+                if ($i > 0) { $w = $w + $b->st->colGap; }
+            } else if ($kw > $w) {
+                $w = $kw;
+            }
+        }
+        return $w;
+    }
+
+    // ---- text ---------------------------------------------------------
+    /** Break atoms into lines no wider than `cw`. */
+    pub function make_lines(Box $b, int $cw) {
+        $st = $b->st;
+        /* `nowrap` never breaks, `pre` never breaks either (a wrapped line of
+         * code is not the line the user wrote), `pre-wrap` is the one value
+         * that keeps the spaces *and* wraps */
+        $nowrap = ($st->whiteSpace == "nowrap" || $st->whiteSpace == "pre");
+        $base = $this->fonts->line_of($st);
+        $y = 0;
+        $line = new Line();
+        $line->h = $base;
+        $pending: [Atom];       /* spaces waiting for a word to confirm them */
+        for ($i = 0; $i < count($b->atoms); $i++) {
+            $a = $b->atoms[$i];
+            if ($a->brk) {
+                $this->end_line($b, $line, $cw, $st, $y, $base);
+                $y = $y + $line->h;
+                $line = new Line();
+                $line->h = $base;
+                array_splice($pending, 0, count($pending));
+                continue;
+            }
+            if ($a->space) {
+                if (count($line->atoms) == 0) { continue; }    /* no leading spaces */
+                $pending[] = $a;
+                continue;
+            }
+            $add = $a->w;
+            for ($k = 0; $k < count($pending); $k++) { $add = $add + $pending[$k]->w; }
+            if (!$nowrap && count($line->atoms) > 0 && $line->w + $add > $cw) {
+                $this->end_line($b, $line, $cw, $st, $y, $base);
+                $y = $y + $line->h;
+                $line = new Line();
+                $line->h = $base;
+                array_splice($pending, 0, count($pending));
+            }
+            for ($k = 0; $k < count($pending); $k++) { $this->line_add($line, $pending[$k]); }
+            array_splice($pending, 0, count($pending));
+            $this->line_add($line, $a);
+        }
+        if (count($line->atoms) > 0) {
+            $this->end_line($b, $line, $cw, $st, $y, $base);
+        }
+    }
+
+    pub function line_add(Line $l, Atom $a) {
+        if (count($l->atoms) == 0) { $l->ord = $a->order; }
+        $l->atoms[] = $a;
+        $l->w = $l->w + $a->w;
+        $lh = $this->fonts->line_of($a->st);
+        if ($lh > $l->h) { $l->h = $lh; }
+    }
+
+    /** Finish a line: drop trailing spaces, align it, keep it. */
+    pub function end_line(Box $b, Line $l, int $cw, Style $st, int $y, int $base) {
+        while (count($l->atoms) > 0 && $l->atoms[count($l->atoms) - 1]->space) {
+            $t = $l->atoms[count($l->atoms) - 1];
+            $l->w = $l->w - $t->w;
+            array_splice($l->atoms, count($l->atoms) - 1, 1);
+        }
+        if (count($l->atoms) == 0) { return; }
+        $l->y = $y;
+        $l->x = 0;
+        if ($st->align == "center") { $l->x = intdiv($cw - $l->w, 2); }
+        if ($st->align == "right") { $l->x = $cw - $l->w; }
+        if ($l->x < 0) { $l->x = 0; }
+        if ($l->x > 0 && $l->w > $cw) { $l->x = 0; }
+        $b->lines[] = $l;
+    }
+
+    // ---- flex ---------------------------------------------------------
+    /** `$definiteH` says the height is known from outside (a flex parent
+     *  stretched this box), even though its own CSS height is auto. A column
+     *  can only hand out grow space once it knows how tall it is. */
+    pub function measure_flex(Box $b, int $cw, int $contentH, bool $definiteH) {
+        $st = $b->st;
+        $row = $st->dir == "row";
+        $n = count($b->kids);
+        if ($n == 0) { return; }
+        $gap = $row ? $st->colGap : $st->rowGap;
+
+        /* 1. each item's own size: along the main axis an auto size means
+         *    the content's width (that is what flex-basis: auto resolves
+         *    to), across it the item fills the container */
+        for ($i = 0; $i < $n; $i++) {
+            $k = $b->kids[$i];
+            if ($row) {
+                $this->measure($k, $cw, $contentH, true);
+                /* flex-basis replaces the content size on the main axis. It
+                 * matters for `flex: 1`, whose basis is 0: without this the
+                 * item starts at its min-content size, the container has no
+                 * free space left to grow into, and a column whose children
+                 * total one pixel too much pushes its last child off-screen. */
+                if (!$k->st->basis->isAuto()) {
+                    $this->measure($k, dim_resolve($k->st->basis, $cw, $k->st->fontPx),
+                                   $contentH, false);
+                }
+            } else {
+                $this->measure($k, $cw, $contentH, false);
+                if (!$k->st->basis->isAuto()) {
+                    $this->set_h($k, dim_resolve($k->st->basis, $contentH, $k->st->fontPx));
+                }
+            }
+        }
+
+        /* 2. hand out the free space along the main axis */
+        $mainAvail = -1;
+        if ($row) {
+            $mainAvail = $cw;
+        } else if ($definiteH || !$st->height->isAuto()) {
+            $mainAvail = $contentH;
+        }
+        if ($mainAvail >= 0) {
+            $used = 0;
+            $growers = 0.0;
+            for ($i = 0; $i < $n; $i++) {
+                $k = $b->kids[$i];
+                $used = $used + ($row ? $k->w : $k->h) + $this->main_margin($k, $row);
+                if ($i > 0) { $used = $used + $gap; }
+                $growers = $growers + $k->st->grow;
+            }
+            $free = $mainAvail - $used;
+            if ($free > 0 && $growers > 0.0) {
+                $last = -1;
+                for ($i = 0; $i < $n; $i++) {
+                    if ($b->kids[$i]->st->grow > 0.0) { $last = $i; }
+                }
+                $given = 0;
+                for ($i = 0; $i < $n; $i++) {
+                    $k = $b->kids[$i];
+                    if ($k->st->grow <= 0.0) { continue; }
+                    $share = intval($free * $k->st->grow / $growers);
+                    if ($i == $last) { $share = $free - $given; }
+                    if ($share < 0) { $share = 0; }
+                    $given = $given + $share;
+                    if ($row) { $this->measure($k, $k->w + $share, $contentH, false); }
+                    else { $this->set_h($k, $k->h + $share); }
+                }
+            }
+        }
+
+        /* 3. the cross axis */
+        if ($row) {
+            $max = 0;
+            for ($i = 0; $i < $n; $i++) {
+                if ($b->kids[$i]->h > $max) { $max = $b->kids[$i]->h; }
+            }
+            $cross = (!$st->height->isAuto()) ? $contentH : $max;
+            for ($i = 0; $i < $n; $i++) {
+                $k = $b->kids[$i];
+                $as = $k->st->alignSelf == "auto" ? $st->alignItems : $k->st->alignSelf;
+                if ($as == "stretch" && $k->st->height->isAuto()) { $this->set_h($k, $cross); }
+            }
+        } else {
+            /* A column container's items were already measured across the
+             * main axis first, so an auto width here only means "fill me".
+             * A growing item must NOT be measured again: that would compute
+             * its height from its content and throw away the height step 2
+             * just handed it (`flex: 1` came out as height 0). */
+            for ($i = 0; $i < $n; $i++) {
+                $k = $b->kids[$i];
+                if ($k->st->grow > 0.0) { continue; }
+                if ($k->st->width->isAuto()) { $this->measure($k, $cw, $contentH, false); }
+            }
+        }
+    }
+
+    pub function main_margin(Box $k, bool $row): int {
+        if ($row) {
+            return dim_resolve($k->st->marL, 0, $k->st->fontPx) +
+                   dim_resolve($k->st->marR, 0, $k->st->fontPx);
+        }
+        return dim_resolve($k->st->marT, 0, $k->st->fontPx) +
+               dim_resolve($k->st->marB, 0, $k->st->fontPx);
+    }
+
+    /** Force a height, keeping the content size in step.
+     *
+     * A row flex item that just got a height has to stretch its own children
+     * to it: the height came from a flex parent (not from its content), so
+     * the cross-axis pass that ran while it was measured saw nothing. This is
+     * what makes a sidebar fill the app's height instead of collapsing to its
+     * own text. */
+    pub function set_h(Box $k, int $h) {
+        $v = $h;
+        if ($v < 0) { $v = 0; }
+        $k->h = $v;
+        $k->ch = $v - $k->overH();
+        if ($k->ch < 0) { $k->ch = 0; }
+        if ($k->st->display != "flex" || count($k->kids) == 0) { return; }
+        if ($k->st->dir != "row") {
+            /* A column that was given a definite height has to hand it to
+             * its flex children: they were measured while the height was
+             * still auto, so nothing had grown yet. Without this a pane
+             * inside a row (`flex: 1` beside a sidebar) collapsed to zero. */
+            $this->measure_flex($k, $k->cw, $k->ch, true);
+            return;
+        }
+        for ($i = 0; $i < count($k->kids); $i++) {
+            $c = $k->kids[$i];
+            $as = $c->st->alignSelf == "auto" ? $k->st->alignItems : $c->st->alignSelf;
+            if ($as == "stretch" && $c->st->height->isAuto()) { $this->set_h($c, $k->ch); }
+        }
+    }
+
+    // ---- place --------------------------------------------------------
+    /** Turn measured sizes into absolute positions, top-down. */
+    pub function place(Box $b, int $x, int $y) {
+        $b->x = $x;
+        $b->y = $y;
+        $cx = $b->cx() - $b->scrollX;
+        $cy = $b->cy() - $b->scrollY;
+        if ($b->st->display == "flex" && count($b->kids) > 0) {
+            $this->place_flex($b, $cx, $cy);
+        } else {
+            $this->place_block_kids($b, $cx, $cy);
+        }
+        for ($i = 0; $i < count($b->abs); $i++) {
+            $this->place_abs($b->abs[$i], $b);
+        }
+    }
+
+    pub function place_block_kids(Box $b, int $cx, int $cy) {
+        $y = $cy;
+        for ($i = 0; $i < count($b->kids); $i++) {
+            $k = $b->kids[$i];
+            if ($k->st->position == "absolute" || $k->st->position == "fixed") { continue; }
+            $y = $y + dim_resolve($k->st->marT, $b->cw, $k->st->fontPx);
+            $x = $cx + dim_resolve($k->st->marL, $b->cw, $k->st->fontPx);
+            /* `margin: 0 auto` with a definite width centres the box */
+            if (($k->st->marL->isAuto() && $k->st->marR->isAuto()) ||
+                $k->st->display == "inline-block") {
+                if (!$k->st->width->isAuto() || $k->st->display == "inline-block") {
+                    $mx = intdiv($b->cw - $k->w, 2);
+                    if ($mx > 0) { $x = $cx + $mx; }
+                }
+            }
+            $this->place($k, $x, $y);
+            $y = $y + $k->h + dim_resolve($k->st->marB, $b->cw, $k->st->fontPx);
+        }
+    }
+
+    pub function place_flex(Box $b, int $cx, int $cy) {
+        $st = $b->st;
+        $row = $st->dir == "row";
+        $n = count($b->kids);
+        if ($n == 0) { return; }
+        $gap = $row ? $st->colGap : $st->rowGap;
+        $main = 0;
+        for ($i = 0; $i < $n; $i++) {
+            $k = $b->kids[$i];
+            $main = $main + ($row ? $k->w : $k->h) + $this->main_margin($k, $row);
+            if ($i > 0) { $main = $main + $gap; }
+        }
+        $avail = $row ? $b->cw : $b->ch;
+        $free = $avail - $main;
+        if ($free < 0) { $free = 0; }
+        $start = 0;
+        $between = 0;
+        if ($st->justify == "center") { $start = intdiv($free, 2); }
+        else if ($st->justify == "end") { $start = $free; }
+        else if ($st->justify == "between" && $n > 1) { $between = intdiv($free, $n - 1); }
+        else if ($st->justify == "around") { $between = intdiv($free, $n); $start = intdiv($between, 2); }
+        else if ($st->justify == "evenly") { $between = intdiv($free, $n + 1); $start = $between; }
+
+        $p = $start;
+        for ($i = 0; $i < $n; $i++) {
+            $k = $b->kids[$i];
+            if ($i > 0) { $p = $p + $gap + $between; }
+            $as = $k->st->alignSelf == "auto" ? $st->alignItems : $k->st->alignSelf;
+            if ($row) {
+                $p = $p + dim_resolve($k->st->marL, $b->cw, $k->st->fontPx);
+                $ky = $cy;
+                if ($as == "center") { $ky = $cy + intdiv($b->ch - $k->h, 2); }
+                if ($as == "end") { $ky = $cy + $b->ch - $k->h; }
+                $this->place($k, $cx + $p, $ky);
+                $p = $p + $k->w + dim_resolve($k->st->marR, $b->cw, $k->st->fontPx);
+            } else {
+                $p = $p + dim_resolve($k->st->marT, $b->ch, $k->st->fontPx);
+                $kx = $cx;
+                if ($as == "center") { $kx = $cx + intdiv($b->cw - $k->w, 2); }
+                if ($as == "end") { $kx = $cx + $b->cw - $k->w; }
+                $this->place($k, $kx, $cy + $p);
+                $p = $p + $k->h + dim_resolve($k->st->marB, $b->ch, $k->st->fontPx);
+            }
+        }
+    }
+
+    /** An out-of-flow box: offsets against its positioned ancestor's
+     *  content origin, exactly like `position: absolute` in CSS. */
+    pub function place_abs(Box $k, Box $anc) {
+        $st = $k->st;
+        $cx = $anc->cx() - $anc->scrollX;
+        $cy = $anc->cy() - $anc->scrollY;
+        $x = $cx;
+        $y = $cy;
+        if (!$st->left->isAuto()) { $x = $cx + dim_resolve($st->left, $anc->cw, $st->fontPx); }
+        else if (!$st->right->isAuto()) {
+            $x = $cx + $anc->cw - $k->w - dim_resolve($st->right, $anc->cw, $st->fontPx);
+        }
+        if (!$st->top->isAuto()) { $y = $cy + dim_resolve($st->top, $anc->ch, $st->fontPx); }
+        else if (!$st->bottom->isAuto()) {
+            $y = $cy + $anc->ch - $k->h - dim_resolve($st->bottom, $anc->ch, $st->fontPx);
+        }
+        /* a popup that hangs off the right edge of its anchor */
+        $this->place($k, $x, $y);
+    }
+}

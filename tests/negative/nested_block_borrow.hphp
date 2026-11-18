@@ -1,0 +1,10 @@
+// A nested block must not clear a borrow created in the parent scope.
+function nested_block_borrow(): int {
+    let mut $value: int = 1;
+    let $borrow = &$value;
+    if (true) {
+        let $temporary = 2;
+    }
+    $value = 3; // error: still borrowed by $borrow, used below
+    return *$borrow;
+}

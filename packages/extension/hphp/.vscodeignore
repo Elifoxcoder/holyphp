@@ -1,0 +1,10 @@
+# Keep the VSIX small: tests are run from the repo, not shipped.
+test/**
+test-host/**
+.vscode-test/**
+*.vsix
+.vscodeignore
+node_modules/**
+extension.js
+server.js
+lib/**

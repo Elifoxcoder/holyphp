@@ -2,7 +2,8 @@
 #include "builtins.h"
 
 Type *ty_int, *ty_i8, *ty_i16, *ty_i32, *ty_i64,
-    *ty_float, *ty_f32, *ty_f64, *ty_bool, *ty_string, *ty_void, *ty_mixed;
+    *ty_float, *ty_f32, *ty_f64, *ty_bool, *ty_string, *ty_void, *ty_mixed,
+    *ty_null;
 
 static Builtin *tbl = NULL;
 static size_t tbl_len = 0, tbl_cap = 0;
@@ -32,6 +33,7 @@ void builtins_init(void) {
     ty_string = type_new(TY_STRING);
     ty_void = type_new(TY_VOID);
     ty_mixed = type_new(TY_MIXED);
+    ty_null = type_new(TY_NULL);
 
     /* PHP string functions */
     add("strlen",        B_LEN,     ty_int,    false, false);
@@ -328,6 +330,7 @@ void builtins_init(void) {
     add("ui_enable",      B_MISC,    ty_int,     false, false);
     add("ui_move",        B_MISC,    ty_int,     false, false);
     add("ui_focus",       B_MISC,    ty_int,     false, false);
+    add("ui_select_all",  B_MISC,    ty_int,     false, false);
     add("ui_items",       B_MISC,    ty_int,     false, false);
     add("ui_remove",      B_MISC,    ty_int,     false, false);
     add("ui_clear",       B_MISC,    ty_int,     false, false);
@@ -362,16 +365,85 @@ void builtins_init(void) {
     add("ui_radius",      B_MISC,    ty_int,     false, false);
     add("ui_range",       B_MISC,    ty_int,     false, false);
     add("ui_repaint",     B_MISC,    ty_int,     false, false);
+    add("ui_input_margin", B_MISC,   ty_int,     false, false);
+    add("ui_raise",       B_MISC,    ty_int,     false, false);
+    add("ui_svg",         B_MISC,    ty_int,     false, false);
+    add("ui_picture",     B_MISC,    ty_int,     false, false);
     add("ui_text_px",      B_MISC,    ty_int,     false, false);
     add("ui_text_lines",   B_MISC,    ty_int,     false, false);
     add("ui_enabled",     B_MISC,    ty_bool,    false, false);
     add("ui_rect",        B_MISC,    type_array_of(ty_int), false, false);
+    add("ui_client_size", B_MISC,    type_array_of(ty_int), false, false);
     add("ui_scroll",      B_MISC,    type_array_of(ty_int), false, false);
     add("ui_count",        B_MISC,    ty_int,     false, false);
     add("ui_progress_get", B_MISC,    ty_int,     false, false);
 
     /* embedded Chromium (WebView2): HolyBrowser's engine */
     add("ui_hwnd",          B_MISC,    ty_int,     false, false);
+    /* canvas: a surface a script paints itself (drawing, fonts, input).
+     * Every coordinate is a logical 96-dpi pixel, so an HTML/CSS engine can
+     * lay out in one coordinate space and look the same at any display scale. */
+    add("ui_font_new",     B_MISC,    ty_int,     false, false);
+    add("ui_font_width",   B_MISC,    ty_int,     false, false);
+    add("ui_font_height",  B_MISC,    ty_int,     false, false);
+    add("ui_draw_clear",   B_MISC,    ty_int,     false, false);
+    add("ui_draw_rect",    B_MISC,    ty_int,     false, false);
+    add("ui_draw_round",   B_MISC,    ty_int,     false, false);
+    add("ui_draw_line",    B_MISC,    ty_int,     false, false);
+    add("ui_draw_text",    B_MISC,    ty_int,     false, false);
+    add("ui_draw_clip",    B_MISC,    ty_int,     false, false);
+    add("ui_draw_unclip",  B_MISC,    ty_int,     false, false);
+    add("ui_canvas_size",  B_MISC,    type_array_of(ty_int), false, false);
+    add("ui_canvas_pixel", B_MISC,    ty_int,     false, false);
+    add("ui_canvas_invalidate", B_MISC, ty_int,    false, false);
+    add("ui_canvas_flush", B_MISC,    ty_int,     false, false);
+    add("ui_cursor",       B_MISC,    ty_int,     false, false);
+
+    /* child processes (hphp_std.c): the integrated terminal and the IDE's
+     * runner. Start a command in a directory, poll its two output pipes
+     * without blocking, write to its stdin, ask whether it is still alive,
+     * read the exit code, and close or kill it. `proc_*` and not `ui_*`:
+     * nothing here touches a window, which is what makes a runner testable
+     * from a script that has no UI at all. */
+    add("shell_exec",    B_STR1,    ty_mixed,  false, false);   /* (cmd) -> stdout|string|false, PHP-style */
+    add("exec",          B_STR1,    ty_mixed,  false, false);   /* (cmd) -> last-line|string|false, PHP-style */
+    add("passthru",      B_STR1,    ty_void,   false, false);   /* (cmd) -> prints to stdout, returns void */
+
+    /* ANSI color constants for print / println / input */
+    add("RESET",         B_MISC,    ty_int,    false, false);
+    add("BLACK",         B_MISC,    ty_int,    false, false);
+    add("RED",           B_MISC,    ty_int,    false, false);
+    add("GREEN",         B_MISC,    ty_int,    false, false);
+    add("YELLOW",        B_MISC,    ty_int,    false, false);
+    add("BLUE",          B_MISC,    ty_int,    false, false);
+    add("MAGENTA",       B_MISC,    ty_int,    false, false);
+    add("CYAN",          B_MISC,    ty_int,    false, false);
+    add("WHITE",         B_MISC,    ty_int,    false, false);
+    add("BRIGHT_BLACK", B_MISC,    ty_int,    false, false);
+    add("BRIGHT_RED",   B_MISC,    ty_int,    false, false);
+    add("BRIGHT_GREEN", B_MISC,    ty_int,    false, false);
+    add("BRIGHT_YELLOW",B_MISC,    ty_int,    false, false);
+    add("BRIGHT_BLUE",  B_MISC,    ty_int,    false, false);
+    add("BRIGHT_MAGENTA",B_MISC,   ty_int,    false, false);
+    add("BRIGHT_CYAN",  B_MISC,    ty_int,    false, false);
+    add("BRIGHT_WHITE", B_MISC,    ty_int,    false, false);
+
+    add("print",         B_PRINTF_COLOR, ty_void, false, true);   /* (string, int color?) -> void */
+    add("println",       B_PRINTLN_COLOR, ty_void, false, true);  /* (string, int color?) -> void */
+    add("input",         B_READLINE_COLOR, ty_string, false, true); /* (string prompt, int color?) -> string */
+
+    add("proc_open",     B_MISC,    ty_mixed,  false, false);   /* CWD-aware equivalent of proc_* start */
+    add("proc_get_status", B_MISC,  ty_mixed,  false, false);   /* (h) -> array */
+
+    add("proc_start",     B_MISC,    ty_int,     false, false);   /* (cmd, cwd) -> handle|0 */
+    add("proc_read",      B_MISC,    ty_string,  false, false);   /* (h[, max]) -> stdout so far */
+    add("proc_read_err",  B_MISC,    ty_string,  false, false);   /* (h[, max]) -> stderr so far */
+    add("proc_write",     B_MISC,    ty_int,     false, false);   /* (h, data) -> bytes written */
+    add("proc_alive",     B_MISC,    ty_bool,    false, false);   /* (h) -> 1 while running */
+    add("proc_exit",      B_MISC,    ty_int,     false, false);   /* (h) -> code, -1 while running */
+    add("proc_close",     B_MISC,    ty_int,     false, false);   /* (h) -> release the slot */
+    add("proc_kill",      B_MISC,    ty_int,     false, false);   /* (h) -> terminate the tree */
+
     add("ui_browser_ready", B_ZERO,    ty_bool,    false, false);
     add("ui_browser_loader",B_ZERO,    ty_string,  false, false);
     add("ui_browser_new",   B_MISC,    ty_int,     false, false);
@@ -386,10 +458,15 @@ void builtins_init(void) {
     add("ui_browser_can_back",   B_MISC, ty_bool,  false, false);
     add("ui_browser_can_forward",B_MISC, ty_bool,  false, false);
     add("ui_browser_url",   B_MISC,    ty_string,  false, false);
+    add("ui_browser_favicon", B_MISC,   ty_string, false, false);
     add("ui_browser_title", B_MISC,    ty_string,  false, false);
     add("ui_browser_zoom",  B_MISC,    ty_int,     false, false);
     add("ui_browser_zoom_get", B_MISC, ty_float,  false, false);
     add("ui_browser_devtools",  B_MISC, ty_int,    false, false);
+    add("ui_browser_devtools_fit", B_MISC, ty_int,   false, false);
+    add("ui_browser_devtools_ready", B_MISC, ty_int, false, false);
+    add("ui_browser_print",   B_MISC,    ty_int,    false, false);
+    add("ui_browser_post",  B_MISC, ty_int,    false, false);
     add("ui_browser_on",    B_MISC,    ty_int,     false, false);
     add("ui_browser_key",   B_MISC,    ty_int,     false, false);
     add("ui_browser_visible",B_MISC,    ty_int,     false, false);
@@ -429,6 +506,8 @@ void builtins_init(void) {
     add("ffi_load",      B_STR1,    ty_mixed,  true,  false);
     add("ffi_call",      B_MISC,    ty_mixed,  true,  true);
     add("heap_dump",     B_MISC,    ty_string, true,  false);
+    add("holy_maxout_start", B_MISC, ty_int, false, false);
+    add("holy_challenge_start", B_MISC, ty_int, false, false);
 }
 
 const Builtin *builtin_lookup(const char *name) {

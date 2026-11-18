@@ -1,0 +1,17 @@
+// switch_narrow_fallthrough.hphp — must FAIL sema: a case body that can be
+// reached by falling out of the case above it knows nothing, because the
+// case above matched a different value.
+function need_string(string $s): int {
+    return strlen($s);
+}
+
+function f(?string $x): int {
+    switch ($x) {
+        case "a":
+            echo "fell through\n";              /* no break: falls into "b" */
+        case "b":
+            return need_string($x);             /* error: reached from "a" too */
+        default:
+            return 0;
+    }
+}

@@ -1,0 +1,6 @@
+// A by-ref argument has to be a variable: there is no slot to alias for a
+// literal or an array element (PHP would copy and write back).
+function bump(int &$x): void { $x = $x + 1; }
+$nums = [1, 2];
+bump($nums[0]);
+bump(1 + 1);

@@ -1,0 +1,9 @@
+// Capturing a by-reference parameter by reference would have to write the
+// closure's value back through the caller's pointer on every exit, which the
+// compiler does not do: rejected rather than silently boxing a copy.
+function mk(int &$x) {
+    return function() use (&$x) { $x = $x + 100; return $x; };
+}
+$v = 1;
+$f = mk($v);
+echo $f();

@@ -1,4 +1,4 @@
-// ws_selftest.hphp — drives lib/websocket.hphp over a real socket:
+// ws_selftest.hphp — drives lib/websocket/websocket.hphp over a real socket:
 // one part runs the server's tick loop, the other acts as the browser
 // (client frames are masked, exactly like Chrome sends them).
 //

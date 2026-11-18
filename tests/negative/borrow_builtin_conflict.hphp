@@ -1,0 +1,4 @@
+let mut $items: [int] = [3, 1, 2];
+let $view = &$items;
+sort($items);
+echo $view;

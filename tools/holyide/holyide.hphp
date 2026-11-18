@@ -1,0 +1,285 @@
+// =====================================================================
+//  holyide/holyide.hphp — HolyIDE: the window around the workbench
+// =====================================================================
+//
+//      hphp run holyide/holyide.hphp            (opens the current folder)
+//      hphp run holyide/holyide.hphp <folder>   (opens that folder)
+//      hphp build holyide/holyide.hphp -o holyide.exe
+//
+//  Everything you see is lib/ide: this file owns a window, one canvas and a
+//  frame timer, and it forwards the canvas's events to the workbench. Every
+//  decision - the explorer, tabs, the editor, the palette, the runner - lives
+//  in lib/ide/workbench.hphp, which is why all of it is tested without a
+//  window (tests/positive/ide_workbench.hphp).
+//
+//  Three rules keep this file from growing into a second IDE:
+//
+//    * INPUT IS FORWARDED, NOT INTERPRETED. A key press is one call to
+//      key(); a pointer event one call to mouse(). The one thing this file
+//      acts on is the string key() returns for actions only a window can
+//      take ("quit").
+//
+//    * THE FRAME LOOP PAINTS WHEN SOMETHING CHANGED. Events set $dirty,
+//      the timer renders then; a run is pumped every tick, and the caret
+//      blinks on its own clock. Nothing else runs at 25 Hz.
+//
+//    * THE WINDOW IS RESIZABLE, THE CANVAS FOLLOWS IT. The runtime reports
+//      a canvas resize, but a window resize reaches the canvas only when the
+//      canvas is moved with it, so the timer polls the client size (cheap,
+//      four times a second) and re-lays the workbench out when it changed.
+//
+//  Keyboard:  Ctrl+P files   Ctrl+Shift+P commands   Ctrl+G line
+//             Ctrl+S save    Ctrl+R / F5 run         Ctrl+B sidebar
+//             Ctrl+J panel   Ctrl+/ comment          Ctrl+Shift+W quit
+//             Ctrl+Space complete   Ctrl+` the terminal's command line
+//
+//  Mouse:  click a caret, drag a selection, double click a word, click the
+//          explorer to open or fold, and drag the 5px grips between the
+//          explorer, the editor and the panel to size them.
+// =====================================================================
+
+import "ide";
+import "ui";
+
+/** The fields of a dry-run text command: [x, y, w, h, font, flags, text].
+ *  Parses paint's own format, so the selftest can compare a rect with the
+ *  string it carries and notice a clipped last letter. */
+function ide_text_op(string $s): [string] {
+    $out: [string];
+    $p = substr($s, 5);
+    $sp = strpos($p, " ");
+    $pos = substr($p, 0, $sp);
+    $p = substr($p, $sp + 1);
+    $sp = strpos($p, " ");
+    $size = substr($p, 0, $sp);
+    $p = substr($p, $sp + 1);
+    $sp = strpos($p, " ");
+    $font = substr($p, 0, $sp);
+    $p = substr($p, $sp + 1);
+    $sp = strpos($p, " ");
+    $p = substr($p, $sp + 1);
+    $sp = strpos($p, " ");
+    $flags = substr($p, 0, $sp);
+    $p = substr($p, $sp + 1);
+    $txt = substr($p, 1, strlen($p) - 2);
+    $comma = strpos($pos, ",");
+    $out[] = substr($pos, 0, $comma);
+    $out[] = substr($pos, $comma + 1);
+    $xs = strpos($size, "x");
+    $out[] = substr($size, 0, $xs);
+    $out[] = substr($size, $xs + 1);
+    $out[] = substr($font, 1);
+    $out[] = substr($flags, 2);
+    $out[] = $txt;
+    return $out;
+}
+
+/* --selftest: open the real window, render a few frames, read the pixels
+ * back and quit. It is how the wiring in this file (canvas, events, timer)
+ * is verified without a human looking at the screen; the layout and input
+ * logic are covered by tests/positive/ide_workbench.hphp. */
+$selftest = false;
+$argi = 1;
+if (count($argv) > 1 && $argv[1] == "--selftest") { $selftest = true; $argi = 2; }
+
+$root = getcwd();
+if (count($argv) > $argi && $argv[$argi] != "") { $root = $argv[$argi]; }
+
+$W = 1280;
+$H = 820;
+
+$win = ui_window("HolyIDE — " . basename($root), -1, -1, $W, $H);
+$cv  = ui_add($win, 18, "", 0, 0, $W, $H);        // 18 = HPUI_CANVAS
+
+$wb = new IdeWorkbench($cv, $W, $H, html_theme_dark());
+$wb->open_root($root);
+if (count($argv) > $argi + 1 && $argv[$argi + 1] != "") { $wb->open($argv[$argi + 1]); }
+
+$dirty  = true;
+$frames = 0;
+$probed = false;
+$fails  = 0;
+
+// ---- input: forwarded, never interpreted -----------------------------
+ui_on($cv, 6, function($x, $y, $button) use ($wb, &$dirty) {      // DOWN
+    $wb->mouse("down", $x, $y, $button, 0);
+    $dirty = true;
+});
+
+ui_on($cv, 7, function($x, $y, $button) use ($wb, &$dirty) {      // UP
+    $wb->mouse("up", $x, $y, $button, 0);
+    $dirty = true;
+});
+
+ui_on($cv, 8, function($x, $y, $b) use ($wb, &$dirty) {           // MOVE
+    $wb->mouse("move", $x, $y, 0, 0);
+    $dirty = true;
+});
+
+ui_on($cv, 9, function($x, $y, $notches) use ($wb, &$dirty) {     // WHEEL
+    $wb->mouse("wheel", $x, $y, 0, $notches);
+    $dirty = true;
+});
+
+ui_on($cv, 12, function($x, $y, $button) use ($wb, &$dirty) {     // DOUBLE CLICK
+    $wb->mouse("dbl", $x, $y, $button, 0);
+    $dirty = true;
+});
+
+ui_on($cv, 4, function($vk, $ch, $mods) use ($wb, $win, &$dirty) { // KEY
+    $act = $wb->key($vk, $ch, $mods);
+    if ($act == "quit") {
+        ui_close($win);
+        ui_quit();
+        return;
+    }
+    $dirty = true;
+});
+
+ui_on($cv, 10, function($w, $h, $z) use ($wb, &$dirty) {          // RESIZE
+    $wb->resize($w, $h);
+    $dirty = true;
+});
+
+// ---- the frame loop ---------------------------------------------------
+$cw = $W;
+$ch = $H;
+
+ui_timer(40, function() use ($wb, $cv, $win, &$frames, &$dirty, &$cw, &$ch,
+                              $selftest, &$probed, &$fails) {
+    $frames = $frames + 1;
+
+    /* a window resize is not a canvas event: the canvas keeps its place
+     * until someone moves it, so follow the client area here */
+    $sz = ui_client_size($win);
+    if ($sz != null) {
+        if ($sz[0] != $cw || $sz[1] != $ch) {
+            $cw = $sz[0];
+            $ch = $sz[1];
+            if ($cw > 200 && $ch > 120) {
+                ui_move($cv, 0, 0, $cw, $ch);
+                $wb->resize($cw, $ch);
+                $dirty = true;
+            }
+        }
+    }
+
+    /* a running program writes into the terminal panel */
+    if ($wb->running()) {
+        $wb->pump();
+        $dirty = true;
+    }
+
+    /* caret blink: ~1 Hz, and only a repaint when it actually flips */
+    $on = ($frames % 25) < 13;
+    if ($on != $wb->caretOn) {
+        $wb->caretOn = $on;
+        $dirty = true;
+    }
+
+    if ($dirty) {
+        $wb->render();
+        $dirty = false;
+    }
+
+    /* --selftest: three frames in, the chrome must be where the stylesheet
+     * put it. Derived from the laid-out boxes, never from typed-in pixels. */
+    if ($selftest && $frames >= 3 && !$probed) {
+        $probed = true;
+        $side   = $wb->view->box_of($wb->view->find(".side"));
+        $status = $wb->view->box_of($wb->view->find(".status"));
+        $title  = $wb->view->box_of($wb->view->find(".title"));
+        /* THE CHROME HAS BOXES. A span inside a flex container is blockified
+         * (lib/html/layout.hphp), so the toolbar's buttons are boxes with a
+         * padding, a background and a click target. When one of those got
+         * merged into a run of words instead, every button label on screen
+         * was cut short and no button could be clicked at all - a failure
+         * that no state test sees, because the document is still correct. */
+        $btns = $wb->view->find_all(".tbtn");
+        $boxed = count($btns) > 0;
+        for ($i = 0; $i < count($btns); $i++) {
+            $b = $wb->view->box_of($btns[$i]);
+            if ($b == null || $b->w < 24 || $b->h < 18) { $boxed = false; }
+        }
+        if ($boxed) { echo "ok   toolbar buttons are boxes (" . count($btns) . ")\n"; }
+        else { echo "FAIL toolbar buttons have no boxes\n"; $fails = $fails + 1; }
+        /* The panes are drawn apart by a one-pixel border, not by guesswork:
+         * every probe below is derived from a box the engine laid out, never
+         * from a coordinate someone typed in. A stylesheet that says
+         * border-right and a canvas that never receives it look identical to
+         * a state test; they do not look identical here. */
+        $sels: [string];
+        $sels[] = ".side";
+        $sels[] = ".tabs";
+        $sels[] = ".panel";
+        /* the gutter only exists with a file open, and the self-test is
+         * usually run on a fresh window */
+        if ($wb->ed() != null) { $sels[] = ".gut"; }
+        for ($i = 0; $i < count($sels); $i++) {
+            $b = $wb->view->box_of($wb->view->find($sels[$i]));
+            if ($b == null || $b->w < 8 || $b->h < 8) {
+                echo "FAIL no box for " . $sels[$i] . "\n";
+                $fails = $fails + 1;
+                continue;
+            }
+            $px = 0;
+            if ($sels[$i] == ".side") { $px = ui_canvas_pixel($cv, $b->x + $b->w - 1, $b->y + 40); }
+            if ($sels[$i] == ".tabs") { $px = ui_canvas_pixel($cv, $b->x + 400, $b->y + $b->h - 1); }
+            if ($sels[$i] == ".panel") { $px = ui_canvas_pixel($cv, $b->x + 400, $b->y); }
+            if ($sels[$i] == ".gut") { $px = ui_canvas_pixel($cv, $b->x + $b->w - 1, $b->y + 20); }
+            if ($px == 0x2f2f30) { echo "ok   border " . $sels[$i] . "\n"; }
+            else { echo "FAIL border " . $sels[$i] . " = " . color_hex($px) . "\n"; $fails = $fails + 1; }
+        }
+        /* every string drawn into a rect at least as wide as the font says
+         * it is - the guard against a last letter clipped by a rounding
+         * difference, which is invisible at 96 dpi and "Sav" at 125% */
+        $ops = $wb->view->draw_list();
+        $narrow = 0;
+        for ($i = 0; $i < count($ops); $i++) {
+            if (!str_starts_with($ops[$i], "text ")) { continue; }
+            $f = ide_text_op($ops[$i]);
+            if (count($f) != 7) { continue; }
+            if ((intval($f[5]) & 1) != 0) { continue; }
+            if (ui_font_width(intval($f[4]), $f[6]) > intval($f[2])) { $narrow = $narrow + 1; }
+        }
+        if ($narrow == 0) { echo "ok   no string is drawn into a narrower rect\n"; }
+        else { echo "FAIL " . $narrow . " strings are drawn too narrow\n"; $fails = $fails + 1; }
+        if ($side == null || $status == null || $title == null) {
+            echo "FAIL chrome boxes missing\n";
+            $fails = $fails + 1;
+        } else {
+            $px = ui_canvas_pixel($cv, $side->x + 100, $side->y + $side->h - 6);
+            if ($px == 0x252526) { echo "ok   sidebar bg\n"; }
+            else { echo "FAIL sidebar bg " . color_hex($px) . "\n"; $fails = $fails + 1; }
+            $px = ui_canvas_pixel($cv, $status->x + 200, $status->y + 10);
+            if ($px == 0x007acc) { echo "ok   status bg\n"; }
+            else { echo "FAIL status bg " . color_hex($px) . "\n"; $fails = $fails + 1; }
+            $px = ui_canvas_pixel($cv, $title->x + 200, $title->y + 10);
+            if ($px == 0x323233) { echo "ok   title bg\n"; }
+            else { echo "FAIL title bg " . color_hex($px) . "\n"; $fails = $fails + 1; }
+            if ($status->y + $status->h == $wb->h) { echo "ok   status sits on the bottom\n"; }
+            else {
+                $cs = ui_canvas_size($cv);
+                $ws = ui_client_size($win);
+                $rootBox = $wb->view->box_of($wb->view->find(".root"));
+                $appBox = $wb->view->box_of($wb->view->find(".app"));
+                echo "FAIL status bottom " . ($status->y + $status->h) . " != " . $wb->h
+                   . " (status y=" . $status->y . " h=" . $status->h
+                   . ", view=" . $wb->view->w . "x" . $wb->view->h
+                   . ", root=" . $rootBox->h . " app=" . $appBox->h
+                   . ", canvas=" . $cs[0] . "x" . $cs[1]
+                   . ", client=" . $ws[0] . "x" . $ws[1] . ")\n";
+                $fails = $fails + 1;
+            }
+        }
+        echo $fails == 0 ? "holyide ok\n" : "holyide FAILED\n";
+        ui_close($win);
+        ui_quit();
+    }
+});
+
+$wb->render();
+ui_run_main();
+
+/* The self-test is only useful if a failure is visible to whatever ran it. */
+if ($fails > 0) { exit(1); }

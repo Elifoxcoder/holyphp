@@ -1,178 +1,91 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>HolyPHP — compiled, memory-safe, as easy as PHP</title>
-  <link rel="stylesheet" href="assets/style.css">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+  <meta name="description" content="Meet HolyPHP: familiar PHP-inspired syntax, compile-time checks and native executables. Explore the language, read the docs and try it in the browser.">
+  <link rel="canonical" href="https://hphp.ch/">
+  <meta property="og:type" content="website"><meta property="og:site_name" content="HolyPHP">
+  <meta property="og:title" content="HolyPHP — Familiar code. Native software.">
+  <meta property="og:description" content="A PHP-inspired compiled language with compile-time checks and native executables. Explore the docs and try HolyPHP in your browser.">
+  <meta property="og:url" content="https://hphp.ch/">
+  <meta name="twitter:card" content="summary">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"HolyPHP","url":"https://hphp.ch/","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, Linux","description":"A PHP-inspired compiled language with compile-time checks and native executables."}</script>
+  <title>HolyPHP — Familiar code. Native software.</title><link rel="stylesheet" href="assets/style.css?v=6">
 </head>
-
-<body>
-  <div class="layout">
-    <script src="assets/nav.html.js"></script>
-    <main>
-      <section class="hero">
-        <h1>Holy<span class="ph">PHP</span></h1>
-        <p class="sub">A compiled, memory-safe programming language with the soul of PHP and the
-          discipline of Rust. Write scripts like it's Friday afternoon — ship binaries like it's C.</p>
-        <div class="quickstart">
-          <code>hphp run hello.hphp</code>
-          <button onclick="navigator.clipboard.writeText('hphp run hello.hphp')">copy</button>
-        </div>
-
-        <div class="dl">
-          <a class="dl-btn" href="/dl/HolyPHP-1.0.1-x64-setup.exe">
-            <span class="os">&#8862; Windows</span>
-            <b>Download installer</b>
-            <small>x64 &#183; 2.2 MB &#183; setup.exe, no admin needed</small>
-          </a>
-          <a class="dl-btn linux" href="/dl/holyphp_1.0.0_amd64.deb">
-            <span class="os">&#128038; Linux</span>
-            <b>Download .deb</b>
-            <small>amd64 &#183; Debian/Ubuntu &#183; installs /usr/bin/hphp</small>
-          </a>
-        </div>
-      </section>
-
-      <div class="winget">
-          <div class="winget-head">
-            <b>winget</b>
-            <span>available in the Windows Package Manager</span>
-          </div>
-          <div class="quickstart">
-            <code>winget install hphp</code>
-            <button onclick="navigator.clipboard.writeText('winget install hphp')">copy</button>
-          </div>
-        </div>
-
-      <div class="statrow">
-        <div class="stat"><b>235+</b><span>built-in functions (PHP-compatible)</span></div>
-        <div class="stat"><b>~25&times;</b><span>faster than PHP 8 (fib benchmark)</span></div>
-        <div class="stat"><b>5</b><span>stdlib libraries shipped embedded: ui, websocket, mathx, thread, async</span></div>
-        <div class="stat"><b>1</b><span>standalone .exe per program, no runtime needed</span></div>
-      </div>
-
-      <h2>Why HolyPHP</h2>
-      <p>HolyPHP compiles <code>.hphp</code> source to native machine code through its own C backend.
-        It keeps everything you love about writing PHP — dollar-sign variables, loose typing when you
-        want it, 235 built-in functions, arrays that just work — and adds what PHP never gave you:
-        a compile-time <b>borrow checker</b>, <b>ownership</b> (<code>own&lt;T&gt;</code>), and
-        <b>raw pointers only inside <code>unsafe</code></b>.
-      </p>
-
-      <div class="grid">
-        <a class="card" href="lang.html#variables"><span class="ico">&#36;</span>
-          <h3>Feels like PHP</h3>
-          <p>$variables, echo, foreach, arrays with string keys, string
-            interpolation, optional types. No let, no fuss.</p>
-        </a>
-        <a class="card" href="lang.html#memory"><span class="ico">&#128737;</span>
-          <h3>Safe like Rust</h3>
-          <p>Borrow checker at compile time, own&lt;T&gt; moves,
-            Rc&lt;T&gt; shared ownership, raw pointers only under unsafe.</p>
-        </a>
-        <a class="card" href="lang.html#types"><span class="ico">&#127919;</span>
-          <h3>Types when you want them</h3>
-          <p>$x = 5 just works. $x: int = 5 pins it down.
-            Function signatures are fully typed.</p>
-        </a>
-        <a class="card" href="lib-ui.html"><span class="ico">&#128421;</span>
-          <h3>Native desktop GUI</h3>
-          <p>The ui library builds themed windows, cards, forms,
-            lists and meters — laid out for you.</p>
-        </a>
-        <a class="card" href="lib-websocket.html"><span class="ico">&#127760;</span>
-          <h3>Browsers included</h3>
-          <p>websocket speaks RFC 6455: Chrome connects to your
-            HolyPHP server out of the box.</p>
-        </a>
-        <a class="card" href="lib-thread.html"><span class="ico">&#129520;</span>
-          <h3>Real threads</h3>
-          <p>OS threads with Go-style channels, atomics, barriers
-            and a worker pool — message passing, no data races.</p>
-        </a>
-        <a class="card" href="lib-async.html"><span class="ico">&#9203;</span>
-          <h3>Async event loop</h3>
-          <p>Timers, socket watchers and HTTP in a single cooperative
-            loop — servers and clients in a few lines.</p>
-        </a>
-        <a class="card" href="cli.html"><span class="ico">&#9889;</span>
-          <h3>One-file toolchain</h3>
-          <p>The compiler embeds the whole runtime and stdlib.
-            hphp build produces a standalone executable.</p>
-        </a>
-        <a class="card" href="pkg.html"><span class="ico">&#128230;</span>
-          <h3>Packages</h3>
-          <p>hphp pkg init / publish / install — with a registry server
-            written in HolyPHP itself.</p>
-        </a>
-      </div>
-
-      <h2>Hello, HolyPHP</h2>
-      <pre><code class="hphp">// hello.hphp — no imports, no main, just start writing
-$name = "world";
-echo "Hello, {$name}!\n";
-
-// optional types, like Rust — but only when you ask
-function fib(int $n): int {
-    if ($n &lt; 2) { return $n; }
-    return fib($n - 1) + fib($n - 2);
-}
-echo "fib(10) = " . fib(10) . "\n";</code></pre>
-
-    <h2>A real GUI in 12 lines</h2>
-    <p>One theme call styles every control, and widgets place themselves
-      &mdash; no coordinates, no event assignment, no boilerplate:</p>
-      <pre><code class="hphp">import "ui";
-
-$app = new App("My App", 560, 300);
-$app-&gt;theme("midnight")-&gt;pad(24)-&gt;gap(10)-&gt;radius(12);
-
-$name = $app-&gt;input("world");
-$app-&gt;button("Click me", "primary", function() use ($app, $name) {
-    $app-&gt;msg("Hello, " . $name-&gt;content() . "!");
-});
-
-$app-&gt;run();   // real desktop event loop</code></pre>
-
-      <h2>The memory model, in one look</h2>
-      <pre><code class="hphp">// borrows are checked at compile time — like Rust
-function bump(int &amp;$r): void { $r += 1; }   // &amp;mut borrow
-
-$n = 41;
-bump($n);          // $n is now 42
-
-// raw pointers exist only under unsafe
-unsafe {
-    $x = 42;
-    $p = &amp;$x;
-    echo "deref: " . (*$p) . "\n";
+<body><script src="assets/nav.html.js?v=3"></script>
+<main class="site-page">
+  <section class="home-hero">
+    <div class="hero-copy">
+      <div class="eyebrow">A language and toolchain for native software</div>
+      <h1>Familiar code.<br><em>Native software.</em></h1>
+      <p class="hero-lead">HolyPHP brings the directness of PHP-style syntax to a compiled language. Check your code, build a native program, and use one toolchain from your first script to a larger application.</p>
+      <div class="hero-actions"><a class="button-link" href="playground.html" target="_blank" rel="noopener">Try the Playground <span aria-hidden="true">↗</span></a><a class="button-link secondary" href="docs.html" target="_blank" rel="noopener">Explore the docs <span aria-hidden="true">↗</span></a></div>
+      <div class="hero-note">No PHP tags. No interpreter or virtual machine in the output.</div>
+    </div>
+    <div class="hero-code" aria-label="HolyPHP code sample">
+      <div class="code-top"><span class="lights"><i></i><i></i><i></i></span><span>hello.hphp</span><span>HolyPHP</span></div>
+      <pre><code><span class="code-comment">// Write a small program</span>
+<span class="code-key">function</span> greet(<span class="code-type">string</span> <span class="code-var">$name</span>): <span class="code-type">string</span> {
+    <span class="code-key">return</span> <span class="code-string">"Hello, {$name}!"</span>;
 }
 
-// ownership is explicit
-enum Farbe: int { Rot, Gruen, Blau }</code></pre>
+<span class="code-key">echo</span> greet(<span class="code-string">"Ada"</span>);
+</code></pre>
+      <div class="hero-run"><span aria-hidden="true">$</span><code>hphp run hello.hphp</code><small>Run from your terminal</small></div>
+      <div class="code-footer"><span>compile → native executable</span><span class="code-ok">✓ types checked</span></div>
+    </div>
+  </section>
 
-      <div class="note"><b>Note:</b> the borrow checker runs at compile time
-        (<code>hphp check</code>) — many immutable borrows <i>xor</i> exactly one mutable borrow,
-        use-after-move is rejected, and there is nothing to debug at 3 AM because there is no
-        data race to have.</div>
+  <section class="proof-strip" aria-label="HolyPHP at a glance"><div class="proof-inner">
+    <div class="proof-item"><span class="proof-icon">01</span><div><b>Own compiler</b><span>PHP-inspired language</span></div></div>
+    <div class="proof-item"><span class="proof-icon">02</span><div><b>Compile-time checks</b><span>Types and borrowing</span></div></div>
+    <div class="proof-item"><span class="proof-icon">03</span><div><b>Native builds</b><span>Runtime bundled in output</span></div></div>
+    <div class="proof-item"><span class="proof-icon">04</span><div><b>One command line</b><span>Check, run, build, package</span></div></div>
+  </div></section>
 
-      <h2>Get it</h2>
-      <p>Grab an installer above — or build the toolchain from source:</p>
-      <pre><code class="hphp">bash scripts/build.sh     # produces ./hphp.exe with runtime embedded
+  <section class="home-section">
+    <div class="section-head"><div><div class="section-kicker">The workflow</div><h2>From first line to finished program</h2></div><p>Keep the fast feedback loop of a scripting language, with a compiler that can produce a standalone native executable.</p></div>
+    <div class="story-grid">
+      <article class="story-card"><h3>Write naturally</h3><p>Start with variables, arrays, functions and classes. Add explicit types where they communicate intent.</p></article>
+      <article class="story-card"><h3>Check as you go</h3><p>Use <code>hphp check</code> to surface type and borrow errors without having to run the program.</p></article>
+      <article class="story-card"><h3>Build for your machine</h3><p>Run a source file during development or build it into a native executable for distribution.</p></article>
+    </div>
+  </section>
 
-hphp check program.hphp   # type + borrow check only
-hphp run program.hphp     # compile &amp; execute
-hphp build program.hphp -o app.exe   # standalone binary</code></pre>
-      <p>Then pull the standard libraries with the built-in package manager
-        (async and thread ship embedded — <code>import</code> works offline):</p>
-      <pre><code class="hphp">hphp pkg install ui
-hphp pkg install websocket
-hphp pkg list        # mathx, ui, websocket, thread, async ...</code></pre>
-    </main>
-  </div>
-  <script src="assets/site.js"></script>
-</body>
+  <section class="home-section">
+    <div class="section-head"><div><div class="section-kicker">Language, runtime, libraries</div><h2>One toolchain. Several ways to build.</h2></div><p>HolyPHP is not PHP running through FPM. Its compiler and runtime power programs written in the language itself.</p></div>
+    <div class="capability-grid">
+      <a class="capability" href="docs.html#language"><span class="glyph">$</span><h3>Expressive language</h3><p>Familiar variables, control flow, strings, arrays, classes, closures and typed function signatures.</p></a>
+      <a class="capability" href="docs.html#memory"><span class="glyph">&amp;</span><h3>Ownership and borrowing</h3><p>Compile-time rules help control aliases and mutation. Unsafe pointer operations are marked explicitly.</p></a>
+      <a class="capability" href="docs.html#libraries"><span class="glyph">{ }</span><h3>Native application libraries</h3><p>Explore desktop UI, async I/O, threads, WebSockets, HTML layout and the HolyIDE workbench.</p></a>
+      <a class="capability" href="docs.html#toolchain"><span class="glyph">&gt;_</span><h3>Compiler and CLI</h3><p>Check, run, emit compiler output, build executables and manage packages from <code>hphp</code>.</p></a>
+      <a class="capability" href="docs.html#editor"><span class="glyph">⌘</span><h3>Editor support</h3><p>Use the HolyPHP VS Code extension for syntax highlighting, completions and diagnostics.</p></a>
+      <a class="capability" href="docs.html#packages"><span class="glyph">□</span><h3>Packages and examples</h3><p>Try the package commands and learn from complete programs shipped in the repository.</p></a>
+    </div>
+  </section>
 
-</html>
+  <section class="home-section"><div class="safety-panel">
+    <div><div class="section-kicker" style="color:#c5a4ee">Types &amp; memory</div><h2>Safety checks in the compiler</h2><p>HolyPHP offers inferred types for quick scripts and explicit signatures when you need them. Its borrow checker diagnoses supported conflicting uses before code generation.</p><a class="button-link secondary" href="docs.html#memory">How memory safety works →</a></div>
+    <pre><code><span class="code-comment">// Types can be inferred</span>
+$count = 3;
+
+<span class="code-comment">// Or stated in a signature</span>
+function total(int $a, int $b): int {
+    return $a + $b;
+}
+
+echo total($count, 4);</code></pre>
+  </div></section>
+
+  <section class="home-section" id="install"><div class="section-head"><div><div class="section-kicker">Get started locally</div><h2>Install the compiler</h2></div><p>Installers build the compiler for your platform. A C compiler is used when <code>hphp run</code> or <code>hphp build</code> compiles a program.</p></div>
+    <div class="capability-grid install-grid">
+      <a class="capability" href="https://github.com/Elifoxcoder/holyphp/releases/latest" target="_blank" rel="noopener"><span class="glyph">Win</span><h3>Windows setup</h3><p>Per-user setup wizard with an optional PATH entry and uninstaller. See the latest public release.</p></a>
+      <a class="capability" href="https://github.com/Elifoxcoder/holyphp/releases/latest" target="_blank" rel="noopener"><span class="glyph">.deb</span><h3>Debian / Ubuntu</h3><p>Download the current amd64 package from GitHub Releases.</p></a>
+    </div>
+  </section>
+
+  <section class="home-section"><div class="cta-band"><div><div class="section-kicker">Start where you are</div><h2>Read, run, or explore the source.</h2><p>Follow a guided path, experiment in your browser, or see how the project is built.</p></div><a class="button-link" href="docs.html" target="_blank" rel="noopener">Open documentation ↗</a></div></section>
+  <footer class="site-footer">HolyPHP · Open source language and toolchain · <a href="development.html">Development</a> · <a href="https://github.com/Elifoxcoder/holyphp" target="_blank" rel="noopener">GitHub ↗</a></footer>
+</main><script src="assets/site.js?v=4"></script><script src="assets/theme.js?v=1"></script>
+</body></html>

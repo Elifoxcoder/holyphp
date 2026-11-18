@@ -11,10 +11,8 @@
 #       common-install-wizard.sh libs              package-manager hints
 #       common-install-wizard.sh done              closing hint
 #
-# The packages ship ONLY the compiler (runtime + stdlib embedded). The
-# ui/websocket libraries are not included — users install them via
-#   hphp pkg install ui
-#   hphp pkg install websocket
+# The compiler binary carries the runtime and bundled libraries. gcc is still
+# needed when HolyPHP compiles source programs.
 
 hphp_banner() {
     echo ""
@@ -69,14 +67,9 @@ hphp_check_gcc() {
     fi
 }
 
-# libs_hint — the libraries ride the package manager, not the installer
+# libs_hint — explain the libraries embedded in this compiler build
 hphp_libs_hint() {
-    echo "  [info] ui and websocket libraries are NOT bundled."
-    echo "         install them with the package manager:"
-    echo "            hphp install ui"
-    echo "            hphp install websocket"
-    echo "         (set a registry first if you run your own:"
-    echo "            hphp pkg registry http://your-server:8930 )"
+    echo "  [info] bundled libraries: ui, websocket, async, thread, html and ide."
 }
 
 hphp_done_hint() {

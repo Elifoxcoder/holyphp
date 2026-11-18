@@ -1,0 +1,682 @@
+// tests/positive/ide_workbench.hphp — the IDE, driven without a window.
+//
+//   hphp run tests/positive/ide_workbench.hphp
+//
+// The workbench (lib/ide/workbench.hphp) is a state machine that renders
+// itself to HTML and hands that to the HTML engine. Nothing in the test
+// below opens a window: it makes a small project in the temp directory,
+// lays the document out, clicks the laid-out boxes, presses keys and reads
+// the state back. That is the whole point of the design - the interesting
+// half of an IDE is testable, and what is left over is a window and an
+// event loop.
+//
+// Two things beyond the obvious are asserted on purpose:
+//
+//   * THE NUMBERS THE WORKBENCH COMPUTES ARE THE NUMBERS THE STYLESHEET
+//     LAYS OUT. "How many rows fit" is arithmetic over pixel heights in the
+//     class, and the same heights are in the CSS string. A test that only
+//     checked one of them would drift the moment the other changed.
+//
+//   * THE DRAW LIST IS INSPECTED, NOT JUST THE STATE. A pane that lays out
+//     and paints nothing looks perfect to a state-only test.
+//
+// Run: exit 0 = all good.
+
+import "ide";
+
+$fails = 0;
+
+function check(bool $cond, string $what): void {
+    global $fails;
+    if ($cond) {
+        echo "OK   " . $what . "\n";
+    } else {
+        echo "FAIL " . $what . "\n";
+        $fails = $fails + 1;
+    }
+}
+
+function eqs(string $got, string $want, string $what): void {
+    if ($got == $want) {
+        echo "OK   " . $what . " = " . $got . "\n";
+    } else {
+        echo "FAIL " . $what . " = '" . $got . "' (want '" . $want . "')\n";
+        global $fails;
+        $fails = $fails + 1;
+    }
+}
+
+function eq(int $got, int $want, string $what): void {
+    if ($got == $want) {
+        echo "OK   " . $what . " = " . $got . "\n";
+    } else {
+        echo "FAIL " . $what . " = " . $got . " (want " . $want . ")\n";
+        global $fails;
+        $fails = $fails + 1;
+    }
+}
+
+/** The first draw-list command containing `$needle`, or "". */
+function drew([string] $ops, string $needle): string {
+    for ($i = 0; $i < count($ops); $i++) {
+        if (str_contains($ops[$i], $needle)) { return $ops[$i]; }
+    }
+    return "";
+}
+
+function write_file(string $path, string $text): void {
+    file_put_contents($path, $text);
+}
+
+/** The fields of a dry-run text command: [x, y, w, h, font, flags, text].
+ *
+ *  The format is paint's own (see lib/html/paint.hphp):
+ *      text x,y WxH fN #rrggbb flF [the string]
+ *  Parsed rather than pattern-matched so the assertion below can compare
+ *  the number with the string instead of just looking for one. */
+function text_op(string $s): [string] {
+    $out: [string];
+    $p = substr($s, 5);                       /* past "text " */
+    $sp = strpos($p, " ");
+    $pos = substr($p, 0, $sp);
+    $p = substr($p, $sp + 1);
+    $sp = strpos($p, " ");
+    $size = substr($p, 0, $sp);
+    $p = substr($p, $sp + 1);
+    $sp = strpos($p, " ");
+    $font = substr($p, 0, $sp);
+    $p = substr($p, $sp + 1);
+    $sp = strpos($p, " ");
+    $p = substr($p, $sp + 1);                 /* the colour */
+    $sp = strpos($p, " ");
+    $flags = substr($p, 0, $sp);
+    $p = substr($p, $sp + 1);                 /* what is left is [the string] */
+    $txt = substr($p, 1, strlen($p) - 2);
+    $comma = strpos($pos, ",");
+    $x = substr($pos, 0, $comma);
+    $y = substr($pos, $comma + 1);
+    $xs = strpos($size, "x");
+    $w = substr($size, 0, $xs);
+    $h = substr($size, $xs + 1);
+    $out[] = $x; $out[] = $y; $out[] = $w; $out[] = $h;
+    $out[] = substr($font, 1);               /* fN -> N */
+    $out[] = substr($flags, 2);              /* flF -> F */
+    $out[] = $txt;
+    return $out;
+}
+
+/** No string may be drawn into a rectangle too narrow for it.
+ *
+ *  This is the assertion that would have caught the toolbar reading "Sav"
+ *  for "Save": the rect a text call gets has to be at least as wide as the
+ *  font says the string is, and the font measure rounds UP at any scale so
+ *  the number here is the number GDI needs. An ellipsised call (bit 1 of the
+ *  flags) is the one exception - there the narrow rect is the point. */
+function text_widths_fit([string] $ops): int {
+    $bad = 0;
+    for ($i = 0; $i < count($ops); $i++) {
+        $s = $ops[$i];
+        if (!str_starts_with($s, "text ")) { continue; }
+        $f = text_op($s);
+        if (count($f) != 7) { continue; }
+        $flags = intval($f[5]);
+        if (($flags & 1) != 0) { continue; }
+        $need = ui_font_width(intval($f[4]), $f[6]);
+        if ($need > intval($f[2])) {
+            $bad = $bad + 1;
+            if ($bad <= 3) {
+                echo "  too narrow: [" . $f[6] . "] needs " . $need
+                   . " in " . $f[2] . "\n";
+            }
+        }
+    }
+    return $bad;
+}
+
+// ---------------------------------------------------------------------
+// a project to look at
+// ---------------------------------------------------------------------
+
+$root = sys_get_temp_dir() . "/holyide_probe";
+if (!is_dir($root)) { mkdir($root, true); }
+/* start from an empty folder: a leftover file from an earlier run would
+ * change what the explorer lists and what the palette matches */
+$old = scandir($root);
+for ($i = 0; $i < count($old); $i++) {
+    $e = $old[$i];
+    if ($e == "." || $e == "..") { continue; }
+    if (is_dir($root . "/" . $e)) { continue; }
+    unlink($root . "/" . $e);
+}
+mkdir($root . "/lib", true);
+write_file($root . "/main.hphp",
+           "// the main program\n" .
+           "import \"ui\";\n" .
+           "\n" .
+           "function add(int \$a, int \$b): int {\n" .
+           "    return \$a + \$b;\n" .
+           "}\n" .
+           "\n" .
+           "echo add(1, 2) . \"\\n\";\n");
+write_file($root . "/lib/helper.hphp",
+           "// helper\n" .
+           "function helper(): int { return 4; }\n" .
+           "function other(): int { return helper() + 1; }\n");
+write_file($root . "/README.md", "# probe\n\nA folder for the IDE test.\n");
+write_file($root . "/notes.txt", "one\ntwo\nthree\n");
+/* a file taller than the pane, so "what fits" is what the pane's height
+ * says and not what the buffer happens to have */
+$long = "";
+for ($i = 0; $i < 60; $i++) { $long = $long . "// line " . ($i + 1) . "\n"; }
+write_file($root . "/long.hphp", $long);
+
+$wb = new IdeWorkbench(0, 1180, 760, html_theme_dark());
+$wb->open_root($root);
+
+check(count($wb->tree) >= 5, "the explorer lists the folder (" . count($wb->tree) . ")");
+check($wb->tree[0]->dir, "folders come before files");
+eq($wb->tree[0]->name == "lib" ? 1 : 0, 1, "and the first one is lib");
+
+// ---------------------------------------------------------------------
+// tabs
+// ---------------------------------------------------------------------
+
+eq($wb->open("main.hphp"), 0, "opening a file makes the first tab");
+check($wb->active == 0, "and activates it");
+check($wb->active_name() == "main.hphp", "the active tab is named after the file");
+eq($wb->ed()->line_count(), 8, "the buffer has the file's lines");
+
+eq($wb->open("lib/helper.hphp"), 1, "a second file is a second tab");
+eq(count($wb->tabs), 2, "two tabs");
+eq($wb->open("main.hphp"), 0, "re-opening activates the existing tab");
+eq(count($wb->tabs), 2, "and does not add one");
+check($wb->active_rel() == "main.hphp", "the active path is relative to the root");
+
+// ---------------------------------------------------------------------
+// the numbers: class constants vs. what the stylesheet laid out
+// ---------------------------------------------------------------------
+
+$wb->open("long.hphp");
+$wb->ensure();
+
+check($wb->ed_rows() > 10, "there is room for a screenful of code (" . $wb->ed_rows() . ")");
+eq(count($wb->view->find_all(".ln")), $wb->ed_rows(), "one line node per row that fits");
+eq(count($wb->view->find_all(".gn")), $wb->ed_rows(), "one gutter number per row too");
+
+$code = $wb->view->box_of($wb->view->find(".code"));
+eq(intdiv($code->ch, $wb->lineH), $wb->ed_rows(),
+   "the code pane's content height is exactly the rows we said");
+$side = $wb->view->box_of($wb->view->find(".side"));
+eq($side->w, $wb->sideW, "the explorer is as wide as the constant");
+$title = $wb->view->box_of($wb->view->find(".title"));
+eq($title->h, $wb->titleH, "the title bar is as tall as the constant");
+$status = $wb->view->box_of($wb->view->find(".status"));
+eq($status->y + $status->h, $wb->h, "the status bar ends at the window edge");
+$tabs = $wb->view->box_of($wb->view->find(".tabs"));
+eq($tabs->h, $wb->tabH, "the tab strip is as tall as the constant");
+$first = $wb->view->box_of($wb->view->find("[data-row='0']"));
+eq($first->h, $wb->lineH, "a line of code is lineH tall");
+eq($first->x, $code->cx(), "the first line starts where the pane's content starts");
+$panel = $wb->view->box_of($wb->view->find(".panel"));
+eq($panel->h, $wb->panel_h(), "the panel is as tall as the constant");
+
+// ---------------------------------------------------------------------
+// what it painted
+// ---------------------------------------------------------------------
+
+$wb->open("main.hphp");
+$wb->ensure();
+$ops = $wb->view->draw_list();
+check(drew($ops, "[import") != "", "the code pane drew the import line");
+$kw = drew($ops, "[function]");
+check($kw != "", "and the keyword");
+check(str_contains($kw, "569cd6"), "the keyword is painted in the keyword colour");
+$cm = drew($ops, "[// the main program]");
+check($cm != "", "the comment was drawn");
+check(str_contains($cm, "6a9955"), "in the comment colour");
+check(drew($ops, "clear") != "", "the frame starts with a clear");
+$gn = drew($ops, "[1]");
+check($gn != "", "the gutter's first number was drawn");
+eq(text_widths_fit($ops), 0, "every string was drawn into a wide enough rectangle");
+
+// the chrome has boxes, not just text. An inline span in a flex row used to
+// be merged into one run of words: no box, no padding, no background and no
+// click target - the whole toolbar was one line of text that could not be
+// clicked and was cut off where the line ended.
+$btns = $wb->view->find_all(".tbtn");
+eq(count($btns), 3, "the title bar has three buttons of its own");
+$allBoxed = true;
+for ($i = 0; $i < count($btns); $i++) {
+    $b = $wb->view->box_of($btns[$i]);
+    if ($b == null || $b->w < 24 || $b->h < 18) { $allBoxed = false; }
+}
+check($allBoxed, "and each of them was laid out as a box");
+$runBox = $wb->view->box_of($wb->view->find(".tbtn.run"));
+check($wb->mouse("up", $runBox->x + 8, $runBox->y + 8, 1, 0) == "cmd",
+      "clicking Run is a command");
+check($wb->running() || str_contains($wb->term_text(), "$ "),
+      "and it started something");
+check($wb->view->box_of($wb->view->find(".status .grow")) != null,
+      "the status bar has its spacer as a box too");
+$n = 0;
+while ($wb->running() && $n < 900) { $wb->pump(); usleep(20000); $n = $n + 1; }
+$gripP = $wb->view->box_of($wb->view->find("[data-grip='panel']"));
+check($gripP != null, "the panel has a drag grip");
+eq($gripP->h, $wb->gripH, "and it is exactly the grip height");
+$gripV = $wb->view->box_of($wb->view->find("[data-grip='side']"));
+check($gripV != null, "so does the explorer side");
+
+// ---------------------------------------------------------------------
+// clicking: an explorer row opens a file, a tab switches
+// ---------------------------------------------------------------------
+
+$row = $wb->view->box_of($wb->view->find("[data-path='notes.txt']"));
+check($row != null, "the notes.txt row is on screen");
+check($wb->mouse("down", $row->x + 20, $row->y + 6, 1, 0) == "", "a press is not a click");
+check($wb->mouse("up", $row->x + 20, $row->y + 6, 1, 0) == "open", "releasing it opens the file");
+check($wb->active_name() == "notes.txt", "the clicked file is active");
+
+// a click on a tab switches back
+$wb->ensure();
+$tabRow = $wb->view->box_of($wb->view->find("[data-tab='0']"));
+check($wb->mouse("up", $tabRow->x + 8, $tabRow->y + 8, 1, 0) == "tab", "clicking a tab returns tab");
+check($wb->active_name() == "main.hphp", "and switches to it");
+
+// a click on the tab's close glyph closes it - on the glyph's own box, not
+// somewhere near it: the tab has 12px of padding, so "5px from the edge" is
+// still the tab's background and rightly switches tabs
+$wb->ensure();
+$openBefore = count($wb->tabs);
+$closeGlyph = $wb->view->box_of($wb->view->find("[data-close='0']"));
+check($closeGlyph != null, "the close glyph was laid out");
+check($wb->mouse("up", $closeGlyph->x + 3, $closeGlyph->y + 6, 1, 0) == "closetab",
+      "the x closes a tab");
+eq(count($wb->tabs), $openBefore - 1, "one tab fewer");
+
+// the wheel scrolls the explorer instead of the code. The project has to be
+// taller than the pane for there to be anything to scroll, so grow it and
+// rescan before asking
+for ($i = 0; $i < 60; $i++) {
+    write_file($root . "/bulk" . ($i < 10 ? "0" : "") . $i . ".hphp", "// filler\n");
+}
+$wb->open_root($root);
+check(count($wb->tree) > $wb->side_rows(), "the project is taller than the explorer (" . count($wb->tree) . ")");
+$wb->ensure();
+$treeRow = $wb->view->box_of($wb->view->find(".tree"));
+check($wb->mouse("wheel", $treeRow->x + 20, $treeRow->y + 6, 0, -3) == "scroll-tree",
+      "the wheel over the explorer scrolls the tree");
+check($wb->sideTop > 0, "and the tree moved");
+for ($i = 0; $i < 60; $i++) {
+    unlink($root . "/bulk" . ($i < 10 ? "0" : "") . $i . ".hphp");
+}
+$wb->open_root($root);
+
+// ---------------------------------------------------------------------
+// the keyboard
+// ---------------------------------------------------------------------
+
+$wb->open("lib/helper.hphp");
+$wb->sideTop = 0;
+$wb->goto_line(2, 1);
+$wb->key(0, "/", 0);
+$wb->key(0, "/", 0);
+eq(str_starts_with($wb->ed()->line(1), "//"), 1, "typing two slashes writes them");
+$wb->key(90, "", 1);      /* Ctrl+Z */
+eq(str_starts_with($wb->ed()->line(1), "//"), 0, "Ctrl+Z took the second one back");
+
+$wb->goto_line(2, 1);
+$wb->key(35, "", 2);      /* Shift+End */
+$wb->ensure();
+check($wb->ed()->sel_text() != "", "shift+End selects to the end of the line");
+check(count($wb->view->find_all(".sel")) > 0, "the selection is painted");
+check($wb->ed()->sel_has(1, 0), "and it covers the start of the line");
+$wb->key(27, "", 0);      /* Escape */
+check(!$wb->ed()->hasSel, "Escape drops the selection");
+
+// the caret is a real rectangle, on the caret's row
+$wb->goto_line(3, 5);
+$wb->ensure();
+$caret = $wb->caret_rect();
+eq(count($caret), 3, "the caret is a rectangle");
+$caretRow = $wb->view->box_of($wb->view->find("[data-row='2']"));
+eq($caret[1], $caretRow->y, "on the caret's row");
+check($caret[0] > $caretRow->x, "and to the right of the line's start");
+
+// Ctrl+= / Ctrl+- zoom, and the layout follows
+$before = $wb->lineH;
+$wb->key(187, "", 1);
+check($wb->lineH > $before, "Ctrl+= makes a line taller");
+$wb->key(48, "", 1);
+eq($wb->lineH, $before, "Ctrl+0 puts it back");
+
+// the completion popup
+$wb->goto_line(3, 1);
+$wb->key(69, "", 1);      /* Ctrl+E: nothing, just moving on */
+$wb->ed()->set_text("helper_var = 1;\nhelper_other = 2;\nhel\n");
+$wb->goto_line(3, 4);
+$wb->key(0, "p", 0);
+$wb->key(0, "e", 0);
+$wb->key(0, "r", 0);
+check($wb->peek, "three characters of a word opens the completion popup");
+check(count($wb->peekItems) > 0, "with candidates");
+$wb->key(9, "", 0);       /* Tab accepts */
+check(str_starts_with($wb->ed()->line(2), "helper_"), "Tab completed the word");
+check(!$wb->peek, "and closed the popup");
+
+// ---------------------------------------------------------------------
+// shortcuts, chords and the palette
+// ---------------------------------------------------------------------
+
+$wb->open("main.hphp");
+$wb->key(0, "z", 0);
+$wb->ed()->buf->dirty = true;
+$wb->key(75, "", 1);      /* Ctrl+K */
+check($wb->chord == "ctrl+k", "Ctrl+K starts a chord");
+check(str_contains($wb->status, "waiting"), "and the status line says so");
+$wb->key(83, "", 1);      /* Ctrl+K Ctrl+S */
+check($wb->chord == "", "the second key closes it");
+check(!$wb->ed()->buf->dirty, "Ctrl+K Ctrl+S saved the buffer");
+check(str_contains($wb->status, "saved"), "and said so in the status bar");
+
+$wb->key(80, "", 1);      /* Ctrl+P */
+check($wb->palette, "Ctrl+P opens the palette");
+/* ...and the palette is a real box on the screen. It is an absolute
+ * element, and absolute children used to be left unmeasured: the key
+ * "worked", the state was right and the user saw nothing at all. */
+$wb->ensure();
+$pal = $wb->view->box_of($wb->view->find(".pal"));
+check($pal != null, "the palette is on screen");
+if ($pal != null) {
+    check($pal->w > 200 && $pal->h > 20,
+          "with a size of its own (" . $pal->w . "x" . $pal->h . ")");
+    check($pal->y >= $wb->titleH, "below the title bar, where it was anchored");
+}
+check(count($wb->view->find_all(".prow")) > 0, "and one row per hit");
+$firstRow = $wb->view->box_of($wb->view->find("[data-i='0']"));
+check($firstRow != null && $firstRow->h > 0, "each row is laid out");
+$wb->key(0, "r", 0);
+$wb->key(0, "e", 0);
+eq(count($wb->palHits), 1, "the query narrows the list to one");
+check($wb->palHits[0]->label == "README.md", "which is the file that matches");
+$wb->key(13, "", 0);      /* Enter */
+check(!$wb->palette, "Enter closes the palette");
+check($wb->active_name() == "README.md", "and opens what was selected");
+
+$wb->key(80, "", 3);      /* Ctrl+Shift+P */
+check($wb->palMode == "cmds", "Ctrl+Shift+P is command mode");
+check($wb->palQ == ">", "which starts with the > prefix");
+$wb->key(0, "t", 0);
+$wb->key(0, "p", 0);
+check(count($wb->palHits) > 0, "the commands filter too");
+check($wb->palHits[0]->label == "View: Toggle Panel", "and 'tp' lands on Toggle Panel");
+$wb->key(13, "", 0);
+check(!$wb->panelOpen, "running it closed the panel");
+
+$wb->key(80, "", 1);
+$wb->palQ = ":3";
+$wb->palMode = "line";
+$wb->key(13, "", 0);      /* Enter on a line number */
+$wb->key(71, "", 1);      /* Ctrl+G */
+check($wb->palMode == "line", "Ctrl+G is go-to-line");
+$wb->key(27, "", 0);
+check(!$wb->palette, "Escape closes it");
+
+// ---------------------------------------------------------------------
+// the runner: the command, the pipes, the problems
+// ---------------------------------------------------------------------
+
+$repo = realpath("hphp.exe");
+check($repo != false, "the test runs next to the compiler");
+putenv("HPHP_BIN=" . $repo);
+$cmd = ide_run_command($root . "/main.hphp");
+check(str_contains($cmd, "hphp") && str_contains($cmd, " run "), "the runner compiles and runs .hphp");
+check(str_contains($cmd, "main.hphp"), "and names the file");
+check(str_contains(ide_run_command("x.py"), "python"), "python for .py");
+check(str_contains(ide_run_command("x.js"), "node"), "node for .js");
+
+// the terminal splits a stream into lines and keeps the tail
+$wb->term = [];
+$wb->term_write("first\nsecond", "out");
+eq(count($wb->term), 1, "a partial line is held back");
+check($wb->outBuf == "second", "as the pending tail");
+$wb->term_write("\nthird\n", "out");
+eq(count($wb->term), 3, "and splits when the newline arrives");
+check($wb->term[1]->text == "second", "the second line is intact");
+$esc = chr(27);
+eq($wb->term_write("red " . $esc . "[31mtext" . $esc . "[0m\n", "out"), 1, "a coloured line still arrives whole");
+check(str_contains($wb->term_text(), "red text"), "with the escape sequences gone");
+
+// compiler diagnostics become problem rows
+$diag = "../lib/x.hphp:12:3: error: undefined variable \$q\n" .
+        "note: something else\n" .
+        "../lib/y.hphp:4: error: a plain one\n";
+$list = ide_parse_problems($diag, $wb->problems);
+eq(count($list), 2, "both diagnostics were parsed");
+check($list[0]->row == 12 && $list[0]->col == 3, "with file, line and column");
+check(str_contains($list[0]->msg, "undefined variable"), "and the message");
+eq($list[1]->row, 4, "a diagnostic without a column still parses");
+
+// a real run, through the real pipes
+write_file($root . "/runme.hphp", "echo \"runner-ok\\n\";\n");
+$wb->open("runme.hphp");
+$wb->run_active();
+check($wb->running(), "the runner started a child");
+check(str_contains($wb->term_text(), "$ "), "and echoed the command line first");
+$n = 0;
+while ($wb->running() && $n < 900) {
+    $wb->pump();
+    usleep(20000);
+    $n = $n + 1;
+}
+check(!$wb->running(), "the child finished (" . $n . " polls)");
+eq($wb->lastExit, 0, "and exited 0");
+check(str_contains($wb->term_text(), "runner-ok"), "its output reached the terminal panel");
+check(str_contains($wb->status, "run ok"), "the status bar reports the run");
+
+// a failing run fills the problems panel and the click opens the file
+write_file($root . "/bad.hphp", "int \$x = \"text\";\n");
+$wb->open("bad.hphp");
+$wb->run_active();
+$n = 0;
+while ($wb->running() && $n < 900) {
+    $wb->pump();
+    usleep(20000);
+    $n = $n + 1;
+}
+check(!$wb->running(), "the failing run finished too");
+check($wb->lastExit != 0, "with a non-zero exit code");
+check(count($wb->problems) > 0, "the problems panel has entries");
+check($wb->panelTab == "problems", "and the panel switched to it");
+check(str_contains($wb->problems[0]->path, "bad.hphp"), "the problem names the file");
+$wb->open_problem($wb->problems[0]);
+check($wb->active_name() == "bad.hphp", "clicking a problem opens its file");
+
+// ---------------------------------------------------------------------
+// the explorer folds, the panes drag, the code selects with the mouse
+// ---------------------------------------------------------------------
+
+$wb->open("main.hphp");
+$wb->open_root($root);
+$wb->ensure();
+check($wb->view->box_of($wb->view->find("[data-path='lib/helper.hphp']")) != null,
+      "a nested file is in the tree to begin with");
+$dirRow = $wb->view->box_of($wb->view->find("[data-path='lib']"));
+check($wb->mouse("up", $dirRow->x + 20, $dirRow->y + 8, 1, 0) == "fold",
+      "clicking a folder folds it");
+$wb->ensure();
+check($wb->view->box_of($wb->view->find("[data-path='lib/helper.hphp']")) == null,
+      "and what was inside it is gone from the tree");
+check(count($wb->side_visible()) < count($wb->tree), "the visible list is shorter");
+$dirRow = $wb->view->box_of($wb->view->find("[data-path='lib']"));
+check($wb->mouse("up", $dirRow->x + 20, $dirRow->y + 8, 1, 0) == "fold",
+      "clicking it again unfolds it");
+$wb->ensure();
+check($wb->view->box_of($wb->view->find("[data-path='lib/helper.hphp']")) != null,
+      "and the file is back");
+
+// the panel's grip: press, drag, release. (An earlier command in this test
+// turned the panel off, and a grip belongs to the pane it sizes.)
+$wb->panelOpen = true;
+$wb->ensure();
+$grip = $wb->view->box_of($wb->view->find("[data-grip='panel']"));
+check($grip != null, "the panel grip is on screen");
+$before = $wb->panel_h();
+check($wb->mouse("down", $grip->x + 100, $grip->y + 2, 1, 0) == "grab-panel",
+      "pressing the grip takes hold of the panel");
+check($wb->mouse("move", $grip->x + 100, $grip->y - 40, 0, 0) == "drag", "a move drags it");
+check($wb->panel_h() > $before, "and the panel got taller (" . $wb->panel_h() . ")");
+check($wb->mouse("up", $grip->x + 100, $grip->y - 40, 1, 0) == "drag-end", "releasing ends the drag");
+check($wb->drag == "", "and nothing is held any more");
+$wb->ensure();
+$panelBox = $wb->view->box_of($wb->view->find(".panel"));
+eq($panelBox->h, $wb->panel_h(), "the stylesheet followed the drag");
+$sideGrip = $wb->view->box_of($wb->view->find("[data-grip='side']"));
+check($sideGrip != null, "the explorer has a grip too");
+$sideBefore = $wb->sideW;
+$wb->mouse("down", $sideGrip->x + 2, $sideGrip->y + 40, 1, 0);
+$wb->mouse("move", $sideGrip->x + 62, $sideGrip->y + 40, 0, 0);
+check($wb->sideW == $sideBefore + 60, "dragging it widens the explorer (" . $wb->sideW . ")");
+$wb->mouse("up", $sideGrip->x + 62, $sideGrip->y + 40, 1, 0);
+$wb->ensure();
+eq($wb->view->box_of($wb->view->find(".side"))->w, $wb->sideW, "and the explorer follows");
+/* too small is not a size: the clamp keeps the panes usable */
+$sideGrip = $wb->view->box_of($wb->view->find("[data-grip='side']"));
+$wb->mouse("down", $sideGrip->x + 2, $sideGrip->y + 40, 1, 0);
+$wb->mouse("move", 0, $sideGrip->y + 40, 0, 0);
+check($wb->sideW == $wb->sideMinW, "dragging it to nothing stops at the minimum");
+$wb->mouse("up", 0, $sideGrip->y + 40, 1, 0);
+
+// the mouse selects code: press anchors, move extends, the selection is painted
+$wb->open("main.hphp");
+$wb->ensure();
+$code = $wb->view->box_of($wb->view->find(".code"));
+$line0 = $wb->view->box_of($wb->view->find("[data-row='0']"));
+check($wb->mouse("down", $code->cx() + 2, $line0->y + 4, 1, 0) == "caret",
+      "pressing in the code puts the caret there");
+check($wb->mouse("move", $code->cx() + 90, $line0->y + 4, 0, 0) == "drag",
+      "and moving with the button down is a drag");
+check($wb->mouse("up", $code->cx() + 90, $line0->y + 4, 1, 0) == "drag-end", "until release");
+eq($wb->ed()->row, 0, "the selection is on the line that was dragged over");
+check($wb->ed()->col > 4, "and the caret followed the pointer (" . $wb->ed()->col . ")");
+$sel = $wb->ed()->sel_text();
+check(strlen($sel) > 3, "a run of text is selected (" . strlen($sel) . " chars)");
+$wb->ensure();
+check(count($wb->view->find_all(".sel")) > 0, "and the selection is painted");
+$wb->mouse("dbl", $code->cx() + 40, $line0->y + 4, 1, 0);
+$word = $wb->ed()->sel_text();
+check(strlen($word) > 1 && !str_contains($word, " "),
+      "a double click picks the word under the pointer (" . $word . ")");
+
+// the wheel moves one line, not three
+$wb->open("long.hphp");
+$wb->ensure();
+$ed = $wb->ed();
+$ed->scrollRow = 10;
+$code = $wb->view->box_of($wb->view->find(".code"));
+check($wb->mouse("wheel", $code->cx() + 20, $code->cy() + 20, 0, -1) == "scroll-code",
+      "the wheel scrolls the code");
+eq($ed->scrollRow, 11, "by exactly one line a notch");
+$wb->mouse("wheel", $code->cx() + 20, $code->cy() + 20, 0, 3);
+eq($ed->scrollRow, 8, "and back up by three when the wheel says three");
+
+// ---------------------------------------------------------------------
+// the terminal: a command line you can type into
+// ---------------------------------------------------------------------
+
+$wb->open("main.hphp");
+$wb->panelOpen = true;
+$wb->panelTab = "terminal";
+$wb->ensure();
+check($wb->view->box_of($wb->view->find("[data-cmdline='1']")) != null,
+      "the terminal shows a command line");
+$termBox = $wb->view->box_of($wb->view->find(".term"));
+check($wb->mouse("up", $termBox->x + 30, $termBox->y + 10, 1, 0) == "focus-terminal",
+      "clicking the terminal gives it the keyboard");
+check($wb->cmdFocus, "and the command line has it");
+$wb->key(0, "e", 0);
+$wb->key(0, "c", 0);
+$wb->key(0, "h", 0);
+$wb->key(0, "o", 0);
+$wb->key(0, " ", 0);
+$wb->key(0, "h", 0);
+$wb->key(0, "i", 0);
+eqs($wb->cmdLine, "echo hi", "typing writes into the command line");
+$wb->key(8, "", 0);
+$wb->key(8, "", 0);
+$wb->key(8, "", 0);
+eqs($wb->cmdLine, "echo", "backspace takes it back");
+$wb->key(0, " ", 0);
+$wb->key(0, "h", 0);
+$wb->key(0, "i", 0);
+$wb->key(13, "", 0);                    /* Enter */
+check($wb->cmdLine == "", "Enter clears the line");
+check(str_contains($wb->term_text(), "$ echo hi"), "and echoes what was run");
+$n = 0;
+while ($wb->running() && $n < 900) { $wb->pump(); usleep(20000); $n = $n + 1; }
+check(!$wb->running(), "the command finished");
+check(str_contains($wb->term_text(), "hi"), "and its output is in the panel");
+check(str_contains($wb->term_text(), "[exit 0]"), "with its exit code");
+$wb->key(38, "", 0);                    /* Up */
+eqs($wb->cmdLine, "echo hi", "Up recalls the last command");
+$wb->key(40, "", 0);                    /* Down */
+eqs($wb->cmdLine, "", "and Down clears it again");
+$wb->key(9, "", 0);                     /* Tab */
+check(!$wb->cmdFocus, "Tab hands the keyboard back to the editor");
+$wb->key(0, "x", 0);
+check($wb->ed() != null && str_contains($wb->ed()->line($wb->ed()->row), "x"),
+      "which now types into the file again");
+$wb->ed()->undo_step();
+$wb->focus_terminal();
+check($wb->cmdFocus, "a command focuses it again");
+$wb->key(67, "", 1);                    /* Ctrl+C: copy, not text */
+check($wb->cmdLine == "", "Ctrl+C is a shortcut there too, not text");
+$wb->key(27, "", 0);
+check(!$wb->cmdFocus, "Escape leaves the command line");
+
+// ---------------------------------------------------------------------
+// F5, and the completion popup on demand
+// ---------------------------------------------------------------------
+
+$wb->key(116, "", 0);                   /* F5 */
+check($wb->running() || str_contains($wb->term_text(), "$ "), "F5 runs the active file");
+$n = 0;
+while ($wb->running() && $n < 900) { $wb->pump(); usleep(20000); $n = $n + 1; }
+$wb->key(116, "", 2);                   /* Shift+F5 */
+check(!$wb->running(), "Shift+F5 stops (or finds nothing running)");
+
+$wb->key(65, "", 1);                    /* Ctrl+A: a word to complete */
+$wb->ed()->set_text("helper_one\n");
+$wb->goto_line(1, 1);
+$wb->key(32, "", 1);                    /* Ctrl+Space */
+$wb->key(0, "h", 0);
+$wb->key(0, "e", 0);
+$wb->key(32, "", 1);
+check($wb->peek, "Ctrl+Space opens the completion popup after two letters");
+check(count($wb->peekItems) > 0, "with candidates");
+$wb->ensure();
+$popup = $wb->view->box_of($wb->view->find(".peek"));
+check($popup != null, "and it is laid out");
+check($popup->w > 100 && $popup->h > 0, "as a visible box of its own (" . $popup->w . "x" . $popup->h . ")");
+check(count($wb->view->find_all(".peek .pi")) > 0, "with one row per candidate");
+$item = $wb->view->box_of($wb->view->find("[data-pick='0']"));
+if ($item != null) {
+    check($wb->mouse("up", $item->x + 10, $item->y + 5, 1, 0) == "complete",
+          "clicking a candidate completes the word");
+    check(!$wb->peek, "and closes the popup");
+}
+
+// ---------------------------------------------------------------------
+// resizing, and one more frame
+// ---------------------------------------------------------------------
+
+$big = $wb->ed_rows();
+$wb->resize(1180, 500);
+check($wb->ed_rows() < $big, "a shorter window fits fewer rows");
+$wb->resize(1180, 760);
+eq($wb->ed_rows(), $big, "and back again");
+$wb->render();
+$ops2 = $wb->view->draw_list();
+check(count($ops2) > 50, "a full frame is a lot of drawing (" . count($ops2) . ")");
+
+echo $fails == 0 ? "ide workbench ok\n" : ("ide workbench FAILED (" . $fails . ")\n");
+if ($fails != 0) { exit(1); }

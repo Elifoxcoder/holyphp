@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+  <title>Interactive Guide — HolyPHP</title>
+  <link rel="stylesheet" href="assets/style.css?v=6">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
+  <style>
+    .guide-step { margin: 40px 0; padding: 24px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg2); }
+    .guide-step h2 { margin-top: 0; }
+    .step-number { display: inline-block; background: var(--ember); color: #000; width: 32px; height: 32px; border-radius: 50%; text-align: center; line-height: 32px; font-weight: bold; margin-right: 10px; }
+    .interactive-editor { margin: 16px 0; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .editor-header { background: var(--bg3); padding: 10px 16px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); }
+    .run-btn { background: var(--ember); color: #000; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; font-weight: 600; font-family: var(--sans); }
+    .run-btn:hover { background: #ff8c4d; }
+    .output-panel { background: var(--code-bg); color: var(--green); padding: 16px; font-family: var(--mono); font-size: 13px; min-height: 80px; white-space: pre-wrap; border-top: 1px solid var(--line); }
+    .challenge { background: var(--bg3); padding: 16px; border-left: 3px solid var(--purple-hi); margin: 16px 0; border-radius: 4px; }
+    .concept-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin: 24px 0; }
+    .concept-card { padding: 16px; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; }
+    .concept-card h4 { margin-top: 0; color: var(--purple-hi); }
+    .path { display: flex; flex-direction: column; gap: 12px; margin: 24px 0; }
+    .path-item { display: flex; align-items: center; gap: 16px; padding: 12px 16px; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; text-decoration: none; color: var(--fg); transition: border-color 0.2s; }
+    .path-item:hover { border-color: var(--ember); text-decoration: none; }
+    .path-badge { background: var(--purple); color: #000; padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
+    .CodeMirror { height: 200px; font-family: var(--mono); font-size: 13.5px; }
+  </style>
+</head>
+
+<body>
+  <div class="layout">
+    <script src="assets/nav.html.js?v=3"></script>
+    <main>
+      <h1>Interactive <span class="ph">HolyPHP</span> Guide</h1>
+      <p class="lead">Learn HolyPHP one small idea at a time. Read a short explanation, study an editable example, then solve a practice task. Use the Playground to run code in your browser or install the compiler to run it on your computer.</p>
+
+      <div class="note">
+        <b>How to use this page:</b> Read the explanation first, then follow the example from top to bottom. Each lesson has a practice task with an optional solution. The editor lets you change and copy the example; open the <a href="playground.html">Playground</a> to compile and run code in your browser.
+        To run programs locally, <a href="guide/02-installation.html">install the compiler</a>, save a
+        <code>.hphp</code> file and use <code>hphp run file.hphp</code>.
+      </div>
+
+      <h2>Learning Path</h2>
+      <div class="path">
+        <a href="#step1" class="path-item">
+          <span class="path-badge">1</span>
+          <div>
+            <strong>Hello World</strong> — Your first HolyPHP program
+          </div>
+        </a>
+        <a href="#step2" class="path-item">
+          <span class="path-badge">2</span>
+          <div>
+            <strong>Variables & Types</strong> — PHP-style with optional typing
+          </div>
+        </a>
+        <a href="#step3" class="path-item">
+          <span class="path-badge">3</span>
+          <div>
+            <strong>Functions</strong> — Define and call functions with types
+          </div>
+        </a>
+        <a href="#step4" class="path-item">
+          <span class="path-badge">4</span>
+          <div>
+            <strong>Control Flow</strong> — if/else, loops, foreach, match
+          </div>
+        </a>
+        <a href="#step5" class="path-item">
+          <span class="path-badge">5</span>
+          <div>
+            <strong>Arrays & Maps</strong> — PHP arrays with copy-on-write
+          </div>
+        </a>
+        <a href="#step6" class="path-item">
+          <span class="path-badge">6</span>
+          <div>
+            <strong>Classes & Objects</strong> — OOP with visibility
+          </div>
+        </a>
+        <a href="#step7" class="path-item">
+          <span class="path-badge">7</span>
+          <div>
+            <strong>Memory Safety</strong> — Borrow checker and ownership
+          </div>
+        </a>
+        <a href="#step8" class="path-item">
+          <span class="path-badge">8</span>
+          <div>
+            <strong>Going Further</strong> — Libraries, GUI, and the IDE
+          </div>
+        </a>
+      </div>
+
+      <div class="guide-step" id="step1">
+        <h2><span class="step-number">1</span> Hello World</h2>
+        <p>HolyPHP feels just like PHP — start writing code without boilerplate. No <code>main()</code> function required!</p>
+        
+        <div class="interactive-editor">
+          <div class="editor-header">
+            <span>hello.hphp</span>
+            <button class="run-btn" onclick="runCode('editor1', 'output1')">How to run this</button>
+          </div>
+          <textarea id="editor1">echo "Hello, HolyPHP!";
+$name = "World";
+echo "Welcome, {$name}!";</textarea>
+          <div class="output-panel" id="output1">Run with: hphp run hello.hphp</div>
+        </div>
+
+        <p><strong>Try it locally:</strong></p>
+        <pre><code class="bash">echo 'echo "Hello, HolyPHP!";' > hello.hphp
+hphp run hello.hphp</code></pre>
+
+        <div class="challenge"><strong class="exercise-title">Practice · lesson 1</strong><b>Personalize your first program.</b> Change the name and welcome message, save it as <code>hello.hphp</code>, then run <code>hphp run hello.hphp</code>.<details class="solution"><summary>Show one possible solution</summary><p>Put text in quotes. Write <code>{$name}</code> inside a quoted string to insert that variable's value.</p><div class="solution-lines"><code>$name = "Alex";</code><br><code>echo "Hello, HolyPHP!";</code><br><code>echo "Welcome, {$name}! I am learning to code.";</code></div></details></div>
+      </div>
+
+      <div class="guide-step" id="step2">
+        <h2><span class="step-number">2</span> Variables & Types</h2>
+        <p>Variables start with <code>$</code> like PHP. Types are inferred, but you can add explicit types when you want.</p>
+
+        <div class="concept-grid">
+          <div class="concept-card">
+            <h4>Inferred Types</h4>
+            <p><code>$x = 42;</code> — compiler infers int</p>
+            <p><code>$s = "hello";</code> — compiler infers string</p>
+          </div>
+          <div class="concept-card">
+            <h4>Explicit Types</h4>
+            <p><code>$x: int = 42;</code> — pinned to int</p>
+            <p><code>$f: float = 3.14;</code> — pinned to float</p>
+          </div>
+          <div class="concept-card">
+            <h4>Available Types</h4>
+            <p><code>int</code>, <code>float</code>, <code>bool</code>, <code>string</code>, <code>array</code>, <code>mixed</code>, <code>void</code></p>
+          </div>
+        </div>
+
+        <div class="interactive-editor">
+          <div class="editor-header">
+            <span>types.hphp</span>
+            <button class="run-btn" onclick="runCode('editor2', 'output2')">How to run this</button>
+          </div>
+          <textarea id="editor2">$count = 5;           // inferred int
+$pi = 3.14159;        // inferred float
+$ok = true;           // inferred bool
+$name = "Ada";        // inferred string
+
+$count: int = 10;     // explicit
+$rate: float = 0.19;
+$flag: bool = false;
+
+echo "Count: {$count}";
+echo "Pi: {$pi}";
+echo "OK: {$ok}";
+echo "Name: {$name}";</textarea>
+          <div class="output-panel" id="output2">Run with: hphp run types.hphp</div>
+        </div>
+        <div class="challenge"><strong class="exercise-title">Practice · lesson 2</strong><b>Create a profile.</b> Set your name, add a city, and print both values. Then add a typed <code>$days: int = 7;</code> variable and print it.<details class="solution"><summary>Show one possible solution</summary><p>Try the steps yourself first. Then compare this small example with your code:</p><div class="solution-lines"><code>$name = "Ada";</code><br><code>$city = "Zurich";</code><br><code>$days: int = 7;</code><br><code>echo "{$name} lives in {$city}. Practice days: {$days}";</code></div></details></div>
+      </div>
+
+      <div class="guide-step" id="step3">
+        <h2><span class="step-number">3</span> Functions</h2>
+        <p>Functions can be typed or untyped. Like PHP, they support default parameters and pass by reference.</p>
+
+        <div class="interactive-editor">
+          <div class="editor-header">
+            <span>functions.hphp</span>
+            <button class="run-btn" onclick="runCode('editor3', 'output3')">How to run this</button>
+          </div>
+          <textarea id="editor3">function greet(string $who): string {
+    return "Hello, {$who}!";
+}
+
+function add(int $a, int $b = 10): int {
+    return $a + $b;
+}
+
+function increment(int &$n): void {
+    $n = $n + 1;
+}
+
+echo greet("HolyPHP");
+echo "5 + 10 = " . add(5);
+echo "3 + 7 = " . add(3, 7);
+
+$x = 41;
+increment($x);
+echo "After increment: {$x}";</textarea>
+          <div class="output-panel" id="output3">Run with: hphp run functions.hphp</div>
+        </div>
+
+        <div class="note warn">
+          <b>By-reference parameters:</b> Use <code>&$param</code> to modify the caller's variable. The argument must be a variable, not an expression.
+        </div>
+        <div class="challenge"><strong class="exercise-title">Practice · lesson 3</strong><b>Write a function.</b> Write <code>double(int $number): int</code>. Return twice the number, then call it with 6 and 21.<details class="solution"><summary>Show one possible solution</summary><p>Try the steps yourself first. Then compare this small example with your code:</p><div class="solution-lines"><code>function double(int $number): int { return $number * 2; }</code><br><code>echo double(6);</code><br><code>echo double(21);</code></div></details></div>
+      </div>
+
+      <div class="guide-step" id="step4">
+        <h2><span class="step-number">4</span> Control Flow</h2>
+        <p>HolyPHP has if/else, while, for, foreach, and the powerful <code>match</code> expression (like Rust/PHP 8).</p>
+
+        <div class="interactive-editor">
+          <div class="editor-header">
+            <span>control.hphp</span>
+            <button class="run-btn" onclick="runCode('editor4', 'output4')">How to run this</button>
+          </div>
+          <textarea id="editor4">// if/else
+$age = 18;
+if ($age >= 18) {
+    echo "Adult";
+} else {
+    echo "Minor";
+}
+
+// for loop
+for ($i = 0; $i < 5; $i++) {
+    echo "i = {$i}";
+}
+
+// foreach
+$fruits = ["apple", "banana", "cherry"];
+foreach ($fruits as $fruit) {
+    echo "- {$fruit}";
+}
+
+// match expression
+function grade(int $score): string {
+    return match ($score) {
+        90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100 => "A",
+        80..89 => "B",
+        70..79 => "C",
+        _ => "F"
+    };
+}
+
+echo "Grade: " . grade(95);</textarea>
+          <div class="output-panel" id="output4">Run with: hphp run control.hphp</div>
+        </div>
+        <div class="challenge"><strong class="exercise-title">Practice · lesson 4</strong><b>Print even numbers.</b> Use a <code>for</code> loop to print 2, 4, 6, 8 and 10. Start at 2, stop at 10 and add 2 each time.<details class="solution"><summary>Show one possible solution</summary><p>Try the steps yourself first. Then compare this small example with your code:</p><div class="solution-lines"><code>for ($number = 2; $number &lt;= 10; $number += 2) {</code><br><code>&nbsp;&nbsp;echo "{$number}";</code><br><code>}</code></div></details></div>
+      </div>
+
+      <div class="guide-step" id="step5">
+        <h2><span class="step-number">5</span> Arrays & Maps</h2>
+        <p>Arrays are versatile in HolyPHP — they can be indexed lists or associative maps. Copy-on-write semantics like PHP!</p>
+
+        <div class="interactive-editor">
+          <div class="editor-header">
+            <span>arrays.hphp</span>
+            <button class="run-btn" onclick="runCode('editor5', 'output5')">How to run this</button>
+          </div>
+          <textarea id="editor5">// Indexed array
+$nums = [1, 2, 3, 4, 5];
+$nums[] = 6; // append
+echo "First: {$nums[0]}, Last: " . $nums[count($nums)-1];
+
+// Map (associative array)
+$user = ["name" => "Elias", "age" => 30, "city" => "Berlin"];
+echo "Name: " . $user["name"];
+
+// Iterate
+foreach ($user as $key => $value) {
+    echo "  {$key}: {$value}";
+}
+
+// Copy-on-write
+$a = [1, 2, 3];
+$b = $a;      // shares memory
+$b[0] = 99;   // clones on write
+echo "a[0]: {$a[0]}, b[0]: {$b[0]}";</textarea>
+          <div class="output-panel" id="output5">Run with: hphp run arrays.hphp</div>
+        </div>
+
+        <p>Common array functions: <code>count()</code>, <code>array_push()</code>, <code>array_pop()</code>, <code>sort()</code>, <code>array_map()</code>, <code>array_filter()</code>, <code>implode()</code>, <code>explode()</code></p>
+        <div class="challenge"><strong class="exercise-title">Practice · lesson 5</strong><b>Grow a shopping list.</b> Create an array with two fruits, append a third, print its count, then print every fruit with <code>foreach</code>.<details class="solution"><summary>Show one possible solution</summary><p>Try the steps yourself first. Then compare this small example with your code:</p><div class="solution-lines"><code>$fruits = ["apple", "banana"];</code><br><code>$fruits[] = "orange";</code><br><code>echo count($fruits);</code><br><code>foreach ($fruits as $fruit) { echo "- {$fruit}"; }</code></div></details></div>
+      </div>
+
+      <div class="guide-step" id="step6">
+        <h2><span class="step-number">6</span> Classes & Objects</h2>
+        <p>Object-oriented programming with visibility modifiers, constructors, and inheritance.</p>
+
+        <div class="interactive-editor">
+          <div class="editor-header">
+            <span>classes.hphp</span>
+            <button class="run-btn" onclick="runCode('editor6', 'output6')">How to run this</button>
+          </div>
+          <textarea id="editor6">class Animal {
+    pub string $name;
+    private int $age;
+    
+    pub function __construct(string $name, int $age) {
+        $this->name = $name;
+        $this->age = $age;
+    }
+    
+    pub function speak(): string {
+        return "...";
+    }
+    
+    pub function getAge(): int {
+        return $this->age;
+    }
+}
+
+class Dog extends Animal {
+    pub function speak(): string {
+        return "Woof!";
+    }
+}
+
+class Cat extends Animal {
+    pub function speak(): string {
+        return "Meow!";
+    }
+}
+
+$dog = new Dog("Rex", 5);
+$cat = new Cat("Whiskers", 3);
+
+echo $dog->name . " says " . $dog->speak() . " (age: " . $dog->getAge() . ")";
+echo $cat->name . " says " . $cat->speak() . " (age: " . $cat->getAge() . ")";</textarea>
+          <div class="output-panel" id="output6">Run with: hphp run classes.hphp</div>
+        </div>
+
+        <div class="note">
+          <b>Visibility:</b> <code>pub</code> for public, <code>private</code> for private. No <code>protected</code> keyword mentioned in the docs, check the language reference.
+        </div>
+        <div class="challenge"><strong class="exercise-title">Practice · lesson 6</strong><b>Build a counter.</b> Create a <code>Counter</code> class with public integer <code>$value</code>, initialize it to 0, and add an <code>increment()</code> method.<details class="solution"><summary>Show one possible solution</summary><p>Try the steps yourself first. Then compare this small example with your code:</p><div class="solution-lines"><code>class Counter {</code><br><code>&nbsp;&nbsp;pub int $value;</code><br><code>&nbsp;&nbsp;pub function __construct() { $this-&gt;value = 0; }</code><br><code>&nbsp;&nbsp;pub function increment(): void { $this-&gt;value += 1; }</code><br><code>}</code><br><code>$counter = new Counter(); $counter-&gt;increment(); echo $counter-&gt;value;</code></div></details></div>
+      </div>
+
+      <div class="guide-step" id="step7">
+        <h2><span class="step-number">7</span> Memory Safety - Borrow Checker & Ownership</h2>
+        <p>This is what makes HolyPHP special! Compile-time memory safety without garbage collection.</p>
+
+        <div class="concept-grid">
+          <div class="concept-card">
+            <h4>Ownership (own&lt;T&gt;)</h4>
+            <p>Exclusive ownership, moved on assignment</p>
+            <p>Use-after-move is a compile error</p>
+          </div>
+          <div class="concept-card">
+            <h4>Borrowing (&amp;)</h4>
+            <p>Immutable borrow: many readers</p>
+            <p>Mutable borrow (&amp;mut): one writer only</p>
+          </div>
+          <div class="concept-card">
+            <h4>Smart Pointers</h4>
+            <p><code>own&lt;T&gt;</code> - owned, moves</p>
+            <p><code>Rc&lt;T&gt;</code> - reference counted</p>
+            <p><code>*T</code> - raw pointer (unsafe only)</p>
+          </div>
+        </div>
+
+        <div class="interactive-editor">
+          <div class="editor-header">
+            <span>borrowing.hphp</span>
+            <button class="run-btn" onclick="runCode('editor7', 'output7')">How to run this</button>
+          </div>
+          <textarea id="editor7">function bump(int &$r): void {
+    $r += 1;
+}
+
+function readValue(int $x): int {
+    return $x * 2;
+}
+
+$n = 41;
+bump($n);        // pass by mutable reference
+echo "After bump: {$n}";
+
+// $n is still owned and usable
+$result = readValue($n);
+echo "Read gives: {$result}";</textarea>
+          <div class="output-panel" id="output7">Run with: hphp run borrowing.hphp</div>
+        </div>
+
+        <div class="note warn">
+          <b>Important:</b> The borrow checker prevents data races at compile time. You cannot have mutable and immutable borrows at the same time, and use-after-move is rejected. These errors are caught by <code>hphp check</code>.
+        </div>
+
+        <p>Try these patterns to understand the rules:</p>
+        <pre><code class="hphp">// This would be a COMPILE ERROR:
+// $a = 5;
+// $b = &$a;
+// $a += 1;  // cannot assign while borrowed</code></pre>
+        <div class="challenge"><strong class="exercise-title">Practice · lesson 7</strong><b>Update a value safely.</b> Write <code>addFive(int &amp;$value): void</code>, call it with a variable set to 10, and print the value after the call.<details class="solution"><summary>Show one possible solution</summary><p>Try the steps yourself first. Then compare this small example with your code:</p><div class="solution-lines"><code>function addFive(int &amp;$value): void { $value += 5; }</code><br><code>$score = 10;</code><br><code>addFive($score);</code><br><code>echo $score; // 15</code></div></details></div>
+      </div>
+
+      <div class="guide-step" id="step8">
+        <h2><span class="step-number">8</span> Going Further</h2>
+        <p>HolyPHP comes with powerful built-in libraries and tools. Explore them!</p>
+
+        <h3>Built-in Libraries</h3>
+        <div class="concept-grid">
+          <div class="concept-card">
+            <h4><a href="lib-ui.html">ui</a> - Desktop GUI</h4>
+            <p>Native Win32 GUI with themes, widgets, and auto-layout</p>
+            <pre><code class="hphp">import "ui";
+$app = new App("Hello");
+$app->button("Click", "primary", function(){ echo "Hi!"; });
+$app->run();</code></pre>
+          </div>
+          <div class="concept-card">
+            <h4><a href="lib-html.html">html</a> - HolyHTML Engine</h4>
+            <p>HTML/CSS parser, layout engine, and painter</p>
+            <p>Render web-like UIs natively without a browser!</p>
+          </div>
+          <div class="concept-card">
+            <h4><a href="lib-ide.html">ide</a> - HolyIDE</h4>
+            <p>Full IDE for HolyPHP written in HolyPHP itself</p>
+            <pre><code class="bash">hphp run holyide/holyide.hphp</code></pre>
+          </div>
+          <div class="concept-card">
+            <h4><a href="lib-async.html">async</a> - Event Loop</h4>
+            <p>Cooperative async with timers, sockets, HTTP</p>
+          </div>
+          <div class="concept-card">
+            <h4><a href="lib-thread.html">thread</a> - Concurrency</h4>
+            <p>Real OS threads with channels, mutexes, atomics</p>
+          </div>
+          <div class="concept-card">
+            <h4><a href="lib-websocket.html">websocket</a> - RFC 6455</h4>
+            <p>WebSocket server, browser-compatible</p>
+          </div>
+        </div>
+
+        <h3>Essential CLI Commands</h3>
+        <table>
+          <tr><th>Command</th><th>Purpose</th></tr>
+          <tr><td><code>hphp run file.hphp</code></td><td>Compile and run</td></tr>
+          <tr><td><code>hphp build file.hphp -o app.exe</code></td><td>Build standalone executable</td></tr>
+          <tr><td><code>hphp check file.hphp</code></td><td>Type and borrow check only</td></tr>
+          <tr><td><code>hphp emit file.hphp</code></td><td>Inspect internal representation</td></tr>
+          <tr><td><code>hphp pkg search/install</code></td><td>Package management</td></tr>
+        </table>
+
+        <h3>Next Steps</h3>
+        <ul>
+          <li><a href="playground.html">Try the Playground</a> — Interactive IDE-style environment</li>
+          <li><a href="examples.html">Browse Examples</a> — Real programs from the repository</li>
+          <li><a href="lang.html">Language Reference</a> — Complete language documentation</li>
+          <li><a href="builtins.html">Built-in Functions</a> — All 305 functions</li>
+          <li><a href="cli.html">CLI Documentation</a> — Toolchain details</li>
+        </ul>
+        <div class="challenge"><strong class="exercise-title">Practice · lesson 8</strong><b>Take your next step.</b> Choose an example, save a copy as a <code>.hphp</code> file, explain what its variables store, change one message, then check and run it.<details class="solution"><summary>Show one possible solution</summary><p>Try the steps yourself first. Then compare this small example with your code:</p><div class="solution-lines"><code>hphp check my-example.hphp</code><br><code>hphp run my-example.hphp</code><br><code>hphp build my-example.hphp -o my-app</code></div></details></div>
+      </div>
+
+      <div class="note">
+        <b>Pro tip:</b> Use <code>hphp check</code> often! The borrow checker will catch memory errors at compile time, saving you from runtime bugs.
+      </div>
+
+    </main>
+  </div>
+  <script src="assets/site.js?v=4"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/php/php.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+  <script>
+    const editors = {};
+    function initEditor(id) {
+      const textarea = document.getElementById(id);
+      if (textarea && !editors[id]) {
+        editors[id] = CodeMirror.fromTextArea(textarea, {
+          mode: "text/x-php",
+          theme: "material-darker",
+          lineNumbers: true,
+          matchBrackets: true,
+          indentUnit: 4,
+          tabSize: 4,
+          lineWrapping: true
+        });
+      }
+    }
+    
+    function runCode(editorId, outputId) {
+      const output = document.getElementById(outputId);
+      if (output) {
+        const editor = editors[editorId];
+        const source = editor ? editor.getValue() : document.getElementById(editorId).value;
+        const filename = document.querySelector(`#${editorId}`).closest('.interactive-editor').querySelector('.editor-header span').textContent;
+        output.textContent = `Step 1 — Copy the code above into a file named ${filename}.\nStep 2 — Open a terminal in the folder where you saved it.\nStep 3 — Run this command:\n\n  hphp run ${filename}\n\nThe output will appear in your terminal. You can edit the example above, copy it, and run it again.`;
+        output.style.color = "#e5c07b";
+      }
+    }
+    
+    document.addEventListener("DOMContentLoaded", () => {
+      initEditor('editor1');
+      initEditor('editor2');
+      initEditor('editor3');
+      initEditor('editor4');
+      initEditor('editor5');
+      initEditor('editor6');
+      initEditor('editor7');
+    });
+  </script>
+<script src="assets/theme.js?v=1"></script>
+</body>
+
+</html>

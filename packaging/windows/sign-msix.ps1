@@ -30,7 +30,7 @@ if (-not (Test-Path $signtool)) {
 }
 
 $out = Join-Path $PSScriptRoot 'out'
-$msix = Join-Path $out 'HolyPHP-1.0.0-x64.msix'
+$msix = Join-Path $out 'HolyPHP-1.0.2-x64.msix'
 $pfx = Join-Path $out 'HolyPHP-dev.pfx'
 
 if (-not (Test-Path $pfx)) { Write-Error "no $pfx -- create the dev cert first (see header comment)" }

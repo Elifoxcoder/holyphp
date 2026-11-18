@@ -1,0 +1,2393 @@
+// =====================================================================
+//  ide/workbench.hphp — the IDE as one object: state in, HTML out
+// =====================================================================
+//
+//      import "ide";
+//
+//      $wb = new IdeWorkbench($canvas, 1180, 760, html_theme_dark());
+//      $wb->open_root(".");              // scan a folder
+//      $wb->open("lib/ide/editor.hphp"); // a tab
+//      $wb->render();                    // parse, style, lay out, paint
+//      $wb->key(83, "s", 1);             // Ctrl+S
+//
+//  The workbench is the *whole* IDE except the window: an explorer tree,
+//  open tabs, the code pane, a bottom panel with a terminal and a problems
+//  list, a status bar, a completion popup and a command palette. It owns
+//  no widgets and no Win32 handles - it builds an HTML document out of its
+//  own state, hands it to an `HtmlView`, and can be driven entirely by
+//  function calls.
+//
+//  That is the same bet the HTML layer makes (see lib/html/view.hphp):
+//  events come back as data, so the interesting half of the IDE runs and
+//  is tested with no window at all. `tests/positive/ide_workbench.hphp`
+//  clicks explorer rows, switches tabs, types, runs a build and reads the
+//  status bar without a screen.
+//
+//  Two rules keep this file honest:
+//
+//    * NOTHING IS IN PAINT ORDER THAT IS NOT IN THE STATE. There is no
+//      widget that remembers where it was; `html()` is a pure function of
+//      the fields, and a frame is a re-render. A pane is one div, a row is
+//      one div, a token is one class.
+//
+//    * ONLY WHAT FITS IS RENDERED. The code pane emits the visible lines,
+//      the tree the visible rows, the terminal the last screenful. That is
+//      also what makes the geometry exact: rows on screen is a number this
+//      file computes (see geometry()), and the same number drives layout,
+//      scrolling and the caret.
+//
+//  The runner is the one place a window is not needed but a process is: it
+//  starts `hphp run <file>` through the runtime's `proc_*` pipe API and
+//  (in the window app) pumps it from a frame timer.
+// =====================================================================
+
+import "html";
+import "ide/editor.hphp";
+
+/** One row of the explorer: a file or a folder, relative to the root. */
+class IdeFile {
+    pub string $rel;        // "lib/ide/editor.hphp"
+    pub string $path;       // root + "/" + rel
+    pub string $name;       // "editor.hphp"
+    pub int $depth;         // indent level
+    pub bool $dir;
+    pub function __construct(string $rel, string $name, int $depth, bool $dir) {
+        $this->rel = $rel;
+        $this->name = $name;
+        $this->depth = $depth;
+        $this->dir = $dir;
+        $this->path = $rel;
+    }
+}
+
+/** An open file: its path, its buffer, and the editor holding both. */
+class IdeTab {
+    pub string $path;
+    pub string $name;
+    pub IdeEditor $ed;
+    pub function __construct(string $path, string $name, IdeEditor $ed) {
+        $this->path = $path;
+        $this->name = $name;
+        $this->ed = $ed;
+    }
+}
+
+/** One entry of the command palette and of the key table. */
+class IdeCmd {
+    pub string $id;
+    pub string $label;
+    pub string $keys;
+    pub int $rank = 0;      // match position, for the palette's sort
+    pub function __construct(string $i, string $l, string $k) {
+        $this->id = $i;
+        $this->label = $l;
+        $this->keys = $k;
+    }
+}
+
+/** One line of the terminal panel. `kind` is cmd|out|err|ok. */
+class IdeTermLine {
+    pub string $text;
+    pub string $kind;
+    pub function __construct(string $t, string $k) {
+        $this->text = $t;
+        $this->kind = $k;
+    }
+}
+
+/** A compiler diagnostic: where and what. */
+class IdeProblem {
+    pub string $path;
+    pub int $row;           // 1-based
+    pub int $col;
+    pub string $msg;
+    pub function __construct(string $p, int $r, int $c, string $m) {
+        $this->path = $p;
+        $this->row = $r;
+        $this->col = $c;
+        $this->msg = $m;
+    }
+}
+
+// =====================================================================
+//  free functions: the pure parts, so they can be tested on their own
+// =====================================================================
+
+/** Text for an HTML text node. `<`, `>` and `&` are the three the parser
+ *  would otherwise read as structure. */
+function ide_html_escape(string $s): string {
+    $a = str_replace("&", "&amp;", $s);
+    $b = str_replace("<", "&lt;", $a);
+    return str_replace(">", "&gt;", $b);
+}
+
+/** Attribute values are single-quoted in this document, so a quote in a
+ *  path would end the attribute early. */
+function ide_attr_escape(string $s): string {
+    return str_replace("'", "&#39;", ide_html_escape($s));
+}
+
+/** Do we show this file in the explorer? Source, docs and data - the
+ *  extensions an IDE is expected to open, nothing else. */
+function ide_is_source(string $name): bool {
+    $exts = [".hphp", ".md", ".txt", ".html", ".css", ".js", ".json",
+             ".c", ".h", ".ps1", ".sh", ".py", ".htm"];
+    $low = strtolower($name);
+    for ($i = 0; $i < count($exts); $i++) {
+        if (str_ends_with($low, $exts[$i])) { return true; }
+    }
+    return false;
+}
+
+/** Folders that are build output, dependencies or a browser profile: a
+ *  tree full of them is noise, and one of them (cefdata) is thousands of
+ *  files deep. */
+function ide_skip_dir(string $name): bool {
+    if ($name == "" || substr($name, 0, 1) == ".") { return true; }
+    $skip = ["build", "obj", "node_modules", "cefdata", "cef_runtime",
+             "cef_wrap_build", "cef", "bin", "packaging", "pagedump",
+             "cef_min.tar.bz2", "store"];
+    for ($i = 0; $i < count($skip); $i++) {
+        if ($name == $skip[$i]) { return true; }
+    }
+    return false;
+}
+
+/** The explorer's list: folders first, then files, each alphabetically.
+ *
+ *  A depth-first walk with an explicit cap - a folder picker that hangs is
+ *  worse than one that shows the first 800 entries. */
+function ide_scan_tree(string $root): [IdeFile] {
+    $out: [IdeFile];
+    return ide_scan_into($root, "", 0, $out, 6, 800);
+}
+
+function ide_scan_into(string $root, string $rel, int $depth, [IdeFile] $into,
+                       int $maxDepth, int $maxFiles): [IdeFile] {
+    $list: [IdeFile];
+    $list = $into;
+    if ($depth > $maxDepth || count($list) >= $maxFiles) { return $list; }
+    $dir = ($rel == "") ? $root : $root . "/" . $rel;
+    $names = scandir($dir);
+    if (count($names) == 0) { return $list; }
+    $names = ide_sort_names($names);
+    for ($i = 0; $i < count($names); $i++) {
+        $nm = $names[$i];
+        if (count($list) >= $maxFiles) { return $list; }
+        $child = ($rel == "") ? $nm : $rel . "/" . $nm;
+        if (is_dir($dir . "/" . $nm)) {
+            if (ide_skip_dir($nm)) { continue; }
+            $f = new IdeFile($child, $nm, $depth, true);
+            $f->path = $child;
+            $list[] = $f;
+            $list = ide_scan_into($root, $child, $depth + 1, $list, $maxDepth, $maxFiles);
+            continue;
+        }
+        if (!ide_is_source($nm)) { continue; }
+        $f = new IdeFile($child, $nm, $depth, false);
+        $f->path = $child;
+        $list[] = $f;
+    }
+    return $list;
+}
+
+/** Folders first, then names, case-insensitively. */
+function ide_sort_names([string] $names): [string] {
+    $out: [string];
+    for ($i = 0; $i < count($names); $i++) {
+        $n = $names[$i];
+        if ($n == "." || $n == "..") { continue; }
+        $out[] = $n;
+    }
+    $cnt = count($out);
+    for ($i = 1; $i < $cnt; $i++) {
+        $x = $out[$i];
+        $j = $i - 1;
+        while ($j >= 0 && ide_name_after($out[$j], $x)) {
+            $out[$j + 1] = $out[$j];
+            $j = $j - 1;
+        }
+        $out[$j + 1] = $x;
+    }
+    return $out;
+}
+
+/** Is `$a` sorted after `$b`? Folders before files, then case-insensitive. */
+function ide_name_after(string $a, string $b): bool {
+    $ad = is_dir($a);
+    $bd = is_dir($b);
+    if ($ad != $bd) { return $bd; }
+    return strtolower($a) > strtolower($b);
+}
+
+/** How this IDE argues a file should be run.
+ *
+ *  HolyPHP source goes through the compiler that built this IDE (a sibling
+ *  `hphp.exe`, or `HPHP_BIN`), which is what makes the run button work in a
+ *  checkout without anything on PATH. The other extensions are the ones a
+ *  reader of this repository is likely to have: python, node, and for
+ *  anything else a plain shell command. */
+function ide_run_command(string $path): string {
+    $low = strtolower($path);
+    if (str_ends_with($low, ".hphp")) { return ide_hphp_bin() . " run \"" . $path . "\""; }
+    if (str_ends_with($low, ".py")) { return "python \"" . $path . "\""; }
+    if (str_ends_with($low, ".js")) { return "node \"" . $path . "\""; }
+    if (str_ends_with($low, ".html") || str_ends_with($low, ".htm")) {
+        return "cmd /c start \"\" \"" . $path . "\"";
+    }
+    return "\"" . $path . "\"";
+}
+
+/** The compiler to run a file with: $HPHP_BIN if the user set one, else a
+ *  sibling of this executable, else `hphp` from PATH. */
+function ide_hphp_bin(): string {
+    $env = getenv("HPHP_BIN");
+    if ($env != "") { return "\"" . $env . "\""; }
+    $self = ide_self_dir();
+    if ($self != "") {
+        if (file_exists($self . "/hphp.exe")) { return "\"" . $self . "/hphp.exe\""; }
+        if (file_exists($self . "/hphp")) { return "\"" . $self . "/hphp\""; }
+    }
+    return "hphp";
+}
+
+function ide_self_dir(): string {
+    global $argv;
+    $a = $argv;
+    if (!is_array($a) || count($a) == 0) { return ""; }
+    $p = $a[0];
+    if ($p == "") { return ""; }
+    return dirname($p) == "" ? "." : dirname($p);
+}
+
+/** Drop the escape sequences a child process writes to a pipe.
+ *
+ *  A terminal panel is not a terminal: the colours are the child's idea of
+ *  a screen it does not have. `\r\n` becomes `\n` here too, so the line
+ *  splitter above sees one ending. */
+function ide_clean_output(string $s): string {
+    $out = "";
+    $i = 0;
+    $n = strlen($s);
+    /* HolyPHP has no \x escape, so the ESC byte arrives as chr(27) */
+    $esc = chr(27);
+    while ($i < $n) {
+        $c = substr($s, $i, 1);
+        if ($c == "\r") {
+            if ($i + 1 < $n && substr($s, $i + 1, 1) == "\n") { $i = $i + 1; }
+            $out .= "\n";
+            $i = $i + 1;
+            continue;
+        }
+        if ($c != $esc) { $out .= $c; $i = $i + 1; continue; }
+        /* ESC [ params letter  (colour, cursor) | ESC ] ... BEL (title) */
+        $nx = ($i + 1 < $n) ? substr($s, $i + 1, 1) : "";
+        if ($nx == "[") {
+            $j = $i + 2;
+            while ($j < $n) {
+                $d = substr($s, $j, 1);
+                if ($d >= "@" && $d <= "~") { $j = $j + 1; break; }
+                $j = $j + 1;
+            }
+            $i = $j;
+            continue;
+        }
+        if ($nx == "]") {
+            $j = $i + 2;
+            while ($j < $n && substr($s, $j, 1) != "\x07") { $j = $j + 1; }
+            $i = ($j < $n) ? $j + 1 : $n;
+            continue;
+        }
+        $i = $i + 2;        /* a two-byte escape */
+    }
+    return $out;
+}
+
+/** Compiler diagnostics out of a run's output.
+ *
+ *  HolyPHP's front end already speaks `file:line:col: error: message`, the
+ *  same shape as gcc's, and the negative tests in tests/ end with it. One
+ *  parser here turns that into clicks in the problems list instead of a
+ *  wall of text in the terminal. */
+function ide_parse_problems(string $text, [IdeProblem] $into): [IdeProblem] {
+    $list: [IdeProblem];
+    $list = $into;
+    $lines = explode("\n", $text);
+    for ($i = 0; $i < count($lines); $i++) {
+        $l = trim($lines[$i]);
+        if ($l == "") { continue; }
+        $low = strtolower($l);
+        if (strpos($low, "error:") === false && strpos($low, "warning:") === false) { continue; }
+        $f = ide_diag_at($l);
+        if (count($f) < 4) { continue; }
+        $list[] = new IdeProblem($f[0], intval($f[1]), intval($f[2]), ide_diag_message($f));
+    }
+    return $list;
+}
+
+/** The `file:line[:col]` of a diagnostic line, plus what follows it: a
+ *  four-element list, or empty when the line has no location.
+ *
+ *  The colon is found by looking for the first one followed by a digit, not
+ *  the first one at all: a Windows path starts with `C:`, and a naive parse
+ *  of `C:\\projekt\\a.hphp:12:3: error: ...` reads the file as "C", the line
+ *  as 0, and throws the diagnostic away. */
+function ide_diag_at(string $l): [string] {
+    $out: [string];
+    $n = strlen($l);
+    $i = 0;
+    while ($i < $n) {
+        if (substr($l, $i, 1) != ":") { $i = $i + 1; continue; }
+        $j = $i + 1;
+        while ($j < $n && ide_is_digit(substr($l, $j, 1))) { $j = $j + 1; }
+        if ($j == $i + 1) { $i = $i + 1; continue; }
+        $file = substr($l, 0, $i);
+        if ($file == "") { return $out; }
+        /* `hphpc: error: file.hphp:1:5: ...`: the tool's own prefix is not
+         * part of the path, so keep only what follows its last ": " */
+        $sp = -1;
+        for ($t = 0; $t + 1 < strlen($file); $t++) {
+            if (substr($file, $t, 2) == ": ") { $sp = $t; }
+        }
+        if ($sp >= 0) { $file = substr($file, $sp + 2); }
+        $row = substr($l, $i + 1, $j - $i - 1);
+        $col = "0";
+        $after = $j;
+        if ($j < $n && substr($l, $j, 1) == ":") {
+            $k = $j + 1;
+            while ($k < $n && ide_is_digit(substr($l, $k, 1))) { $k = $k + 1; }
+            if ($k > $j + 1) { $col = substr($l, $j + 1, $k - $j - 1); $after = $k; }
+        }
+        $out[] = $file;
+        $out[] = $row;
+        $out[] = $col;
+        $out[] = substr($l, $after);
+        return $out;
+    }
+    return $out;
+}
+
+/** The text after the location, with the `error:` / `warning:` label taken
+ *  off - the panel shows the location in its own column. */
+function ide_diag_message([string] $f): string {
+    if (count($f) < 4) { return ""; }
+    $t = trim($f[3]);
+    if (substr($t, 0, 1) == ":") { $t = trim(substr($t, 1)); }
+    $at = strpos($t, ":");
+    if ($at !== false && $at < 9) { $t = trim(substr($t, $at + 1)); }
+    return $t;
+}
+
+/** True when `$i` begins a word: the first character, or just after one
+ *  of the separators commands are written with. */
+function ide_word_start(string $s, int $i): bool {
+    if ($i <= 0) { return true; }
+    $p = substr($s, $i - 1, 1);
+    return $p == " " || $p == ":" || $p == "-" || $p == "/" || $p == "_" || $p == ".";
+}
+
+/** Palette matching: every character of the query, in order.
+ *
+ *  Subsequence and not substring because that is what makes "sf" find
+ *  "Save File" and "tp" find "Toggle Panel". Where the letters land matters
+ *  more than how tight the span is: a hit that starts a word is what the
+ *  typist meant, a hit in the middle of one is a coincidence. Sorting on
+ *  the span alone put "Run: Stop" above "View: Toggle Panel" for "tp",
+ *  because t→p is closer inside one word than across two. */
+function ide_cmd_match(string $label, string $q): int {
+    if ($q == "") { return 0; }
+    $low = strtolower($label);
+    $at = 0;
+    $first = -1;
+    $last = 0;
+    $mid = 0;                    /* hits that do not start a word */
+    $n = strlen($q);
+    for ($i = 0; $i < $n; $i++) {
+        $c = substr($q, $i, 1);
+        $hit = strpos($low, $c, $at);
+        if ($hit === false) { return -1; }
+        if (!ide_word_start($low, $hit)) { $mid = $mid + 1; }
+        if ($first < 0) { $first = $hit; }
+        $last = $hit;
+        $at = $hit + 1;
+    }
+    /* word starts first, then the tightest span, then the shorter label */
+    return $mid * 1000 + ($last - $first) * 10 + strlen($label);
+}
+
+/** The command table. The palette, the keyboard and the toolbar all read
+ *  this one list, so a shortcut and a menu entry can never drift. */
+function ide_commands(): [IdeCmd] {
+    $c: [IdeCmd];
+    $c[] = new IdeCmd("palette",   "Go to File / Command Palette", "Ctrl+P");
+    $c[] = new IdeCmd("cmdmode",   "Show All Commands", "Ctrl+Shift+P");
+    $c[] = new IdeCmd("goto",      "Go to Line", "Ctrl+G");
+    $c[] = new IdeCmd("save",      "File: Save", "Ctrl+S");
+    $c[] = new IdeCmd("saveall",   "File: Save All", "Ctrl+K Ctrl+S");
+    $c[] = new IdeCmd("reload",    "File: Revert File", "");
+    $c[] = new IdeCmd("newfile",   "File: New Untitled", "Ctrl+N");
+    $c[] = new IdeCmd("closetab",  "View: Close Editor", "Ctrl+W");
+    $c[] = new IdeCmd("run",       "Run: Run Active File", "F5");
+    $c[] = new IdeCmd("stop",      "Run: Stop", "Shift+F5");
+    $c[] = new IdeCmd("clear",     "Terminal: Clear", "");
+    $c[] = new IdeCmd("terminal",  "Terminal: Focus Command Line", "Ctrl+`");
+    $c[] = new IdeCmd("undo",      "Edit: Undo", "Ctrl+Z");
+    $c[] = new IdeCmd("redo",      "Edit: Redo", "Ctrl+Y");
+    $c[] = new IdeCmd("comment",   "Edit: Toggle Line Comment", "Ctrl+/");
+    $c[] = new IdeCmd("dupline",   "Edit: Duplicate Line", "Ctrl+D");
+    $c[] = new IdeCmd("selectall", "Edit: Select All", "Ctrl+A");
+    $c[] = new IdeCmd("copy",      "Edit: Copy", "Ctrl+C");
+    $c[] = new IdeCmd("cut",       "Edit: Cut", "Ctrl+X");
+    $c[] = new IdeCmd("paste",     "Edit: Paste", "Ctrl+V");
+    $c[] = new IdeCmd("sidebar",   "View: Toggle Explorer", "Ctrl+B");
+    $c[] = new IdeCmd("panel",     "View: Toggle Panel", "Ctrl+J");
+    $c[] = new IdeCmd("zoom-in",   "View: Zoom In", "Ctrl+=");
+    $c[] = new IdeCmd("zoom-out",  "View: Zoom Out", "Ctrl+-");
+    $c[] = new IdeCmd("quit",      "File: Exit", "Ctrl+Shift+W");
+    return $c;
+}
+
+function ide_cmd_by_id([IdeCmd] $cmds, string $id): IdeCmd {
+    for ($i = 0; $i < count($cmds); $i++) {
+        if ($cmds[$i]->id == $id) { return $cmds[$i]; }
+    }
+    return null;
+}
+
+/** The token class a `kind` from the editor's scanner paints with. The
+ *  kinds are the ones ide_scan_line emits: kw ty fn id var str num com op ws. */
+function ide_tok_class(string $kind): string {
+    if ($kind == "kw")  { return "t-kw"; }
+    if ($kind == "ty")  { return "t-ty"; }
+    if ($kind == "fn")  { return "t-fn"; }
+    if ($kind == "id")  { return "t-id"; }
+    if ($kind == "var") { return "t-var"; }
+    if ($kind == "str") { return "t-str"; }
+    if ($kind == "num") { return "t-num"; }
+    if ($kind == "com") { return "t-com"; }
+    if ($kind == "op")  { return "t-op"; }
+    return "t-plain";
+}
+
+/** The first `data-*` attribute found at `$n` or above it.
+ *
+ *  A click usually lands on an inline child - the glyph beside a file name,
+ *  the label inside a palette row - and the thing that means something is
+ *  the element that owns the attribute, one or two levels up. */
+function ide_attr_up(HNode $n, string $name): string {
+    $p = $n;
+    $steps = 0;
+    while ($p != null && $steps < 12) {
+        $v = $p->attr($name);
+        if ($v != "") { return $v; }
+        $p = $p->up;
+        $steps = $steps + 1;
+    }
+    return "";
+}
+
+// =====================================================================
+//  the workbench
+// =====================================================================
+
+class IdeWorkbench {
+    /* --- chrome geometry, in logical pixels. These constants are the
+     * stylesheet's numbers (see css()): every one of them appears there as
+     * a pixel height, and geometry() turns them into "how many rows fit".
+     * A test walks the laid-out boxes back and checks the two agree. */
+    pub int $titleH = 30;
+    pub int $tabH = 32;
+    pub int $statusH = 24;
+    pub int $sideW = 230;
+    pub int $gripH = 5;         // the drag strip above the panel
+    pub int $gripW = 5;         // the drag strip right of the explorer
+    pub int $sideMinW = 140;
+    pub int $sideMaxW = 520;
+    pub int $panelMinH = 80;
+    pub int $sideHeadH = 26;
+    pub int $treeRowH = 22;
+    pub int $panelTabsH = 28;
+    pub int $termRowH = 17;
+    pub int $gutterW = 58;
+    pub int $codePadT = 6;
+    pub int $lineH = 18;
+    pub int $charPx = 7;        // measured from the mono font, updated by render()
+
+    /* --- the surface --- */
+    pub string $htmlCache = "";
+    pub int $cacheW = 0;        // viewport the cached document was laid out in
+    pub int $cacheH = 0;
+    pub int $cv = 0;
+    pub int $w = 1180;
+    pub int $h = 760;
+    pub HtmlTheme $th = null;
+    pub HtmlView $view = null;
+    pub string $cssText = "";
+
+    /* --- state --- */
+    pub string $root = ".";
+    pub string $rootName = "project";
+    pub [IdeFile] $tree = [];
+    pub [IdeTab] $tabs = [];
+    pub int $active = -1;
+    pub int $sideTop = 0;               // first explorer row on screen
+    pub bool $sideOpen = true;
+    pub bool $panelOpen = true;
+    pub string $panelTab = "terminal";  // terminal | problems
+    pub [string] $collapsed = [];       // explorer folders folded shut
+    pub [IdeTermLine] $term = [];
+    pub [IdeProblem] $problems = [];
+    pub string $status = "ready";
+    pub int $fontPx = 13;
+    pub bool $caretOn = true;
+
+    /* --- the pointer --- */
+    pub string $drag = "";              // "panel" | "side" | "code" while dragging
+    pub int $dragX = 0;                 // where the drag started
+    pub int $dragY = 0;
+    pub int $dragFrom = 0;              // the size it started at
+    pub bool $panelDragged = false;     // the user has sized the panel themselves
+    pub int $panelUserH = 0;
+
+    /* --- the terminal's command line --- */
+    pub string $cmdLine = "";
+    pub bool $cmdFocus = false;
+    pub [string] $cmdHist = [];
+    pub int $cmdHistAt = -1;            // -1: not browsing history
+    pub string $cmdCwd = "";            // where the last command ran
+
+    /* --- the palette --- */
+    pub bool $palette = false;
+    pub string $palQ = "";
+    pub string $palMode = "files";      // files | cmds | line
+    pub int $palSel = 0;
+    pub [IdeCmd] $palHits = [];
+
+    /* --- the completion popup --- */
+    pub bool $peek = false;
+    pub [string] $peekItems = [];
+    pub int $peekSel = 0;
+    pub bool $peekOff = false;          // dismissed with Escape
+
+    /* --- the runner --- */
+    pub int $proc = 0;
+    pub string $runPath = "";
+    pub string $outBuf = "";            // bytes not yet split into lines
+    pub int $lastExit = -2;
+
+    /* --- the chord (Ctrl+K …) --- */
+    pub string $chord = "";
+
+    pub [IdeCmd] $cmds = [];
+
+    pub function __construct(int $cv, int $w, int $h, HtmlTheme $th) {
+        $this->cv = $cv;
+        $this->w = $w;
+        $this->h = $h;
+        $this->th = $th;
+        $this->fontPx = $th->fontPx > 0 ? $th->fontPx : 13;
+        $this->lineH = $this->fontPx + 5;
+        $this->cmds = ide_commands();
+        $this->term[] = new IdeTermLine("HolyPHP — " . $this->fontPx
+                       . "px, working dir " . getcwd(), "ok");
+        $this->view = new HtmlView($cv, $w, $h, $th);
+    }
+
+    // ---- files and tabs ---------------------------------------------
+    /** Scan a folder into the explorer. */
+    pub function open_root(string $dir) {
+        if (!is_dir($dir)) { return; }
+        $this->root = $dir;
+        $this->rootName = basename($dir);
+        if ($this->rootName == "") { $this->rootName = "project"; }
+        $this->tree = ide_scan_tree($dir);
+        $this->sideTop = 0;
+        $this->status = "explorer: " . count($this->tree) . " entries in " . $dir;
+    }
+
+    /** Open a path (relative to the root or absolute) in a tab. */
+    pub function open(string $path): int {
+        $full = $path;
+        if (!str_contains($full, ":") && substr($full, 0, 1) != "/") {
+            $full = $this->root . "/" . $path;
+        }
+        for ($i = 0; $i < count($this->tabs); $i++) {
+            if ($this->tabs[$i]->path == $full) { $this->activate($i); return $i; }
+        }
+        $ed = new IdeEditor();
+        if (!$ed->load($full)) {
+            $this->status = "cannot read " . $full;
+            return -1;
+        }
+        $t = new IdeTab($full, basename($full), $ed);
+        $this->tabs[] = $t;
+        $this->active = count($this->tabs) - 1;
+        $this->view_rows_sync();
+        $this->status = "opened " . basename($full) . " (" . $ed->line_count() . " lines)";
+        return $this->active;
+    }
+
+    /** An unsaved buffer with nowhere to go yet. */
+    pub function new_file() {
+        $ed = new IdeEditor();
+        $ed->set_text("// untitled\n");
+        $t = new IdeTab("", "untitled", $ed);
+        $this->tabs[] = $t;
+        $this->active = count($this->tabs) - 1;
+        $this->status = "new buffer";
+    }
+
+    pub function activate(int $i) {
+        if ($i < 0 || $i >= count($this->tabs)) { return; }
+        if ($this->active == $i) { return; }
+        $this->active = $i;
+        $this->view_rows_sync();
+        $this->peek = false;
+        $this->status = "tab " . $this->tabs[$i]->name;
+    }
+
+    pub function close_tab(int $i) {
+        if ($i < 0 || $i >= count($this->tabs)) { return; }
+        $name = $this->tabs[$i]->name;
+        $rest: [IdeTab];
+        for ($k = 0; $k < count($this->tabs); $k++) {
+            if ($k != $i) { $rest[] = $this->tabs[$k]; }
+        }
+        $this->tabs = $rest;
+        if ($this->active >= count($this->tabs)) { $this->active = count($this->tabs) - 1; }
+        if ($this->active < 0 && count($this->tabs) > 0) { $this->active = 0; }
+        $this->view_rows_sync();
+        $this->status = "closed " . $name;
+    }
+
+    /** The editor of the active tab, or null. */
+    pub function ed(): IdeEditor {
+        if ($this->active < 0 || $this->active >= count($this->tabs)) { return null; }
+        return $this->tabs[$this->active]->ed;
+    }
+
+    pub function active_name(): string {
+        if ($this->active < 0 || $this->active >= count($this->tabs)) { return ""; }
+        return $this->tabs[$this->active]->name;
+    }
+
+    pub function active_rel(): string {
+        $ed = $this->ed();
+        if ($ed == null || $ed->buf->path == "") { return $this->active_name(); }
+        return ide_rel_path($this->root, $ed->buf->path);
+    }
+
+    // ---- geometry ----------------------------------------------------
+    /** How much room each pane got, from the chrome heights. This is the
+     * one place that decides "how many rows fit", and the stylesheet has to
+     * agree with it - tests/positive/ide_workbench.hphp lays the document
+     * out and compares the two. */
+    pub function app_h(): int { return $this->h - $this->titleH - $this->statusH; }
+
+    pub function main_w(): int {
+        if (!$this->sideOpen) { return $this->w; }
+        return $this->w - $this->sideW - $this->gripW;
+    }
+
+    /** Rows of code on screen. The panel takes its height out of the
+     * editor; the rest is the tab strip, the code padding and the status. */
+    pub function code_h(): int {
+        $h = $this->app_h() - $this->tabH;
+        if ($this->panelOpen) { $h = $h - $this->panel_h() - $this->gripH; }
+        return $h;
+    }
+
+    /** How tall the panel is: the third of the app it starts as, or the
+     *  height the user dragged its grip to. Dragging is the only way to
+     *  answer "how much terminal do you want", so once it happened the
+     *  number is kept - clamped, so neither pane can be dragged to nothing. */
+    pub function panel_h(): int {
+        if ($this->panelDragged) { return $this->panelUserH; }
+        $ph = intdiv($this->app_h(), 3);
+        if ($ph < 90) { $ph = 90; }
+        if ($ph > 260) { $ph = 260; }
+        return $ph;
+    }
+
+    function panel_max_h(): int {
+        $m = $this->app_h() - $this->tabH - $this->gripH - $this->lineH * 3;
+        return $m < $this->panelMinH ? $this->panelMinH : $m;
+    }
+
+    /** Drag the panel's grip to `$y` (window pixels). */
+    pub function drag_panel(int $y) {
+        $h = $this->dragFrom - ($y - $this->dragY);
+        if ($h < $this->panelMinH) { $h = $this->panelMinH; }
+        $m = $this->panel_max_h();
+        if ($h > $m) { $h = $m; }
+        $this->panelUserH = $h;
+        $this->panelDragged = true;
+        $this->status = "panel " . $h . "px";
+    }
+
+    /** Drag the explorer's grip to `$x` (window pixels). */
+    pub function drag_side(int $x) {
+        $w = $this->dragFrom + ($x - $this->dragX);
+        if ($w < $this->sideMinW) { $w = $this->sideMinW; }
+        if ($w > $this->sideMaxW) { $w = $this->sideMaxW; }
+        $this->sideW = $w;
+        $this->status = "explorer " . $w . "px";
+    }
+
+    pub function ed_rows(): int {
+        $r = intdiv($this->code_h() - $this->codePadT, $this->lineH);
+        return $r < 1 ? 1 : $r;
+    }
+
+    /** Columns of code on screen, from the measured width of one glyph. */
+    pub function ed_cols(): int {
+        $cw = $this->char_w();
+        if ($cw < 1) { return 100; }
+        $c = intdiv($this->main_w() - $this->gutterW - 16, $cw);
+        return $c < 20 ? 20 : $c;
+    }
+
+    pub function side_rows(): int {
+        $r = intdiv($this->app_h() - $this->sideHeadH - 4, $this->treeRowH);
+        return $r < 1 ? 1 : $r;
+    }
+
+    pub function term_rows(): int {
+        $r = intdiv($this->panel_h() - $this->panelTabsH - 8, $this->termRowH);
+        return $r < 1 ? 1 : $r;
+    }
+
+    /** Keep the editor's own viewport in step with the pane: it owns
+     *  scrollRow/scrollCol, and it decides how many rows a page is. */
+    pub function view_rows_sync() {
+        $ed = $this->ed();
+        if ($ed == null) { return; }
+        $ed->viewRows = $this->ed_rows();
+        $ed->viewCols = $this->ed_cols();
+        if ($ed->row >= $ed->scrollRow + $ed->viewRows) {
+            $ed->scrollRow = $ed->row - $ed->viewRows + 1;
+        }
+        if ($ed->scrollRow < 0) { $ed->scrollRow = 0; }
+    }
+
+    /** The width of one character of the mono font. Measured once per
+     *  paint; the caret, the popup and the column count all use it. */
+    pub function char_w(): int {
+        if ($this->charPx > 0 && $this->charPx != 7) { return $this->charPx; }
+        $f = $this->mono_font();
+        $w = $this->view->fonts->width($f, "0");
+        if ($w < 1) { $w = 7; }
+        $this->charPx = $w;
+        return $w;
+    }
+
+    pub function mono_font(): int {
+        return $this->view->fonts->get($this->th->mono, $this->fontPx, false, false);
+    }
+
+    pub function resize(int $w, int $h) {
+        if ($w == $this->w && $h == $this->h) { return; }
+        $this->w = $w;
+        $this->h = $h;
+        $this->view->resize($w, $h);
+        $this->view_rows_sync();
+    }
+
+    // ---- the terminal ------------------------------------------------
+    pub function term_line(string $text, string $kind) {
+        $this->term[] = new IdeTermLine($text, $kind);
+        if (count($this->term) > 2000) { array_splice($this->term, 0, 1); }
+        $this->panelOpen = true;
+        $this->panelTab = "terminal";
+    }
+
+    /** Feed bytes from a child into the panel, one line at a time. A run
+     *  that ends without a newline still shows its last line, which is why
+     *  the tail is flushed by the caller when the process exits. */
+    pub function term_write(string $chunk, string $kind): int {
+        $s = ide_clean_output($chunk);
+        if ($s == "") { return 0; }
+        $this->outBuf = $this->outBuf . $s;
+        $done = 0;
+        while (true) {
+            $at = strpos($this->outBuf, "\n");
+            if ($at === false) { break; }
+            $line = substr($this->outBuf, 0, $at);
+            $this->outBuf = substr($this->outBuf, $at + 1);
+            $this->term_line($line, $kind);
+            $done = $done + 1;
+        }
+        return $done;
+    }
+
+    pub function term_flush(string $kind) {
+        if ($this->outBuf == "") { return; }
+        $this->term_line($this->outBuf, $kind);
+        $this->outBuf = "";
+    }
+
+    /** The whole panel as text - what a test asserts on, and what a
+     *  "save the session log" command would write. */
+    pub function term_text(): string {
+        $out = "";
+        for ($i = 0; $i < count($this->term); $i++) {
+            $out = $out . $this->term[$i]->text . "\n";
+        }
+        return $out . $this->outBuf;
+    }
+
+    // ---- the runner --------------------------------------------------
+    /** Run the active tab. The arguments are the file and its folder, so a
+     *  script that reads a relative path behaves the way it does when it is
+     *  started from a shell in that folder. */
+    pub function run_path(string $path) {
+        if ($this->proc > 0) {
+            $this->term_line("a process is already running (Shift+F5 stops it)", "err");
+            return;
+        }
+        $cmd = ide_run_command($path);
+        $this->term_line("$ " . $cmd, "cmd");
+        $cwd = dirname($path);
+        if ($cwd == "") { $cwd = "."; }
+        /* the next thing typed into the command line belongs to the project
+         * that was just run, the way a shell's cwd does */
+        $this->cmdCwd = $cwd;
+        $h = proc_start($cmd, $cwd);
+        if ($h <= 0) {
+            $this->term_line("could not start the command", "err");
+            $this->status = "run failed: " . $path;
+            return;
+        }
+        $this->proc = $h;
+        $this->runPath = $path;
+        $this->outBuf = "";
+        $this->problems = [];
+        $this->panelOpen = true;
+        $this->panelTab = "terminal";
+        $this->status = "running " . basename($path);
+    }
+
+    pub function run_active() {
+        $path = $this->active_path();
+        if ($path == "") { $this->term_line("no file to run", "err"); return; }
+        $this->run_path($path);
+    }
+
+    pub function active_path(): string {
+        $ed = $this->ed();
+        if ($ed == null) { return ""; }
+        if ($ed->buf->path == "") { return ""; }
+        return $ed->buf->path;
+    }
+
+    /** Pull whatever the child wrote since the last call. The window app
+     *  calls this from its frame timer; a test calls it in a loop. */
+    pub function pump(): bool {
+        if ($this->proc <= 0) { return false; }
+        $out = proc_read($this->proc, 0);
+        if ($out != "") { $this->term_write($out, "out"); }
+        $err = proc_read_err($this->proc, 0);
+        if ($err != "") { $this->term_write($err, "err"); }
+        if (proc_alive($this->proc)) { return true; }
+        $code = proc_exit($this->proc);
+        $this->term_flush("err");
+        proc_close($this->proc);
+        $this->proc = 0;
+        $this->lastExit = $code;
+        $this->term_line("[exit " . $code . "]", $code == 0 ? "ok" : "err");
+        $this->collect_problems();
+        if ($code == 0) {
+            $this->status = "run ok (" . basename($this->runPath) . ")";
+        } else {
+            $this->status = "run failed (" . $code . "), see the problems panel";
+            if (count($this->problems) > 0) { $this->panelTab = "problems"; }
+        }
+        return false;
+    }
+
+    pub function stop_run() {
+        if ($this->proc <= 0) { $this->status = "nothing to stop"; return; }
+        proc_kill($this->proc);
+        proc_close($this->proc);
+        $this->proc = 0;
+        $this->term_line("[stopped]", "err");
+        $this->status = "stopped " . basename($this->runPath);
+    }
+
+    pub function running(): bool {
+        return $this->proc > 0;
+    }
+
+    /** Turn the last run's terminal text into a clickable problem list. */
+    pub function collect_problems() {
+        $none: [IdeProblem];
+        $this->problems = ide_parse_problems($this->term_text(), $none);
+    }
+
+    // ---- the command table -------------------------------------------
+    /** Run a command by id. Returns "" when it was handled here, or the id
+     *  when the window app has to do it (a dialog, a quit). */
+    pub function command(string $id): string {
+        $ed = $this->ed();
+        if ($id == "save") {
+            if ($ed == null) { return ""; }
+            if ($ed->buf->path == "") { $this->status = "save: this buffer has no path yet"; return ""; }
+            if ($ed->save()) { $this->status = "saved " . $this->active_name(); }
+            else { $this->status = "could not write " . $this->active_name(); }
+            return "";
+        }
+        if ($id == "saveall") {
+            $n = 0;
+            for ($i = 0; $i < count($this->tabs); $i++) {
+                if ($this->tabs[$i]->ed->buf->path == "") { continue; }
+                if ($this->tabs[$i]->ed->save()) { $n = $n + 1; }
+            }
+            $this->status = "saved " . $n . " file(s)";
+            return "";
+        }
+        if ($id == "reload") {
+            if ($ed == null || $ed->buf->path == "") { return ""; }
+            $p = $ed->buf->path;
+            $ed->load($p);
+            $this->status = "reverted " . basename($p);
+            return "";
+        }
+        if ($id == "newfile") { $this->new_file(); return ""; }
+        if ($id == "closetab") { $this->close_tab($this->active); return ""; }
+        if ($id == "run") { $this->run_active(); return ""; }
+        if ($id == "stop") { $this->stop_run(); return ""; }
+        if ($id == "clear") {
+            $this->term = [];
+            $this->outBuf = "";
+            $this->status = "terminal cleared";
+            return "";
+        }
+        if ($id == "terminal") { $this->focus_terminal(); return ""; }
+        if ($id == "undo") { if ($ed != null) { $ed->undo_step(); } return ""; }
+        if ($id == "redo") { if ($ed != null) { $ed->redo_step(); } return ""; }
+        if ($id == "comment") { if ($ed != null) { $ed->toggle_comment(); } return ""; }
+        if ($id == "dupline") { $this->duplicate_line(); return ""; }
+        if ($id == "selectall") { if ($ed != null) { $ed->select_all(); } return ""; }
+        if ($id == "copy") { $this->copy_sel(false); return ""; }
+        if ($id == "cut") { $this->copy_sel(true); return ""; }
+        if ($id == "paste") { $this->paste(); return ""; }
+        if ($id == "sidebar") { $this->sideOpen = !$this->sideOpen; return ""; }
+        if ($id == "panel") { $this->panelOpen = !$this->panelOpen; return ""; }
+        if ($id == "zoom-in") { $this->zoom(1); return ""; }
+        if ($id == "zoom-out") { $this->zoom(-1); return ""; }
+        if ($id == "palette") { $this->open_palette("files"); return ""; }
+        if ($id == "cmdmode") { $this->open_palette("cmds"); return ""; }
+        if ($id == "goto") { $this->open_palette("line"); return ""; }
+        return $id;      /* the app's problem: quit, dialogs */
+    }
+
+    pub function duplicate_line() {
+        $ed = $this->ed();
+        if ($ed == null) { return; }
+        $line = $ed->line($ed->row);
+        $ed->row = $ed->row + 1;
+        $ed->col = strlen($line);
+        $ed->insert("\n" . $line);
+        $ed->row = $ed->row - 1;
+        $ed->col = strlen($line);
+        $ed->break_run();
+    }
+
+    /** Ctrl+C / Ctrl+X: the selection into the clipboard, the buffer
+     *  without it when cutting. */
+    pub function copy_sel(bool $cut) {
+        $ed = $this->ed();
+        if ($ed == null) { return; }
+        if (!$ed->hasSel) {
+            /* no selection: the whole line, which is what a terminal does */
+            ui_clip_set($ed->line($ed->row) . "\n");
+            if ($cut) {
+                $ed->select_all();
+                $ed->row = $ed->row;
+                $ed->clear_sel();
+            }
+            return;
+        }
+        ui_clip_set($ed->sel_text());
+        if ($cut) { $ed->delete_sel(); }
+        $this->status = $cut ? "cut" : "copied " . strlen($ed->sel_text()) . " chars";
+    }
+
+    pub function paste() {
+        $ed = $this->ed();
+        if ($ed == null) { return; }
+        $s = ui_clip_get();
+        if ($s == "") { return; }
+        $ed->insert($s);
+        $this->status = "pasted " . strlen($s) . " chars";
+    }
+
+    pub function zoom(int $dir) {
+        $n = ($dir == 0) ? 13 : ($this->fontPx + $dir);
+        if ($n < 10) { $n = 10; }
+        if ($n > 22) { $n = 22; }
+        $this->fontPx = $n;
+        $this->lineH = $n + 5;
+        $this->charPx = 0;
+        $this->view->fonts->dropMeasures();
+        $this->view_rows_sync();
+        $this->status = "font " . $n . "px";
+    }
+
+    // ---- the palette --------------------------------------------------
+    pub function open_palette(string $mode) {
+        $this->palette = true;
+        $this->palMode = $mode;
+        $this->palQ = ($mode == "cmds") ? ">" : (($mode == "line") ? ":" : "");
+        $this->palSel = 0;
+        $this->pal_sync();
+    }
+
+    pub function close_palette() {
+        $this->palette = false;
+        $this->palQ = "";
+        $this->palHits = [];
+    }
+
+    /** Recompute the palette list: files for a plain query, commands for
+     *  one that starts with `>`, a line number box for `:`. */
+    pub function pal_sync() {
+        $q = $this->palQ;
+        $this->palHits = [];
+        if ($this->palMode == "line" || (strlen($q) > 0 && substr($q, 0, 1) == ":")) {
+            $this->palMode = "line";
+            return;
+        }
+        if (strlen($q) > 0 && substr($q, 0, 1) == ">") {
+            $needle = substr($q, 1);
+            $hits: [IdeCmd];
+            for ($i = 0; $i < count($this->cmds); $i++) {
+                let mut $c: IdeCmd;
+                $c = $this->cmds[$i];
+                $m = ide_cmd_match($c->label, $needle);
+                if ($m < 0) { continue; }
+                $c->rank = $m;
+                $hits[] = $c;
+            }
+            $hits = ide_cmd_sort($hits);
+            if (count($hits) > 12) { array_splice($hits, 12, count($hits) - 12); }
+            $this->palHits = $hits;
+            $this->palSel = 0;
+            return;
+        }
+        /* files: every file in the tree whose path matches */
+        $hits: [IdeCmd];
+        for ($i = 0; $i < count($this->tree); $i++) {
+            let mut $f: IdeFile;
+            $f = $this->tree[$i];
+            if ($f->dir) { continue; }
+            $m = ide_cmd_match($f->rel, $q);
+            if ($m < 0) { continue; }
+            $c = new IdeCmd($f->rel, $f->rel, "");
+            $c->rank = $m;
+            $hits[] = $c;
+        }
+        $hits = ide_cmd_sort($hits);
+        if (count($hits) > 12) { array_splice($hits, 12, count($hits) - 12); }
+        $this->palHits = $hits;
+        $this->palSel = 0;
+    }
+
+    /** Enter in the palette: open the file, run the command, or jump. */
+    pub function pal_accept() {
+        if ($this->palMode == "line") {
+            $n = intval(substr($this->palQ, 1));
+            if ($n > 0) { $this->goto_line($n, 1); }
+            $this->close_palette();
+            return;
+        }
+        if (count($this->palHits) == 0) { $this->close_palette(); return; }
+        $sel = $this->palSel;
+        if ($sel < 0) { $sel = 0; }
+        if ($sel >= count($this->palHits)) { $sel = count($this->palHits) - 1; }
+        let mut $hit: IdeCmd;
+        $hit = $this->palHits[$sel];
+        $mode = $this->palMode;
+        $this->close_palette();
+        if ($mode == "files") { $this->open($hit->id); return; }
+        $this->command($hit->id);
+    }
+
+    pub function goto_line(int $row1, int $col1) {
+        $ed = $this->ed();
+        if ($ed == null) { return; }
+        $r = $row1 - 1;
+        if ($r < 0) { $r = 0; }
+        if ($r >= $ed->line_count()) { $r = $ed->line_count() - 1; }
+        $ed->row = $r;
+        $ed->col = $col1 - 1;
+        if ($ed->col < 0) { $ed->col = 0; }
+        if ($ed->col > strlen($ed->line($r))) { $ed->col = strlen($ed->line($r)); }
+        $ed->clear_sel();
+        $ed->ensure_cursor_visible();
+        $ed->invalidate();
+        $this->status = "ln " . ($r + 1) . ", col " . ($ed->col + 1);
+    }
+
+    // ---- the completion popup ----------------------------------------
+    /** Offer completions for the word at the caret. Two characters is the
+     *  threshold: one letter matches half the vocabulary, which is noise. */
+    pub function peek_sync() {
+        $ed = $this->ed();
+        if ($ed == null || $this->peekOff) { $this->peek = false; return; }
+        $w = $ed->word_at_cursor();
+        if (strlen($w) < 2) { $this->peek = false; return; }
+        $hits = $ed->completions($w, 8);
+        if (count($hits) == 0) { $this->peek = false; return; }
+        $this->peekItems = $hits;
+        $this->peek = true;
+        if ($this->peekSel >= count($hits)) { $this->peekSel = 0; }
+    }
+
+    pub function peek_accept() {
+        $ed = $this->ed();
+        if ($ed == null || !$this->peek || count($this->peekItems) == 0) { return false; }
+        $i = $this->peekSel;
+        if ($i < 0) { $i = 0; }
+        if ($i >= count($this->peekItems)) { $i = count($this->peekItems) - 1; }
+        $ed->complete_with($this->peekItems[$i]);
+        $this->peek = false;
+        $this->peekOff = true;
+        $this->status = "completed " . $this->peekItems[$i];
+        return true;
+    }
+
+    // =================================================================
+    //  input
+    // =================================================================
+    /** A key press. `$vk` is the virtual key, `$ch` the character it
+     *  produced (empty for the ones that make none), `$mods` is
+     *  1 = Ctrl, 2 = Shift, 4 = Alt - the bits the canvas reports.
+     *
+     *  Returns a name for the app when it has to act (quit, a dialog), else
+     *  "". Everything else happens here, which is what lets a test press a
+     *  key and look at the buffer. */
+    pub function key(int $vk, string $ch, int $mods): string {
+        $ctrl = ($mods & 1) != 0;
+        $shift = ($mods & 2) != 0;
+        $alt = ($mods & 4) != 0;
+
+        /* --- the palette has the keyboard while it is up --- */
+        if ($this->palette) { return $this->pal_key($vk, $ch, $ctrl, $shift); }
+
+        /* --- a chord in progress: Ctrl+K then one more key --- */
+        if ($this->chord != "") {
+            return $this->chord_key($vk, $ch, $ctrl, $shift);
+        }
+        if ($this->chord == "" && $ctrl && $vk == 75) {     /* Ctrl+K */
+            $this->chord = "ctrl+k";
+            $this->status = "Ctrl+K was pressed, waiting for a second key…";
+            return "";
+        }
+
+        /* --- the terminal's command line, when it has the keyboard --- */
+        if ($this->cmdFocus && $this->panelOpen && $this->panelTab == "terminal") {
+            $r = $this->cmd_key($vk, $ch, $ctrl, $shift);
+            if ($r != "pass") { return $r; }
+        }
+
+        /* --- the completion popup --- */
+        if ($this->peek && ($vk == 9 || $vk == 13) && !$ctrl) {
+            $this->peek_accept();
+            return "";
+        }
+        if ($this->peek && $vk == 27) { $this->peek = false; $this->peekOff = true; return ""; }
+        if ($this->peek && ($vk == 38 || $vk == 40)) {
+            $n = count($this->peekItems);
+            if ($n > 0) {
+                $d = ($vk == 40) ? 1 : -1;
+                $this->peekSel = ($this->peekSel + $d + $n) % $n;
+            }
+            return "";
+        }
+
+        /* --- Ctrl shortcuts --- */
+        if ($ctrl && !$alt) {
+            $r = $this->ctrl_key($vk, $shift);
+            if ($r != "") { return $r; }
+        }
+        if ($alt && $vk >= 37 && $vk <= 40) {
+            $ed2 = $this->ed();
+            if ($ed2 != null) {
+                if ($vk == 38) { $ed2->shift_lines(-1); }
+                if ($vk == 40) { $ed2->shift_lines(1); }
+            }
+            return "";
+        }
+
+        /* --- F5 runs, Shift+F5 stops. Nothing else: a function key that
+         *     also typed something would be a bug in every editor --- */
+        if ($vk == 116) { return $this->command($shift ? "stop" : "run"); }
+
+        /* --- editing --- */
+        $ed = $this->ed();
+        if ($ed == null) { return ""; }
+        if ($vk == 37 || $vk == 39 || $vk == 38 || $vk == 40) {
+            $what = "left";
+            if ($vk == 39) { $what = "right"; }
+            if ($vk == 38) { $what = "up"; }
+            if ($vk == 40) { $what = "down"; }
+            $ed->move($what, $shift);
+            $this->peekOff = false;
+            $this->peek_sync();
+            return "";
+        }
+        if ($vk == 36 || $vk == 35) {
+            $ed->move(($vk == 36) ? "home" : "end", $shift);
+            $this->peekOff = false;
+            $this->peek_sync();
+            return "";
+        }
+        if ($vk == 33 || $vk == 34) {
+            $ed->move(($vk == 33) ? "pageup" : "pagedown", $shift);
+            return "";
+        }
+        if ($vk == 8) { $ed->backspace(); $this->peekOff = false; $this->peek_sync(); return ""; }
+        if ($vk == 46) { $ed->delete_forward(); $this->peekOff = false; $this->peek_sync(); return ""; }
+        if ($vk == 13) { $ed->newline(); $this->peekOff = false; $this->peek = false; return ""; }
+        if ($vk == 9) { $ed->tab_key($shift); $this->peek = false; return ""; }
+        if ($vk == 27) {
+            if ($ed->hasSel) { $ed->clear_sel(); }
+            else { $this->status = "escape"; }
+            return "";
+        }
+        if ($ch != "") {
+            $ed->type_char($ch);
+            $this->peekOff = false;
+            $this->peek_sync();
+        }
+        return "";
+    }
+
+    /** The keys the terminal's command line owns. "pass" hands the key back
+     *  to the editor's shortcuts, so Ctrl+S still saves while typing. */
+    function cmd_key(int $vk, string $ch, bool $ctrl, bool $shift): string {
+        if ($ctrl || $shift) { return "pass"; }
+        if ($vk == 13) { $this->cmd_run(); return ""; }
+        if ($vk == 8) {
+            if (strlen($this->cmdLine) > 0) {
+                $this->cmdLine = substr($this->cmdLine, 0, strlen($this->cmdLine) - 1);
+            }
+            return "";
+        }
+        if ($vk == 38) { $this->cmd_hist(-1); return ""; }
+        if ($vk == 40) { $this->cmd_hist(1); return ""; }
+        if ($vk == 27 || $vk == 9) {
+            /* Tab and Escape give the keyboard back to the editor. A terminal
+             * that swallows Tab is a terminal you cannot leave. */
+            $this->cmdFocus = false;
+            $this->status = "terminal un-focused (click it, or Ctrl+`)";
+            return "";
+        }
+        if ($vk == 46 || $vk == 37 || $vk == 39 || $vk == 36 || $vk == 35) { return ""; }
+        if ($ch != "") {
+            $this->cmdLine = $this->cmdLine . $ch;
+            $this->cmdHistAt = -1;
+        }
+        return "";
+    }
+
+    /** Up and down walk the history of what has been typed. */
+    function cmd_hist(int $dir) {
+        $n = count($this->cmdHist);
+        if ($n == 0) { return; }
+        $at = $this->cmdHistAt;
+        if ($at < 0) { $at = $n; }
+        $at = $at + $dir;
+        if ($at < 0) { $at = 0; }
+        if ($at > $n) { $at = $n; }
+        $this->cmdHistAt = $at;
+        $this->cmdLine = ($at >= $n) ? "" : $this->cmdHist[$at];
+    }
+
+    /** Run what is on the terminal's command line.
+     *
+     *  Through `cmd /c`, because half of what one types into a terminal is a
+     *  built-in that no executable implements: `dir`, `cd`, `type`. The child
+     *  gets pipes for stdin, stdout and stderr, and the frame loop pumps them
+     *  into the panel - exactly the machinery a file run uses, so there is
+     *  one runner in this class, not two. */
+    pub function cmd_run() {
+        $line = trim($this->cmdLine);
+        $this->cmdLine = "";
+        $this->cmdHistAt = -1;
+        $this->panelOpen = true;
+        $this->panelTab = "terminal";
+        if ($line == "") { return; }
+        $this->cmdHist[] = $line;
+        $this->term_line("$ " . $line, "cmd");
+        if ($this->proc > 0) {
+            $this->term_line("a process is already running (Shift+F5 stops it)", "err");
+            return;
+        }
+        $cmd = $line;
+        if (!str_contains($line, "|") && !str_contains($line, "&")) {
+            $cmd = "cmd /d /s /c \"" . $line . "\"";
+        }
+        $cwd = $this->cmdCwd != "" ? $this->cmdCwd : $this->root;
+        if (!is_dir($cwd)) { $cwd = $this->root; }
+        $h = proc_start($cmd, $cwd);
+        if ($h <= 0) {
+            $this->term_line("could not start: " . $line, "err");
+            return;
+        }
+        $this->proc = $h;
+        $this->runPath = "";
+        $this->outBuf = "";
+        $this->status = "running: " . $line;
+    }
+
+    /** Give the command line the keyboard (and make sure it is on screen). */
+    pub function focus_terminal() {
+        $this->panelOpen = true;
+        $this->panelTab = "terminal";
+        $this->cmdFocus = true;
+        $this->status = "terminal: type a command, Enter runs it";
+    }
+
+    /** The keys that carry Ctrl. Returning a non-empty string means the
+     *  app has to handle it. */
+    function ctrl_key(int $vk, bool $shift): string {
+        $ed = $this->ed();
+        if ($vk == 192) { $this->focus_terminal(); return ""; }      /* Ctrl+` */
+        if ($vk == 32) {                                              /* Ctrl+Space */
+            $this->peekOff = false;
+            $this->peek_sync();
+            if (!$this->peek) { $this->status = "no completions here"; }
+            return "";
+        }
+
+        if ($vk == 83) { return $this->command($shift ? "saveall" : "save"); }      /* S */
+        if ($vk == 90) { return $this->command($shift ? "redo" : "undo"); }         /* Z */
+        if ($vk == 89) { return $this->command("redo"); }                          /* Y */
+        if ($vk == 65) { return $this->command("selectall"); }                     /* A */
+        if ($vk == 67) { return $this->command("copy"); }                          /* C */
+        if ($vk == 88) { return $this->command("cut"); }                           /* X */
+        if ($vk == 86) { return $this->command("paste"); }                         /* V */
+        if ($vk == 68) { return $this->command("dupline"); }                       /* D */
+        if ($vk == 80) { return $this->command($shift ? "cmdmode" : "palette"); }   /* P */
+        if ($vk == 71) { return $this->command("goto"); }                          /* G */
+        if ($vk == 78) { return $this->command("newfile"); }                       /* N */
+        if ($vk == 87) {                                                          /* W */
+            if ($shift) { return "quit"; }
+            return $this->command("closetab");
+        }
+        if ($vk == 82) { return $this->command("run"); }                           /* R */
+        if ($vk == 66) { return $this->command("sidebar"); }                        /* B */
+        if ($vk == 74) { return $this->command("panel"); }                          /* J */
+        /* 191 is the slash on a US layout, 55 is the 7 on a German one -
+         * Ctrl+/ has to work on both */
+        if ($vk == 191 || $vk == 55) { return $this->command("comment"); }
+        if ($vk == 187 || $vk == 107) { return $this->command("zoom-in"); }        /* = + */
+        if ($vk == 189 || $vk == 109) { return $this->command("zoom-out"); }       /* - */
+        if ($vk == 48) { $this->zoom(0); return ""; }                              /* 0 */
+        if ($vk == 37 && $ed != null) { $ed->move("wordleft", false); return ""; }
+        if ($vk == 39 && $ed != null) { $ed->move("wordright", false); return ""; }
+        if ($vk == 36 && $ed != null) { $ed->move("docstart", false); return ""; }
+        if ($vk == 35 && $ed != null) { $ed->move("docend", false); return ""; }
+        return "";
+    }
+
+    /** The second half of a Ctrl+K chord. Either half may carry the Ctrl
+     *  that a keyboard shortcut is written with (`Ctrl+K Ctrl+S` and
+     *  `Ctrl+K S` are the same chord here); Escape abandons it. */
+    function chord_key(int $vk, string $ch, bool $ctrl, bool $shift): string {
+        $this->chord = "";
+        if ($vk == 27) { $this->status = "chord cancelled"; return ""; }
+        if ($vk == 83) { return $this->command("saveall"); }      /* Ctrl+K [Ctrl+]S */
+        if ($vk == 87) { return $this->command("closetab"); }     /* Ctrl+K [Ctrl+]W */
+        if ($vk == 67) { return $this->command("comment"); }      /* Ctrl+K [Ctrl+]C */
+        if ($vk == 84) { return $this->command("panel"); }        /* Ctrl+K [Ctrl+]T */
+        if ($vk == 68) { return $this->command("goto"); }         /* Ctrl+K [Ctrl+]G */
+        if ($vk == 70) { return $this->command("palette"); }      /* Ctrl+K [Ctrl+]P */
+        $this->status = "no command for that chord";
+        return "";
+    }
+
+    /** The palette's own keys. */
+    function pal_key(int $vk, string $ch, bool $ctrl, bool $shift): string {
+        if ($vk == 27) { $this->close_palette(); return ""; }
+        if ($vk == 13) { $this->pal_accept(); return ""; }
+        if ($vk == 8) {
+            $n = strlen($this->palQ);
+            if ($n > 0) { $this->palQ = substr($this->palQ, 0, $n - 1); }
+            $this->pal_sync();
+            return "";
+        }
+        if ($vk == 38 || $vk == 40) {
+            $n = count($this->palHits);
+            if ($n > 0) {
+                $d = ($vk == 40) ? 1 : -1;
+                $this->palSel = ($this->palSel + $d + $n) % $n;
+            }
+            return "";
+        }
+        if ($ctrl && $vk == 80) { $this->close_palette(); return ""; }
+        if ($ch != "" && !$ctrl) {
+            $this->palQ = $this->palQ . $ch;
+            $this->pal_sync();
+        }
+        return "";
+    }
+
+    // =================================================================
+    //  pointer
+    // =================================================================
+    /** A mouse event from the view. Returns the name of what happened, so a
+     *  test can assert on the click instead of on a side effect. */
+    /** The caret position a window point maps to inside the code pane.
+     *  Derived from the pane's own laid-out box and the measured width of one
+     *  mono glyph, never from a constant: the pane's padding and the font size
+     *  both move, and a click that lands one column off is a click that makes
+     *  the user doubt the mouse. */
+    pub function code_hit(int $x, int $y): [int] {
+        $none: [int];
+        $ed = $this->ed();
+        if ($ed == null) { return $none; }
+        $b = $this->view->box_of($this->view->find(".code"));
+        if ($b == null) { return $none; }
+        $row = $ed->scrollRow + intdiv($y - ($b->cy() - $b->scrollY), $this->lineH);
+        if ($row < 0) { $row = 0; }
+        if ($row >= $ed->line_count()) { $row = $ed->line_count() - 1; }
+        if ($row < 0) { return $none; }
+        $cw = $this->char_w();
+        $col = $ed->scrollCol;
+        if ($cw > 0) {
+            $off = $x - ($b->cx() - $b->scrollX);
+            if ($off < 0) { $off = 0; }
+            $col = $ed->scrollCol + intdiv($off + intdiv($cw, 2), $cw);
+        }
+        $n = strlen($ed->line($row));
+        if ($col > $n) { $col = $n; }
+        if ($col < 0) { $col = 0; }
+        $hit: [int];
+        $hit[] = $row;
+        $hit[] = $col;
+        return $hit;
+    }
+
+    /** The word around a caret position, as a selection. */
+    pub function select_word(int $row, int $col) {
+        $ed = $this->ed();
+        if ($ed == null) { return; }
+        $line = $ed->line($row);
+        $n = strlen($line);
+        $a = $col;
+        $b = $col;
+        if ($b > $n) { $b = $n; }
+        while ($a > 0 && ide_is_word_char(substr($line, $a - 1, 1))) { $a = $a - 1; }
+        while ($b < $n && ide_is_word_char(substr($line, $b, 1))) { $b = $b + 1; }
+        $ed->row = $row;
+        $ed->col = $a;
+        $ed->arow = $row;
+        $ed->acol = $b;
+        $ed->hasSel = true;
+        $ed->invalidate();
+        $this->status = "selected \"" . substr($line, $a, $b - $a) . "\"";
+    }
+
+    /** A press: take hold of a grip, or put the caret where the pointer is.
+     *  It never acts - acting is the release - so a drag that starts on a
+     *  button can still be abandoned by dragging off it. */
+    function press(HNode $n, int $x, int $y): string {
+        if ($n == null) { return ""; }
+        $grip = ide_attr_up($n, "data-grip");
+        if ($grip != "") {
+            $this->drag = $grip;
+            $this->dragX = $x;
+            $this->dragY = $y;
+            $this->dragFrom = ($grip == "panel") ? $this->panel_h() : $this->sideW;
+            $this->status = ($grip == "panel") ? "drag to size the panel"
+                                                : "drag to size the explorer";
+            return "grab-" . $grip;
+        }
+        if (ide_node_under_class($n, "code") || ide_node_under_class($n, "gut")) {
+            $this->cmdFocus = false;
+            $ed = $this->ed();
+            if ($ed == null) { return ""; }
+            $hit = $this->code_hit($x, $y);
+            if (count($hit) != 2) { return ""; }
+            $ed->row = $hit[0];
+            $ed->col = $hit[1];
+            /* the gutter picks the whole line, the way a line-select margin
+             * does everywhere else */
+            if (ide_node_under_class($n, "gut")) {
+                $ed->col = strlen($ed->line($ed->row));
+                $ed->arow = $ed->row;
+                $ed->acol = 0;
+            } else {
+                $ed->arow = $ed->row;
+                $ed->acol = $ed->col;
+            }
+            $ed->hasSel = true;
+            $ed->ensure_cursor_visible();
+            $ed->invalidate();
+            $this->drag = "code";
+            $this->status = "ln " . ($ed->row + 1) . ", col " . ($ed->col + 1);
+            return "caret";
+        }
+        return "";
+    }
+
+    /** A pointer move while something is being dragged. */
+    function drag_move(int $x, int $y) {
+        if ($this->drag == "panel") { $this->drag_panel($y); return; }
+        if ($this->drag == "side") { $this->drag_side($x); return; }
+        if ($this->drag != "code") { return; }
+        $ed = $this->ed();
+        if ($ed == null) { return; }
+        $hit = $this->code_hit($x, $y);
+        if (count($hit) != 2) { return; }
+        $ed->row = $hit[0];
+        $ed->col = $hit[1];
+        $ed->ensure_cursor_visible();
+        $this->status = "(" . ($ed->row + 1) . ":" . ($ed->col + 1) . ")";
+    }
+
+    /** A double click: select the word under the pointer. */
+    function double_click(HNode $n, int $x, int $y): string {
+        if ($n == null || !ide_node_under_class($n, "code")) { return ""; }
+        $hit = $this->code_hit($x, $y);
+        if (count($hit) != 2) { return ""; }
+        $this->select_word($hit[0], $hit[1]);
+        return "select-word";
+    }
+
+    pub function mouse(string $kind, int $x, int $y, int $button, int $delta): string {
+        if ($kind == "wheel") {
+            if ($this->palette) { return "none"; }
+            $over = $this->view->hit($x, $y);
+            if ($over != null && ide_node_under_class($over, "tree")) { return $this->wheel_tree($delta); }
+            return $this->wheel_code($delta);
+        }
+        /* A drag in progress owns the pointer. The canvas captures the mouse
+         * on the press, so the moves keep arriving after the cursor has left
+         * the grip - which is the only way a 5px strip can be dragged. */
+        if ($this->drag != "" && ($kind == "move" || $kind == "up")) {
+            if ($kind == "move") { $this->drag_move($x, $y); return "drag"; }
+            $this->drag = "";
+            return "drag-end";
+        }
+        $ev = $this->view->mouse($kind, $x, $y, $button, $delta);
+        if ($kind == "down") { return $this->press($ev->node, $x, $y); }
+        if ($kind == "dbl") { return $this->double_click($ev->node, $x, $y); }
+        if ($kind != "up" || $ev->node == null) { return ""; }
+        $n = $ev->node;
+        /* the palette wins while it is open: it is painted last and on top */
+        if ($this->palette) {
+            $di = ide_attr_up($n, "data-i");
+            if ($di != "") {
+                $this->palSel = intval($di);
+                $this->pal_accept();
+                return "palette";
+            }
+            if (ide_attr_up($n, "data-pal") != "") { return "palette"; }
+            $this->close_palette();
+            return "palette-close";
+        }
+        $close = ide_attr_up($n, "data-close");
+        if ($close != "") { $this->close_tab(intval($close)); return "closetab"; }
+        $tab = ide_attr_up($n, "data-tab");
+        if ($tab != "") { $this->activate(intval($tab)); return "tab"; }
+        $cmd = ide_attr_up($n, "data-cmd");
+        if ($cmd != "") {
+            $r = $this->command($cmd);
+            return $r == "" ? "cmd" : $r;
+        }
+        $panel = ide_attr_up($n, "data-panel");
+        if ($panel != "") { $this->panelTab = $panel; return "panel"; }
+        $pick = ide_attr_up($n, "data-pick");
+        if ($pick != "") {
+            $this->peekSel = intval($pick);
+            $this->peek_accept();
+            return "complete";
+        }
+        $path = ide_attr_up($n, "data-path");
+        if ($path != "") {
+            /* a folder row folds: clicking the name of a folder in an
+             * explorer means "show me what is in it", not "nothing" */
+            if (is_dir($this->root . "/" . $path)) {
+                $this->toggle_dir($path);
+                return "fold";
+            }
+            $this->open($path);
+            return "open";
+        }
+        $prob = ide_attr_up($n, "data-prob");
+        if ($prob != "") {
+            $i = intval($prob);
+            if ($i >= 0 && $i < count($this->problems)) {
+                let mut $p: IdeProblem;
+                $p = $this->problems[$i];
+                $this->open_problem($p);
+                return "problem";
+            }
+        }
+        $line = ide_attr_up($n, "data-line");
+        if ($line != "") {                    /* click a code line: caret there */
+            $this->click_code(intval($line), $x);
+            return "caret";
+        }
+        /* the panel owns no attribute of its own, so the class is what tells
+         * us the click meant "I want to type here" */
+        if (ide_node_under_class($n, "panel")) {
+            $this->panelOpen = true;
+            if ($this->panelTab == "terminal") { $this->cmdFocus = true; }
+            return "focus-terminal";
+        }
+        return "none";
+    }
+
+    /** The wheel over the explorer: two rows a notch - a list of short rows
+     *  loses its place when it jumps by three. */
+    pub function wheel_tree(int $delta): string {
+        $this->sideTop = $this->sideTop - $delta * 2;
+        if ($this->sideTop < 0) { $this->sideTop = 0; }
+        $max = count($this->side_visible()) - $this->side_rows();
+        if ($max < 0) { $max = 0; }
+        if ($this->sideTop > $max) { $this->sideTop = $max; }
+        return "scroll-tree";
+    }
+
+    /** The wheel over the code: ONE line a notch. Three lines a notch is not
+     *  "faster scrolling", it is a scroll that cannot stop where you were
+     *  reading - and a code pane is read, not skimmed. */
+    pub function wheel_code(int $delta): string {
+        $ed = $this->ed();
+        if ($ed == null) { return "none"; }
+        $ed->scrollRow = $ed->scrollRow - $delta;
+        if ($ed->scrollRow < 0) { $ed->scrollRow = 0; }
+        $max = $ed->line_count() - $ed->viewRows;
+        if ($max < 0) { $max = 0; }
+        if ($ed->scrollRow > $max) { $ed->scrollRow = $max; }
+        return "scroll-code";
+    }
+
+    /** A release on a code line moves the caret there. The press has already
+     *  put it in place and anchored a selection, so this only has to keep the
+     *  two in step with the pointer. */
+    pub function click_code(int $row, int $x) {
+        $ed = $this->ed();
+        if ($ed == null) { return; }
+        $b = $this->view->box_of($this->view->find(".code"));
+        if ($b == null) { return; }
+        $hit = $this->code_hit($x, $b->cy() + ($row - $ed->scrollRow) * $this->lineH + 2);
+        if (count($hit) == 2) {
+            $ed->clear_sel();
+            $ed->row = $hit[0];
+            $ed->col = $hit[1];
+        }
+        $ed->ensure_cursor_visible();
+        $ed->invalidate();
+        $this->status = "ln " . ($ed->row + 1) . ", col " . ($ed->col + 1);
+    }
+
+    pub function open_problem(IdeProblem $p) {
+        $rel = ide_rel_path($this->root, $p->path);
+        $this->open($rel);
+        $this->goto_line($p->row, $p->col < 1 ? 1 : $p->col);
+        $this->panelOpen = false;
+        $this->status = $rel . ":" . $p->row . ": " . $p->msg;
+    }
+
+    // =================================================================
+    //  the document
+    // =================================================================
+    /** Paint a frame. The document is rebuilt from the state and reloaded
+     *  only when something changed, so a frame that changes nothing is one
+     *  layout and one blit. */
+    pub function render() {
+        $this->view_rows_sync();
+        $html = $this->html();
+        /* The stylesheet is rebuilt every frame. It looks like the wasteful
+         * thing to do and is the opposite: the pane sizes and the font size
+         * are numbers IN the CSS, so the moment one of them changes - a grip
+         * dragged, a zoom - a cached stylesheet keeps laying the document out
+         * at the old size while the class believes the new one. Sixty string
+         * concatenations are cheaper than that bug. */
+        $css = $this->css();
+        /* a resize changes nothing in the document, but it changes every box
+         * in it: the cache is only reusable at the size it was laid out in */
+        $same = ($this->view->doc != null && $html == $this->lastHtml() &&
+                 $css == $this->cssText &&
+                 $this->w == $this->cacheW && $this->h == $this->cacheH);
+        if (!$same) {
+            $this->cssText = $css;
+            $this->view->load($html, $css);
+            $this->mark_html($html);
+            $this->cacheW = $this->w;
+            $this->cacheH = $this->h;
+        }
+        $this->view->paint();
+        $this->paint_caret();
+        if ($this->cv > 0) {
+            ui_canvas_invalidate($this->cv);
+            ui_canvas_flush($this->cv);
+        }
+    }
+
+    function lastHtml(): string { return $this->htmlCache; }
+    function mark_html(string $h) { $this->htmlCache = $h; }
+
+    /** Just the layout, no ink - what a test needs before reading boxes. */
+    pub function ensure() {
+        $this->cssText = $this->css();
+        $this->view_rows_sync();
+        $this->view->load($this->html(), $this->cssText);
+        $this->view->ensure();
+        $this->char_w();
+        $this->mark_html($this->html());
+        $this->cacheW = $this->w;
+        $this->cacheH = $this->h;
+    }
+
+    pub function paint_caret() {
+        $r = $this->caret_rect();
+        if (count($r) == 0) { return; }
+        if (!$this->caretOn) { return; }
+        ui_draw_rect($this->cv, $r[0], $r[1], 2, $r[2], 0xaeafad);
+    }
+
+    /** Where the caret is, in window pixels: [x, y, h].
+     *
+     *  Derived from the laid-out line box and the widths layout itself gave
+     *  the atoms, never from a guess at the font: `col` is a byte offset,
+     *  the atoms are what the pane drew, and the sum of their widths is
+     *  exactly where the glyphs ended. */
+    pub function caret_rect(): [int] {
+        $none: [int];
+        $ed = $this->ed();
+        if ($ed == null) { return $none; }
+        $b = $this->view->box_of($this->view->find("[data-row='" . $ed->row . "']"));
+        if ($b == null) { return $none; }
+        $want = $ed->col - $ed->scrollCol;
+        if ($want < 0) { $want = 0; }
+        $x = $b->cx() + 2;
+        $left = $want;
+        $f = $this->mono_font();
+        for ($i = 0; $i < count($b->lines); $i++) {
+            $l = $b->lines[$i];
+            for ($k = 0; $k < count($l->atoms); $k++) {
+                $a = $l->atoms[$k];
+                $n = strlen($a->text);
+                if ($left <= 0) { break; }
+                if ($left >= $n) { $x = $x + $a->w; $left = $left - $n; continue; }
+                $x = $x + $this->view->fonts->width($f, substr($a->text, 0, $left));
+                $left = 0;
+            }
+        }
+        if ($left > 0) { $x = $x + $this->view->fonts->width($f, "0") * $left; }
+        return [$x, $b->y, $b->h];
+    }
+
+    // ---- the document, piece by piece --------------------------------
+    pub function html(): string {
+        $out = "<div class='root'>";
+        $out = $out . $this->title_html();
+        $out = $out . "<div class='app'>";
+        if ($this->sideOpen) {
+            $out = $out . $this->side_html();
+            $out = $out . "<div class='grip grip-v' data-grip='side'></div>";
+        }
+        $out = $out . $this->main_html();
+        $out = $out . "</div>";
+        $out = $out . $this->status_html();
+        if ($this->palette) { $out = $out . $this->palette_html(); }
+        $out = $out . "</div>";
+        return $out;
+    }
+
+    function title_html(): string {
+        $out = "<div class='title'>";
+        $out = $out . "<span class='brand'>HolyIDE</span>";
+        $out = $out . "<span class='mid'>" . ide_html_escape($this->rootName)
+             . (strlen($this->active_rel()) > 0 ? "  ›  " . ide_html_escape($this->active_rel()) : "")
+             . "</span>";
+        $out = $out . "<span class='tbtn' data-cmd='save'>Save</span>";
+        if ($this->running()) {
+            $out = $out . "<span class='tbtn run' data-cmd='stop'>Stop</span>";
+        } else {
+            $out = $out . "<span class='tbtn run' data-cmd='run'>Run</span>";
+        }
+        $out = $out . "<span class='tbtn' data-cmd='palette'>Go to…</span>";
+        return $out . "</div>";
+    }
+
+    /** The rows the explorer shows: the whole tree minus what is inside a
+     *  folder the user folded shut. */
+    pub function side_visible(): [IdeFile] {
+        $vis: [IdeFile];
+        if (count($this->collapsed) == 0) { return $this->tree; }
+        for ($i = 0; $i < count($this->tree); $i++) {
+            let mut $f: IdeFile;
+            $f = $this->tree[$i];
+            $hidden = false;
+            for ($k = 0; $k < count($this->collapsed); $k++) {
+                $d = $this->collapsed[$k];
+                if ($f->rel != $d && str_starts_with($f->rel, $d . "/")) { $hidden = true; break; }
+            }
+            if (!$hidden) { $vis[] = $f; }
+        }
+        return $vis;
+    }
+
+    pub function side_folded(string $rel): bool {
+        for ($i = 0; $i < count($this->collapsed); $i++) {
+            if ($this->collapsed[$i] == $rel) { return true; }
+        }
+        return false;
+    }
+
+    /** Fold a folder shut, or open it again. A tree that cannot fold is a
+     *  list of every path in the project. */
+    pub function toggle_dir(string $rel) {
+        if ($this->side_folded($rel)) {
+            $keep: [string];
+            for ($i = 0; $i < count($this->collapsed); $i++) {
+                if ($this->collapsed[$i] != $rel) { $keep[] = $this->collapsed[$i]; }
+            }
+            $this->collapsed = $keep;
+            $this->status = "opened " . $rel;
+            return;
+        }
+        $this->collapsed[] = $rel;
+        $this->status = "folded " . $rel;
+    }
+
+    function side_html(): string {
+        $vis = $this->side_visible();
+        $rows = $this->side_rows();
+        /* folding shrinks the list; the window onto it has to follow, or the
+         * pane would render blank rows where the hidden entries were */
+        $maxTop = count($vis) - $rows;
+        if ($maxTop < 0) { $maxTop = 0; }
+        if ($this->sideTop > $maxTop) { $this->sideTop = $maxTop; }
+        if ($this->sideTop < 0) { $this->sideTop = 0; }
+        $out = "<div class='side'>";
+        $out = $out . "<div class='sidehead'>EXPLORER  " . ide_html_escape($this->rootName) . "</div>";
+        $out = $out . "<div class='tree'>";
+        $end = $this->sideTop + $rows;
+        if ($end > count($vis)) { $end = count($vis); }
+        for ($i = $this->sideTop; $i < $end; $i++) {
+            let mut $f: IdeFile;
+            $f = $vis[$i];
+            $cls = "trow";
+            $opened = false;
+            for ($k = 0; $k < count($this->tabs); $k++) {
+                if ($this->tabs[$k]->path == $f->path) { $opened = true; }
+            }
+            if ($opened && !$f->dir) { $cls = "trow open"; }
+            $pad = 8 + $f->depth * 12;
+            $glyph = "·";
+            if ($f->dir) {
+                $glyph = $this->side_folded($f->rel) ? "▸" : "▾";
+                $cls = $cls . " dir";
+            }
+            $out = $out . "<div class='" . $cls . "' data-path='" . ide_attr_escape($f->rel)
+                 . "' style='padding-left:" . $pad . "px'>"
+                 . "<span class='gi'>" . $glyph . "</span> "
+                 . ide_html_escape($f->name) . "</div>";
+        }
+        if (count($vis) == 0) {
+            $out = $out . "<div class='trow'>no files</div>";
+        }
+        /* "N more" when the tree is longer than the pane: a hint that the
+         * wheel exists instead of a silent cut */
+        $hidden = count($vis) - $end;
+        if ($hidden > 0) {
+            $out = $out . "<div class='trow more'>" . $hidden . " more…</div>";
+        }
+        return $out . "</div></div>";
+    }
+
+    function main_html(): string {
+        $out = "<div class='main'>";
+        $out = $out . $this->tabs_html();
+        $out = $out . $this->code_html();
+        if ($this->panelOpen) {
+            $out = $out . "<div class='grip grip-h' data-grip='panel'></div>";
+            $out = $out . $this->panel_html();
+        }
+        return $out . "</div>";
+    }
+
+    function tabs_html(): string {
+        $out = "<div class='tabs'>";
+        if (count($this->tabs) == 0) {
+            $out = $out . "<div class='tab'>no editor</div>";
+        }
+        for ($i = 0; $i < count($this->tabs); $i++) {
+            let mut $t: IdeTab;
+            $t = $this->tabs[$i];
+            $cls = ($i == $this->active) ? "tab active" : "tab";
+            $dot = $t->ed->buf->dirty ? " ●" : "";
+            $out = $out . "<div class='" . $cls . "' data-tab='" . $i . "'>"
+                 . "<span class='nm'>" . ide_html_escape($t->name) . "</span>"
+                 . "<span class='dot'>" . $dot . "</span>"
+                 . "<span class='x' data-close='" . $i . "'>×</span></div>";
+        }
+        return $out . "</div>";
+    }
+
+    function code_html(): string {
+        $ed = $this->ed();
+        $out = "<div class='edwrap'>";
+        if ($ed == null) {
+            return $out . "<div class='empty'>Ctrl+P opens a file · Ctrl+Shift+P lists the commands</div></div>";
+        }
+        $rows = $this->ed_rows();
+        $cols = $this->ed_cols();
+        $first = $ed->scrollRow;
+        $last = $first + $rows;
+        if ($last > $ed->line_count()) { $last = $ed->line_count(); }
+        $selRows = $this->sel_rows();
+        $out = $out . "<div class='gut'>";
+        for ($r = $first; $r < $last; $r++) {
+            $cls = ($r == $ed->row) ? "gn cur" : "gn";
+            $out = $out . "<div class='" . $cls . "'>" . ($r + 1) . "</div>";
+        }
+        $out = $out . "</div>";
+        $out = $out . "<div class='code'>";
+        for ($r = $first; $r < $last; $r++) {
+            $out = $out . $this->line_html($ed, $r, $cols, $selRows);
+        }
+        $out = $out . "</div>";
+        if ($this->peek) { $out = $out . $this->peek_html($ed, $first); }
+        return $out . "</div>";
+    }
+
+    /** The selected column range on each visible line, as [row -> [a, b]].
+     *  Only three lines can be partial (first, last, caret line), the rest
+     *  are wholly inside; this keeps the per-line test to one lookup. */
+    function sel_rows(): [int] {
+        $ed = $this->ed();
+        $out: [int];
+        if ($ed == null || !$ed->hasSel) { return $out; }
+        $f = $ed->first_end();
+        $l = $ed->last_end();
+        $first = $ed->scrollRow;
+        $last = $first + $this->ed_rows();
+        if ($last > $ed->line_count()) { $last = $ed->line_count(); }
+        for ($r = $first; $r < $last; $r++) {
+            $a = 0;
+            $b = strlen($ed->line($r));
+            if ($r == $f[0]) { $a = $f[1]; }
+            if ($r == $l[0]) { $b = $l[1]; }
+            if ($r < $f[0] || $r > $l[0]) { $out[] = $r; $out[] = -1; $out[] = -1; continue; }
+            $out[] = $r; $out[] = $a; $out[] = $b;
+        }
+        return $out;
+    }
+
+    function sel_on([int] $selRows, int $row): [int] {
+        $none: [int];
+        $none[] = -1;
+        $none[] = -1;
+        $i = 0;
+        while ($i + 2 < count($selRows)) {
+            if ($selRows[$i] == $row) {
+                $hit: [int];
+                $hit[] = $selRows[$i + 1];
+                $hit[] = $selRows[$i + 2];
+                return $hit;
+            }
+            $i = $i + 3;
+        }
+        return $none;
+    }
+
+    /** One line of code: the visible column window as token spans, with the
+     *  selection wrapped in `.sel` and a `.cur` class on the caret's line. */
+    function line_html(IdeEditor $ed, int $r, int $cols, [int] $selRows): string {
+        $text = $ed->line($r);
+        $a = $ed->scrollCol;
+        if ($a > strlen($text)) { $a = strlen($text); }
+        $b = $a + $cols;
+        if ($b > strlen($text)) { $b = strlen($text); }
+        $sel = $this->sel_on($selRows, $r);
+        $cls = ($r == $ed->row) ? "ln cur" : "ln";
+        $out = "<div class='" . $cls . "' data-line='" . $r . "' data-row='" . $r . "'>";
+        $tok = $ed->line_tokens($r);
+        $col = 0;
+        $i = 0;
+        while ($col < $b) {
+            /* the token covering this column, or a one-character plain
+             * span when the scanner left a gap */
+            $kind = "plain";
+            $piece = substr($text, $col, 1);
+            if ($i < count($tok)) {
+                let mut $t: IdeToken;
+                $t = $tok[$i];
+                if ($t->col + strlen($t->text) <= $col) { $i = $i + 1; continue; }
+                if ($t->col <= $col) {
+                    $kind = $t->kind;
+                    $off = $col - $t->col;
+                    $len = strlen($t->text) - $off;
+                    if ($col + $len > $b) { $len = $b - $col; }
+                    $piece = substr($t->text, $off, $len);
+                }
+            }
+            $len = strlen($piece);
+            if ($col < $a) {
+                $skip = $a - $col;
+                if ($skip >= $len) { $col = $col + $len; continue; }
+                $piece = substr($piece, $skip);
+                $col = $a;
+            }
+            $out = $out . $this->piece_html($piece, $kind, $col, $sel);
+            $col = $col + strlen($piece);
+        }
+        return $out . "</div>";
+    }
+
+    /** A piece of a line, split again at the selection's edges. */
+    function piece_html(string $piece, string $kind, int $col, [int] $sel): string {
+        if ($piece == "") { return ""; }
+        $cls = ide_tok_class($kind);
+        if (count($sel) < 2 || $sel[1] < 0 || $col >= $sel[1] || $col + strlen($piece) <= $sel[0]) {
+            return "<span class='" . $cls . "'>" . ide_html_escape($piece) . "</span>";
+        }
+        $out = "";
+        $p = 0;
+        while ($p < strlen($piece)) {
+            $at = $col + $p;
+            $inSel = ($at >= $sel[0] && $at < $sel[1]);
+            $run = 1;
+            while ($p + $run < strlen($piece) && ($col + $p + $run >= $sel[0] && $col + $p + $run < $sel[1]) == $inSel) {
+                $run = $run + 1;
+            }
+            $chunk = substr($piece, $p, $run);
+            if ($inSel) {
+                $out = $out . "<span class='sel'>" . ide_html_escape($chunk) . "</span>";
+            } else {
+                $out = $out . "<span class='" . $cls . "'>" . ide_html_escape($chunk) . "</span>";
+            }
+            $p = $p + $run;
+        }
+        return $out;
+    }
+
+    function peek_html(IdeEditor $ed, int $first) {
+        $cw = $this->char_w();
+        $left = $this->gutterW + 8 + ($ed->col - $ed->scrollCol) * $cw;
+        if ($left < 0) { $left = 0; }
+        $top = $this->codePadT + ($ed->row - $first + 1) * $this->lineH;
+        $out = "<div class='peek' style='left:" . $left . "px; top:" . $top . "px'>";
+        for ($i = 0; $i < count($this->peekItems); $i++) {
+            $cls = ($i == $this->peekSel) ? "pi sel" : "pi";
+            $out = $out . "<div class='" . $cls . "' data-pick='" . $i . "'>"
+                 . ide_html_escape($this->peekItems[$i]) . "</div>";
+        }
+        return $out . "</div>";
+    }
+
+    function panel_html(): string {
+        $out = "<div class='panel'>";
+        $out = $out . "<div class='ptabs'>";
+        $tc = ($this->panelTab == "terminal") ? "ptab active" : "ptab";
+        $pc = ($this->panelTab == "problems") ? "ptab active" : "ptab";
+        $out = $out . "<div class='" . $tc . "' data-panel='terminal'>TERMINAL</div>";
+        $out = $out . "<div class='" . $pc . "' data-panel='problems'>PROBLEMS "
+             . count($this->problems) . "</div>";
+        $out = $out . "<div class='ptab' data-cmd='clear'>CLEAR</div>";
+        $out = $out . "<div class='spacer'></div>";
+        if ($this->running()) {
+            $out = $out . "<div class='ptab run'>running…</div>";
+        }
+        $out = $out . "</div>";
+        if ($this->panelTab == "terminal") {
+            $out = $out . $this->term_html();
+        } else {
+            $out = $out . $this->problems_html();
+        }
+        return $out . "</div>";
+    }
+
+    function term_html(): string {
+        /* One of the visible rows belongs to the command line, which is
+         * always there: a terminal whose cursor only appears after you click
+         * somewhere is a log with a hidden text field in it. */
+        $rows = $this->term_rows() - 1;
+        if ($rows < 1) { $rows = 1; }
+        $n = count($this->term);
+        $from = $n - $rows;
+        if ($from < 0) { $from = 0; }
+        $out = "<div class='term'>";
+        for ($i = $from; $i < $n; $i++) {
+            let mut $l: IdeTermLine;
+            $l = $this->term[$i];
+            $out = $out . "<div class='tl " . $l->kind . "'>" . ide_html_escape($l->text) . "</div>";
+        }
+        if ($this->outBuf != "") {
+            $out = $out . "<div class='tl out'>" . ide_html_escape($this->outBuf) . "</div>";
+        }
+        $cls = $this->cmdFocus ? "tl cmd" : "tl cmd dim";
+        $caret = ($this->cmdFocus && $this->caretOn) ? "▏" : "";
+        $out = $out . "<div class='" . $cls . "' data-cmdline='1'>$ "
+             . ide_html_escape($this->cmdLine) . $caret . "</div>";
+        return $out . "</div>";
+    }
+
+    function problems_html(): string {
+        $out = "<div class='term'>";
+        if (count($this->problems) == 0) {
+            return $out . "<div class='tl out'>no problems</div></div>";
+        }
+        for ($i = 0; $i < count($this->problems); $i++) {
+            let mut $p: IdeProblem;
+            $p = $this->problems[$i];
+            $out = $out . "<div class='tl err prob' data-prob='" . $i . "'>"
+                 . "<span class='loc'>" . ide_html_escape($p->path) . ":" . $p->row
+                 . ($p->col > 0 ? ":" . $p->col : "") . "</span>"
+                 . "  " . ide_html_escape($p->msg) . "</div>";
+        }
+        return $out . "</div>";
+    }
+
+    function status_html(): string {
+        $out = "<div class='status'>";
+        $out = $out . "<span class='sitem'>" . ide_html_escape($this->status) . "</span>";
+        if ($this->chord != "") { $out = $out . "<span class='sitem chord'>" . $this->chord . " …</span>"; }
+        $out = $out . "<span class='grow'></span>";
+        $ed = $this->ed();
+        if ($ed != null) {
+            $out = $out . "<span class='sitem'>Ln " . ($ed->row + 1) . ", Col " . ($ed->col + 1) . "</span>";
+            $out = $out . "<span class='sitem'>" . $ed->line_count() . " lines</span>";
+            if ($ed->buf->dirty) { $out = $out . "<span class='sitem dirty'>● unsaved</span>"; }
+        }
+        $out = $out . "<span class='sitem'>UTF-8</span>";
+        $out = $out . "<span class='sitem'>Spaces: " . (($ed != null) ? $ed->tab : 4) . "</span>";
+        $out = $out . "<span class='sitem'>" . $this->lang() . "</span>";
+        $out = $out . "<span class='sitem'>HolyPHP</span>";
+        return $out . "</div>";
+    }
+
+    function lang(): string {
+        $n = strtolower($this->active_name());
+        if (str_ends_with($n, ".hphp")) { return "HolyPHP"; }
+        if (str_ends_with($n, ".md")) { return "Markdown"; }
+        if (str_ends_with($n, ".html") || str_ends_with($n, ".htm")) { return "HTML"; }
+        if (str_ends_with($n, ".css")) { return "CSS"; }
+        if (str_ends_with($n, ".js")) { return "JavaScript"; }
+        if (str_ends_with($n, ".json")) { return "JSON"; }
+        if (str_ends_with($n, ".c") || str_ends_with($n, ".h")) { return "C"; }
+        if (str_ends_with($n, ".py")) { return "Python"; }
+        if (str_ends_with($n, ".sh")) { return "Shell"; }
+        if (str_ends_with($n, ".ps1")) { return "PowerShell"; }
+        return "Plain Text";
+    }
+
+    function palette_html(): string {
+        $out = "<div class='pal' data-pal='1'>";
+        $hint = ($this->palMode == "line") ? "line number…" : "type a name…";
+        $q = $this->palQ;
+        if ($q == "") { $q = $hint; }
+        $out = $out . "<div class='palq'>" . ide_html_escape($q) . "<span class='qcur'>|</span></div>";
+        if ($this->palMode == "line") {
+            return $out . "</div>";
+        }
+        for ($i = 0; $i < count($this->palHits); $i++) {
+            let mut $c: IdeCmd;
+            $c = $this->palHits[$i];
+            $cls = ($i == $this->palSel) ? "prow sel" : "prow";
+            $out = $out . "<div class='" . $cls . "' data-i='" . $i . "'>"
+                 . "<span class='lbl'>" . ide_html_escape($c->label) . "</span>"
+                 . "<span class='keys'>" . ide_html_escape($c->keys) . "</span></div>";
+        }
+        if (count($this->palHits) == 0) {
+            $out = $out . "<div class='prow'>no match</div>";
+        }
+        return $out . "</div>";
+    }
+
+    // ---- the stylesheet ----------------------------------------------
+    /** Every height in here is one of the constants at the top of the
+     *  class. If a number changes on one side it has to change on the
+     *  other, and the workbench test measures both. */
+    pub function css(): string {
+        $mono = $this->th->mono;
+        $fam = $this->th->family;
+        $fp = $this->fontPx;
+        return "
+* { box-sizing: border-box; }
+.root {
+    display: flex; flex-direction: column; height: 100%; position: relative;
+    background-color: #1e1e1e; color: #cccccc;
+    font-family: \"" . $fam . "\"; font-size: 12px;
+}
+.title { flex: none; height: " . $this->titleH . "px; display: flex; align-items: center;
+         background-color: #323233; padding: 0 10px; line-height: " . $this->titleH . "px;
+         border-bottom: 1px solid #262627; }
+.title .brand { color: #ffffff; font-weight: bold; padding-right: 14px; white-space: nowrap; }
+.title .mid { flex: 1; color: #9a9a9a; font-size: 11px; white-space: nowrap; overflow: hidden; }
+.tbtn { flex: none; height: 22px; padding: 0 10px; margin-left: 6px; background-color: #3c3c3c;
+        border: 1px solid #4a4a4a; border-radius: 3px; color: #dddddd;
+        line-height: 20px; cursor: pointer; white-space: nowrap; }
+.tbtn:hover { background-color: #4a4a4a; }
+.tbtn.run { background-color: #0e639c; border-color: #1177bb; color: #ffffff; }
+.tbtn.run:hover { background-color: #1177bb; }
+
+.app { display: flex; flex: 1; }
+
+.side { flex: none; width: " . $this->sideW . "px; background-color: #252526;
+        display: flex; flex-direction: column; border-right: 1px solid #2f2f30; }
+.sidehead { flex: none; height: " . $this->sideHeadH . "px; color: #bbbbbb; font-size: 11px;
+            font-weight: bold; padding: 0 12px; line-height: " . ($this->sideHeadH - 1) . "px;
+            white-space: nowrap; overflow: hidden; border-bottom: 1px solid #2f2f30; }
+.tree { flex: 1; overflow: hidden; }
+.trow { height: " . $this->treeRowH . "px; color: #cccccc; line-height: " . $this->treeRowH . "px;
+        cursor: pointer; white-space: nowrap; overflow: hidden; }
+.trow:hover { background-color: #2a2d2e; }
+.trow.open { color: #ffffff; }
+.trow.active { background-color: #37373d; color: #ffffff; }
+.trow .gi { color: #6a9955; }
+.trow.dir .gi { color: #c09553; }
+.trow.more { color: #8a8a8a; font-style: italic; padding-left: 12px; }
+
+/* The drag strips between the panes. They are 5px of nothing with a cursor
+ * on them, which is how a window says 'this edge moves' without a single
+ * pixel of furniture. Hovering lights one up, so it can be found. */
+.grip { flex: none; background-color: #1e1e1e; }
+.grip-h { height: " . $this->gripH . "px; cursor: ns-resize; }
+.grip-v { width: " . $this->gripW . "px; cursor: ew-resize; }
+.grip-h:hover { background-color: #007acc; }
+.grip-v:hover { background-color: #007acc; }
+
+.main { flex: 1; display: flex; flex-direction: column; background-color: #1e1e1e; overflow: hidden; }
+.tabs { flex: none; height: " . $this->tabH . "px; display: flex; background-color: #252526;
+        border-bottom: 1px solid #2f2f30; overflow: hidden; }
+.tab { flex: none; display: flex; align-items: center; height: " . ($this->tabH - 1) . "px;
+       padding: 0 8px 0 12px; color: #969696; cursor: pointer;
+       border-bottom: 2px solid #252526; border-right: 1px solid #2f2f30;
+       line-height: " . ($this->tabH - 3) . "px; white-space: nowrap; }
+.tab:hover { background-color: #2a2d2e; }
+.tab.active { background-color: #1e1e1e; color: #ffffff; border-bottom: 2px solid #007acc; }
+.tab .nm { display: inline-block; flex: none; }
+.tab .dot { display: inline-block; flex: none; color: #e8ab53; font-size: 10px; }
+/* the close glyph is a box of its own. As inline text it only caught the
+ * click on the ink of a 10px character and the padding around it fell
+ * through to the tab, which switches instead of closing. */
+.tab .x { display: inline-block; flex: none; width: 18px; height: 18px; margin-left: 6px; color: #8a8a8a;
+          text-align: center; line-height: 18px; border-radius: 2px; }
+.tab .x:hover { color: #ffffff; }
+
+.edwrap { display: flex; flex: 1; overflow: hidden; position: relative; }
+.empty { padding: 20px; color: #8a8a8a; }
+.gut { flex: none; width: " . $this->gutterW . "px; padding: " . $this->codePadT . "px 10px 0 0;
+       text-align: right; color: #858585; cursor: pointer;
+       border-right: 1px solid #2f2f30; overflow: hidden; }
+.gn { height: " . $this->lineH . "px; line-height: " . $this->lineH . "px; font-family: \"" . $mono . "\";
+      font-size: " . ($fp - 1) . "px; white-space: pre; }
+.gn.cur { color: #c6c6c6; }
+.code { flex: 1; overflow: hidden; padding: " . $this->codePadT . "px 0 0 4px; }
+.ln { height: " . $this->lineH . "px; line-height: " . $this->lineH . "px; white-space: pre;
+      font-family: \"" . $mono . "\"; font-size: " . $fp . "px; color: #d4d4d4; }
+.ln.cur { background-color: #282828; }
+.sel { background-color: #264f78; }
+.t-plain { color: #d4d4d4; }
+.t-kw { color: #569cd6; }
+.t-ty { color: #4ec9b0; }
+.t-fn { color: #dcdcaa; }
+.t-id { color: #9cdcfe; }
+.t-var { color: #9cdcfe; }
+.t-str { color: #ce9178; }
+.t-num { color: #b5cea8; }
+.t-com { color: #6a9955; font-style: italic; }
+.t-op { color: #d4d4d4; }
+
+.peek { position: absolute; width: 240px; background-color: #252526; border: 1px solid #454545;
+        z-index: 5; }
+.peek .pi { height: 20px; padding: 0 10px; color: #cccccc; line-height: 20px;
+            font-family: \"" . $mono . "\"; font-size: " . ($fp - 1) . "px; white-space: nowrap; }
+.peek .pi.sel { background-color: #094771; color: #ffffff; }
+
+.panel { flex: none; height: " . $this->panel_h() . "px; display: flex; flex-direction: column;
+         background-color: #1e1e1e; overflow: hidden; border-top: 1px solid #2f2f30; }
+.ptabs { flex: none; height: " . $this->panelTabsH . "px; display: flex; padding: 0 6px;
+         line-height: " . ($this->panelTabsH - 1) . "px; border-bottom: 1px solid #2f2f30; }
+.ptab { flex: none; padding: 0 12px; color: #969696; font-size: 11px; cursor: pointer;
+        white-space: nowrap; }
+.ptab:hover { color: #ffffff; }
+.ptab.active { color: #e7e7e7; border-bottom: 1px solid #e7e7e7; }
+.ptab.run { color: #e8ab53; }
+.spacer { flex: 1; }
+.term { flex: 1; overflow: hidden; padding: 4px 12px; white-space: pre-wrap;
+        font-family: \"" . $mono . "\"; font-size: " . ($fp - 1) . "px; }
+.tl { line-height: " . $this->termRowH . "px; }
+.tl.cmd { color: #569cd6; }
+.tl.dim { color: #5a6b7a; }
+.tl.out { color: #cccccc; }
+.tl.err { color: #f48771; }
+.tl.ok { color: #6a9955; }
+.prob { cursor: pointer; }
+.prob:hover { background-color: #2a2d2e; }
+.prob .loc { color: #9cdcfe; }
+
+.status { flex: none; height: " . $this->statusH . "px; display: flex; align-items: center;
+          background-color: #007acc; color: #ffffff; font-size: 11px;
+          line-height: " . ($this->statusH - 1) . "px; overflow: hidden;
+          border-top: 1px solid #1b1b1b; }
+.status .grow { flex: 1; }
+.sitem { flex: none; padding: 0 8px; white-space: nowrap; }
+.sitem.dirty { color: #ffd479; }
+.sitem.chord { color: #ffe9a8; }
+
+.pal { position: absolute; top: 42px; left: 15%; width: 70%; background-color: #252526;
+       border: 1px solid #454545; z-index: 9; }
+.palq { height: 30px; padding: 0 12px; color: #ffffff; background-color: #3c3c3c;
+        line-height: 30px; white-space: nowrap; }
+.palq .qcur { color: #007acc; }
+.prow { height: 24px; padding: 0 12px; color: #cccccc; line-height: 24px; white-space: nowrap; }
+.prow:hover { background-color: #2a2d2e; }
+.prow.sel { background-color: #094771; color: #ffffff; }
+.prow .keys { color: #8a8a8a; padding-left: 12px; }
+";
+    }
+}
+
+/* ---- small helpers the workbench uses ------------------------------- */
+
+/** Is `$n` inside (or equal to) a node with this class? Used to decide
+ *  whether a wheel event is over the explorer. */
+function ide_node_under_class(HNode $n, string $cls): bool {
+    $p = $n;
+    while ($p != null) {
+        if ($p->hasClass($cls)) { return true; }
+        $p = $p->up;
+    }
+    return false;
+}
+
+/** A path as the explorer writes it: relative to the root. */
+function ide_rel_path(string $root, string $path): string {
+    $r = str_replace("\\", "/", $root);
+    $p = str_replace("\\", "/", $path);
+    if (str_starts_with($p, $r . "/")) { return substr($p, strlen($r) + 1); }
+    return $p;
+}
+
+function ide_path_is_dir(string $p): bool {
+    return str_ends_with($p, "/");
+}
+
+/** Commands sorted by how well they matched, stable for equal scores. */
+function ide_cmd_sort([IdeCmd] $hits): [IdeCmd] {
+    $out: [IdeCmd];
+    for ($i = 0; $i < count($hits); $i++) { $out[] = $hits[$i]; }
+    $n = count($out);
+    for ($i = 1; $i < $n; $i++) {
+        $x = $out[$i];
+        $j = $i - 1;
+        while ($j >= 0 && $out[$j]->rank > $x->rank) {
+            $out[$j + 1] = $out[$j];
+            $j = $j - 1;
+        }
+        $out[$j + 1] = $x;
+    }
+    return $out;
+}

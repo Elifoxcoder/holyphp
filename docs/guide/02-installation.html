@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+  <title>Chapter 2: Installation & Setup — HolyPHP Guide</title>
+  <link rel="stylesheet" href="../assets/style.css?v=6">
+</head>
+
+<body>
+  <div class="layout">
+    <script src="../assets/nav.html.js?v=3"></script>
+    <main>
+      <div class="breadcrumb">
+        <a href="index.html">Guide</a> » <a href="index.html#part1">Part 1: Getting Started</a> » Chapter 2
+      </div>
+
+      <h1>Chapter 2: Installation & <span class="ph">Setup</span></h1>
+
+      <h2>Download HolyPHP</h2>
+      <p>There are several ways to get HolyPHP:</p>
+
+      <h3>Option 1: Download Installer (Easiest)</h3>
+      <p>From the official website:</p>
+      <ul>
+        <li><strong>Windows (x64):</strong> <code>HolyPHP-1.0.2-x64-setup.exe</code> - No admin needed</li>
+        <li><strong>Linux (Debian/Ubuntu):</strong> Current amd64 package from <a href="https://github.com/Elifoxcoder/holyphp/releases/latest">GitHub Releases</a></li>
+      </ul>
+
+      <h3>Option 2: Build from Source</h3>
+      <p>If you want to build it yourself, you'll need a C11 compiler (gcc/clang/MSVC) and GNU ld.</p>
+      <pre><code class="bash">git clone https://github.com/Elifoxcoder/holyphp
+cd holyphp
+bash scripts/build.sh
+./hphp.exe version       # Windows / MinGW
+./hphp version           # Linux</code></pre>
+      <p>On Windows the setup installs the compiler for your user and can add it to your user PATH.
+        Open a new terminal after setup. On Debian or Ubuntu, install the downloaded package with
+        <code>sudo apt install ./holyphp_&lt;version&gt;_amd64.deb</code>.</p>
+
+      <h2>Verify Installation</h2>
+      <p>After installation, open a terminal/command prompt and check:</p>
+      <pre><code class="bash">hphp version</code></pre>
+      <p>For the 1.0.2 release, the version command reports:</p>
+      <pre><code class="plain">HolyPHP 1.0.2</code></pre>
+
+      <h2>Understanding the hphp Command</h2>
+      <p>The <code>hphp</code> command is your main tool. Here are the most common commands:</p>
+      <table>
+        <tr><th>Command</th><th>Description</th></tr>
+        <tr><td><code>hphp run file.hphp</code></td><td>Compile and run a program immediately</td></tr>
+        <tr><td><code>hphp build file.hphp -o app</code></td><td>Build a standalone executable</td></tr>
+        <tr><td><code>hphp check file.hphp</code></td><td>Check types and borrows without running</td></tr>
+        <tr><td><code>hphp emit file.hphp</code></td><td>Show internal representation</td></tr>
+        <tr><td><code>hphp pkg</code></td><td>Package manager</td></tr>
+        <tr><td><code>hphp version</code></td><td>Show version info</td></tr>
+      </table>
+
+      <h2>Build requirements</h2>
+      <p>The compiler is separate from the C compiler used as a backend. To compile or run a source
+        file, install GCC or another supported C compiler and linker, then confirm <code>gcc</code>
+        is available in your terminal PATH. The compiler itself can print its version without GCC.</p>
+      <h2>Environment Variables (Optional)</h2>
+      <table>
+        <tr><th>Variable</th><th>Effect</th></tr>
+        <tr><td><code>HPHP_VERBOSE=1</code></td><td>Show backend commands during compilation</td></tr>
+        <tr><td><code>HPHP_KEEP_BIN=1</code></td><td>Keep the temporary executable when using <code>hphp run</code></td></tr>
+      </table>
+
+      <h2>Code Editors</h2>
+      <p>HolyPHP has a VS Code extension for syntax highlighting and live diagnostics:</p>
+      <pre><code class="bash">code --install-extension extension/hphp/holyphp-0.1.0.vsix</code></pre>
+      <p>It provides syntax highlighting, completions for all 305 builtins, hover signatures, and live <code>hphp check</code> diagnostics.</p>
+
+      <div class="note">
+        <b>Tip:</b> You can also use any text editor you like! Just save files with the <code>.hphp</code> extension.
+      </div>
+
+      <div class="challenge"><strong class="exercise-title">Try it yourself</strong><b>Check your setup.</b> Open a new terminal and run <code>hphp version</code>. Then check whether a C compiler is available with <code>gcc --version</code>. Write down which command works and what version it reports.<details class="solution"><summary>Show a hint</summary><p>Take one small step at a time. Follow the instructions above, write down the result you expect, and compare it with what your terminal or Playground shows. If a command fails, check the filename and that you opened a new terminal after installation.</p></details></div>
+
+      <div class="chapter-nav">
+        <a href="01-what-is-holyphp.html" class="nav-prev">← Previous: What is HolyPHP?</a>
+        <a href="03-hello-world.html" class="nav-next">Next: Hello, World! →</a>
+      </div>
+
+    </main>
+  </div>
+  <script src="../assets/site.js?v=4"></script>
+<script src="../assets/theme.js?v=1"></script>
+</body>
+
+</html>

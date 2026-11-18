@@ -12,12 +12,12 @@
 #   usr/bin/hphp                 the compiler (runtime + stdlib embedded)
 #   hphp.desktop, hphp.png       desktop integration for AppImageLauncher
 #
-# NOT included: the lib/*.hphp libraries. ui/websocket go through the
-# package manager (`hphp pkg install ui`).
+# The compiler binary carries the bundled libraries. gcc is still needed
+# when hphp compiles a source program.
 set -euo pipefail
 cd "$(dirname "$0")/../.."          # repo root
 
-VERSION=1.0.0
+VERSION=1.0.2
 ARCH=x86_64
 APPDIR=packaging/linux/AppDir
 OUT=packaging/linux/out/HolyPHP-$VERSION-$ARCH.AppImage

@@ -30,6 +30,7 @@ static Expr *parse_unary(Parser *p);
 static Expr *parse_postfix(Parser *p);
 static Expr *parse_primary(Parser *p);
 static Stmt *parse_stmt(Parser *p);
+static Expr *parse_call_args(Parser *p, PtrVec *args);
 static Type *parse_type(Parser *p);
 static AstFn *parse_fn_after_name(Parser *p, const Token *name, bool is_method, bool is_static);
 static void parse_class_body(Parser *p, AstClass *c);
@@ -449,10 +450,15 @@ static void parse_class_body(Parser *p, AstClass *c) {
 }
 
 /* ---- Types ---- */
-static Type *parse_type(Parser *p) {
+static Type *parse_type_base(Parser *p) {
     Type *t = NULL;
+    /* `null` is a keyword, not an identifier: as a type it names the null
+     * type ("$x is null", "string|null"). ts_match already advances. */
+    if (ts_match(p->ts, T_HPHP_NULL)) {
+        return type_new(TY_NULL);
+    }
     if (ts_match(p->ts, T_AMP)) {
-        bool mut = eat_ident(p, "mut");
+        bool mut = eat_ident_or_kw(p, "mut", T_KW_MUT);
         Type *el = parse_type(p);
         t = type_new(mut ? TY_MUTREF : TY_REF);
         t->elem = el;
@@ -604,6 +610,48 @@ static Type *parse_type(Parser *p) {
     return t;
 }
 
+/* A type annotation is `?T` (nullable) or `A|B` (union).
+ *
+ * `?T` is sugar for the union {T, null}: both are stored in an hval slot, so
+ * the two spellings mean the same thing at runtime. A union of more than one
+ * non-null member keeps its own kind, but it is stored the same way. */
+static Type *parse_type(Parser *p) {
+    if (ts_match(p->ts, T_QUESTION)) {
+        Type *el = parse_type(p);
+        Type *t = type_new(TY_NULLABLE);
+        t->elem = el;
+        return t;
+    }
+    Type *first = parse_type_base(p);
+    if (!ts_check(p->ts, T_PIPE)) return first;
+    PtrVec members = {0};
+    ptrvec_push(&members, first);
+    while (ts_match(p->ts, T_PIPE)) {
+        if (ts_check(p->ts, T_EOF)) break;
+        ptrvec_push(&members, parse_type_base(p));
+    }
+    /* {T, null} is a nullable T, not a general union */
+    if (members.len == 2) {
+        const Type *a = members.items[0], *b = members.items[1];
+        const Type *other = NULL;
+        if (a && a->kind == TY_NULL) other = b;
+        else if (b && b->kind == TY_NULL) other = a;
+        if (other) {
+            Type *t = type_new(TY_NULLABLE);
+            t->elem = other;
+            free(members.items);
+            return t;
+        }
+    }
+    Type *u = type_new(TY_UNION);
+    u->nmembers = members.len;
+    u->members = xmalloc(sizeof(Type *) * (members.len ? members.len : 1));
+    for (size_t i = 0; i < members.len; i++)
+        ((Type **)u->members)[i] = members.items[i];
+    free(members.items);
+    return u;
+}
+
 /* ---- Statements ---- */
 static PtrVec parse_block_body(Parser *p) {
     PtrVec v = {0};
@@ -667,6 +715,21 @@ static Stmt *parse_stmt(Parser *p) {
     }
     case T_KW_PRINT: {
         ts_advance(p->ts);
+       /* `print(...)` with args is a function call, not a statement;
+          the statement form only takes a single expression. */
+       if (ts_check(p->ts, T_LPAREN)) {
+           Expr *callee = expr_new(EX_VAR, *t0);
+           callee->u.var.name = intern("print");
+           callee->u.var.bare_name = true;
+           Expr *call = expr_new(EX_CALL, *t0);
+           call->u.call.fn = callee;
+           parse_call_args(p, &call->u.call.args);
+           Stmt *s = stmt_new(ST_EXPR, *t0);
+           s->u.expr.expr = call;
+           s->u.expr.discard = true;
+           expect_nl_or_semi(p);
+           return s;
+       }
         Stmt *s = stmt_new(ST_PRINT, *t0);
         s->u.print.expr = parse_expr(p);
         expect_nl_or_semi(p);
@@ -761,7 +824,10 @@ static Stmt *parse_stmt(Parser *p) {
             SwitchCase *sc = xcalloc(1, sizeof(SwitchCase));
             if (ts_check(p->ts, T_KW_CASE)) {
                 ts_advance(p->ts);
-                ptrvec_push(&sc->patterns, parse_expr(p));
+                /* PHP's `case 1, 2:` - several values, one arm */
+                do {
+                    ptrvec_push(&sc->patterns, parse_expr(p));
+                } while (ts_match(p->ts, T_COMMA));
             } else if (ts_check(p->ts, T_KW_DEFAULT)) {
                 ts_advance(p->ts);
                 sc->is_default = true;
@@ -930,7 +996,7 @@ static Expr *parse_expr(Parser *p) { return parse_assign(p); }
  * a variable, so anything else is ordinary expression syntax. */
 static bool tok_starts_type(TokKind k) {
     return k == T_IDENT || k == T_AMP || k == T_STAR || k == T_LBRACKET ||
-           k == T_KW_FN || k == T_KW_OWN;
+           k == T_KW_FN || k == T_KW_OWN || k == T_QUESTION;
 }
 
 static Expr *parse_assign(Parser *p) {
@@ -1107,11 +1173,11 @@ static Expr *parse_unary(Parser *p) {
     }
     if (t->kind == T_AMP) {
         /* borrow or bitwise-and of unary: borrow if followed by $var/ident/&mut */
-        if (ts_peek2(p->ts)->kind == T_VAR || at_ident(p, "mut") ||
+        if (ts_peek2(p->ts)->kind == T_VAR || ts_peek2(p->ts)->kind == T_KW_MUT || at_ident(p, "mut") ||
             ts_peek2(p->ts)->kind == T_AMP) {
             Token amp = *ts_advance(p->ts);
             bool is_mut = false;
-            if (at_ident(p, "mut")) { ts_advance(p->ts); is_mut = true; }
+            if (eat_ident_or_kw(p, "mut", T_KW_MUT)) is_mut = true;
             Expr *operand = parse_unary(p);
             Expr *e = expr_new(is_mut ? EX_MUTBORROW : EX_BORROW, amp);
             e->u.borrow.operand = operand;

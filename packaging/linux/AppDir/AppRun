@@ -71,10 +71,7 @@ if [ "$cmd" = "install" ] || [ "$cmd" = "uninstall" ]; then
         echo "         install it with:  sudo apt install build-essential"
     fi
 
-    echo "  [info] ui and websocket libraries are NOT bundled."
-    echo "         install them with the package manager:"
-    echo "            hphp install ui"
-    echo "            hphp install websocket"
+    echo "  [info] bundled libraries: ui, websocket, async, thread, html and ide."
     echo ""
     echo "  Done. Try:  hphp run hello.hphp"
     echo ""
@@ -93,7 +90,7 @@ usage:
   hphp.AppImage install                add to PATH (user scope, no sudo)
   hphp.AppImage uninstall              undo the PATH entries
 
-libraries (ui, websocket) are installed with: hphp pkg install <name>
+bundled libraries: ui, websocket, async, thread, html, ide
 EOF
     exit 0
 fi

@@ -1,0 +1,1087 @@
+// =====================================================================
+//  HolyHTML — style: from "which declarations apply" to "what a box is"
+// =====================================================================
+//
+//  Part of lib/html (import "html"). The CSS layer says which declarations
+//  win; this file turns the winning values into a typed, resolved style:
+//  colours as ints, lengths as `Dim`, plus the fonts the text will be
+//  drawn with.
+//
+//  Three things are worth knowing:
+//
+//  1. A STYLE IS A FLAT, TYPED RECORD. Every property the engine
+//     understands is a field on `Style`. That is deliberate: a name /
+//     value map would make every lookup an untyped read, and the layout
+//     and paint code below would then be a pile of string comparisons
+//     instead of arithmetic.
+//
+//  2. A LENGTH STAYS UNRESOLVED UNTIL LAYOUT. `width: 50%` cannot become
+//     pixels before the containing block exists, so `Dim` keeps the unit
+//     (px, %, em, auto) and `dim_resolve` turns it into pixels with the
+//     base it is measured against. `em` resolves against the element's own
+//     font size, which is why the font size is resolved first.
+//
+//  3. INHERITANCE IS COPIED, NOT LOOKED UP. `style_derive` starts from the
+//     initial values and copies the handful of inherited properties off
+//     the parent. A property that is not in that list cannot leak, which
+//     is the property the cascade is supposed to have.
+//
+//  `box-sizing: border-box` is the *default* here, unlike in a browser.
+//  Every desktop UI writes `width: 200px` meaning "200px including the
+//  padding", and a window is not a document that has to be compatible
+//  with 1998.
+// =====================================================================
+
+// ---------------------------------------------------------------------
+//  1. Values
+// ---------------------------------------------------------------------
+
+/** A length, still unresolved: `auto`, px, % of the base, or em of the
+ *  font size. Keeping the unit instead of resolving on the spot is what
+ *  lets `width: 100%` work inside a container whose size is not known. */
+class Dim {
+    pub int $u = 1;          // 0 auto, 1 px, 2 %, 3 em
+    pub float $v = 0.0;
+
+    pub function isAuto(): bool { return $this->u == 0; }
+}
+
+function dim_auto(): Dim {
+    $d = new Dim();
+    $d->u = 0;
+    return $d;
+}
+
+function dim_px(float $v): Dim {
+    $d = new Dim();
+    $d->v = $v;
+    return $d;
+}
+
+function dim_em(float $v): Dim {
+    $d = new Dim();
+    $d->u = 3;
+    $d->v = $v;
+    return $d;
+}
+
+/** A number at the front of a string, 0 when there is none. */
+function num_lead(string $s): float {
+    $out = "";
+    $i = 0;
+    $n = strlen($s);
+    $seen_dot = false;
+    if ($n > 0 && (substr($s, 0, 1) == "-" || substr($s, 0, 1) == "+")) {
+        $out .= substr($s, 0, 1);
+        $i = 1;
+    }
+    while ($i < $n) {
+        $c = substr($s, $i, 1);
+        if ($c == "." && !$seen_dot) { $seen_dot = true; $out .= $c; $i = $i + 1; continue; }
+        if ($c < "0" || $c > "9") { break; }
+        $out .= $c;
+        $i = $i + 1;
+    }
+    if ($out == "" || $out == "-" || $out == "+") { return 0.0; }
+    return floatval($out);
+}
+
+function ends_with(string $s, string $suffix): bool {
+    $ls = strlen($s);
+    $lx = strlen($suffix);
+    if ($lx > $ls) { return false; }
+    return substr($s, $ls - $lx, $lx) == $suffix;
+}
+
+/** `12px`, `50%`, `1.5em`, `auto`, `12`. */
+function dim_parse(string $v): Dim {
+    $s = strtolower(trim($v));
+    if ($s == "" || $s == "auto" || $s == "none" || $s == "normal") { return dim_auto(); }
+    if ($s == "fit-content" || $s == "max-content" || $s == "min-content") { return dim_auto(); }
+    if (ends_with($s, "%")) { return new_pct(num_lead($s)); }
+    if (ends_with($s, "rem")) { return dim_px(num_lead($s) * 16.0); }
+    if (ends_with($s, "em")) { return dim_em(num_lead($s)); }
+    if (ends_with($s, "pt")) { return dim_px(num_lead($s) * 4.0 / 3.0); }
+    return dim_px(num_lead($s));
+}
+
+function new_pct(float $v): Dim {
+    $d = new Dim();
+    $d->u = 2;
+    $d->v = $v;
+    return $d;
+}
+
+/** Resolve a length against a base (the containing block's content size)
+ *  and the element's own font size, in logical pixels. */
+function dim_resolve(Dim $d, int $base, int $em): int {
+    if ($d == null || $d->u == 0) { return 0; }
+    if ($d->u == 2) { return intval($d->v * $base / 100.0); }
+    if ($d->u == 3) { return intval($d->v * $em); }
+    return intval($d->v);
+}
+
+/** A pixel length that is not a `Dim`: paddings, borders, gaps. */
+function px_parse(string $v, int $em): int {
+    return dim_resolve(dim_parse($v), 0, $em);
+}
+
+// ---------------------------------------------------------------------
+//  2. Colours
+// ---------------------------------------------------------------------
+//  Colours are 0xRRGGBB ints because that is what the canvas takes, and
+//  -1 means "nothing" (transparent, or no background). There is no alpha
+//  channel: the surface is 32-bit GDI, so `rgba(...,0)` is treated as
+//  transparent and any other alpha is ignored rather than faked.
+
+function color_rgb(int $r, int $g, int $b): int {
+    return (($r & 255) << 16) | (($g & 255) << 8) | ($b & 255);
+}
+
+function color_hex(int $c): string {
+    if ($c < 0) { return "none"; }
+    $s = dechex($c);
+    while (strlen($s) < 6) { $s = "0" . $s; }
+    return "#" . $s;
+}
+
+function hex_val(string $c): int {
+    $d = ord($c);
+    if ($d >= 48 && $d <= 57) { return $d - 48; }       /* 0-9 */
+    if ($d >= 97 && $d <= 102) { return $d - 87; }      /* a-f */
+    if ($d >= 65 && $d <= 70) { return $d - 55; }       /* A-F */
+    return -1;
+}
+
+/** Named colours: the ones a UI stylesheet actually says. */
+function color_name(string $v): int {
+    if ($v == "transparent" || $v == "none" || $v == "inherit" || $v == "initial") { return -2; }
+    if ($v == "black") { return 0x000000; }
+    if ($v == "white") { return 0xffffff; }
+    if ($v == "red") { return 0xff0000; }
+    if ($v == "green") { return 0x008000; }
+    if ($v == "blue") { return 0x0000ff; }
+    if ($v == "yellow") { return 0xffff00; }
+    if ($v == "orange") { return 0xffa500; }
+    if ($v == "purple") { return 0x800080; }
+    if ($v == "gray" || $v == "grey") { return 0x808080; }
+    if ($v == "silver") { return 0xc0c0c0; }
+    if ($v == "maroon") { return 0x800000; }
+    if ($v == "navy") { return 0x000080; }
+    if ($v == "teal") { return 0x008080; }
+    if ($v == "olive") { return 0x808000; }
+    if ($v == "lime") { return 0x00ff00; }
+    if ($v == "aqua" || $v == "cyan") { return 0x00ffff; }
+    if ($v == "magenta" || $v == "fuchsia") { return 0xff00ff; }
+    if ($v == "pink") { return 0xffc0cb; }
+    if ($v == "brown") { return 0xa52a2a; }
+    if ($v == "gold") { return 0xffd700; }
+    if ($v == "tomato") { return 0xff6347; }
+    if ($v == "salmon") { return 0xfa8072; }
+    if ($v == "crimson") { return 0xdc143c; }
+    if ($v == "khaki") { return 0xf0e68c; }
+    if ($v == "beige") { return 0xf5f5dc; }
+    if ($v == "ivory") { return 0xfffff0; }
+    if ($v == "darkgray" || $v == "darkgrey") { return 0xa9a9a9; }
+    if ($v == "lightgray" || $v == "lightgrey") { return 0xd3d3d3; }
+    if ($v == "dimgray" || $v == "dimgrey") { return 0x696969; }
+    if ($v == "whitesmoke") { return 0xf5f5f5; }
+    if ($v == "steelblue") { return 0x4682b4; }
+    if ($v == "skyblue") { return 0x87ceeb; }
+    if ($v == "dodgerblue") { return 0x1e90ff; }
+    if ($v == "royalblue") { return 0x4169e1; }
+    if ($v == "cornflowerblue") { return 0x6495ed; }
+    if ($v == "slategray" || $v == "slategrey") { return 0x708090; }
+    if ($v == "seagreen") { return 0x2e8b57; }
+    if ($v == "forestgreen") { return 0x228b22; }
+    if ($v == "coral") { return 0xff7f50; }
+    if ($v == "indigo") { return 0x4b0082; }
+    if ($v == "violet") { return 0xee82ee; }
+    if ($v == "plum") { return 0xdda0dd; }
+    if ($v == "orchid") { return 0xda70d6; }
+    return -3;      /* not a colour we know */
+}
+
+/** A CSS colour value to an int, or -1 for "none" / transparent. */
+function color_parse(string $v): int {
+    $s = strtolower(trim($v));
+    if ($s == "") { return -1; }
+    /* the first token: `background: #123 url(x)` and `1px solid #123` both
+     * carry a colour somewhere other than at the start */
+    $sp = strpos($s, " ");
+    if ($sp !== false && (strpos($s, "rgb") !== 0)) { $s = substr($s, 0, $sp); }
+    if (substr($s, 0, 1) == "#") {
+        $h = substr($s, 1);
+        $hl = strlen($h);
+        if ($hl == 3) {
+            $r = hex_val(substr($h, 0, 1));
+            $g = hex_val(substr($h, 1, 1));
+            $b = hex_val(substr($h, 2, 1));
+            if ($r < 0 || $g < 0 || $b < 0) { return -1; }
+            return color_rgb($r * 17, $g * 17, $b * 17);
+        }
+        if ($hl >= 6) {
+            $r = hex_val(substr($h, 0, 1)) * 16 + hex_val(substr($h, 1, 1));
+            $g = hex_val(substr($h, 2, 1)) * 16 + hex_val(substr($h, 3, 1));
+            $b = hex_val(substr($h, 4, 1)) * 16 + hex_val(substr($h, 5, 1));
+            if ($r < 0 || $g < 0 || $b < 0) { return -1; }
+            return color_rgb($r, $g, $b);
+        }
+        return -1;
+    }
+    if (strpos($s, "rgb") === 0) {
+        $lp = strpos($s, "(");
+        $rp = strpos($s, ")");
+        if ($lp === false || $rp === false) { return -1; }
+        $inner = substr($s, $lp + 1, $rp - $lp - 1);
+        $parts = explode(",", $inner);
+        if (count($parts) < 3) { return -1; }
+        /* rgba(..., 0) is invisible: honest about the missing alpha
+         * support instead of drawing an opaque block */
+        if (count($parts) >= 4 && num_lead($parts[3]) <= 0.02) { return -1; }
+        return color_rgb(intval(num_lead($parts[0])), intval(num_lead($parts[1])),
+                         intval(num_lead($parts[2])));
+    }
+    $c = color_name($s);
+    if ($c == -2) { return -1; }
+    if ($c == -3) { return -1; }
+    return $c;
+}
+
+// ---------------------------------------------------------------------
+//  3. The theme: what an unstyled document looks like
+// ---------------------------------------------------------------------
+
+/** The palette a document starts from. A stylesheet overrides any of it;
+ *  the theme only has to be the answer for "the CSS said nothing". */
+class HtmlTheme {
+    pub int $bg = 0x1e1e1e;
+    pub int $surface = 0x252526;
+    pub int $elevated = 0x2d2d30;
+    pub int $text = 0xcccccc;
+    pub int $muted = 0x8a8a8a;
+    pub int $accent = 0x007acc;
+    pub int $onAccent = 0xffffff;
+    pub int $border = 0x3c3c3c;
+    pub string $family = "Segoe UI";
+    pub string $mono = "Consolas";
+    pub int $fontPx = 13;
+    pub int $radius = 4;
+    pub int $rowH = 22;
+}
+
+function html_theme_dark(): HtmlTheme {
+    $t = new HtmlTheme();
+    return $t;
+}
+
+function html_theme_light(): HtmlTheme {
+    $t = new HtmlTheme();
+    $t->bg = 0xffffff;
+    $t->surface = 0xf3f3f3;
+    $t->elevated = 0xe8e8e8;
+    $t->text = 0x1f1f1f;
+    $t->muted = 0x6b6b6b;
+    $t->accent = 0x005fb8;
+    $t->onAccent = 0xffffff;
+    $t->border = 0xd4d4d4;
+    return $t;
+}
+
+// ---------------------------------------------------------------------
+//  4. The style record
+// ---------------------------------------------------------------------
+
+class Style {
+    // identity
+    pub HNode $node = null;
+    pub int $order = 0;
+
+    // 310
+    pub string $display = "block";      // block|inline|inline-block|flex|none
+    pub string $position = "static";    // static|relative|absolute|fixed
+    pub Dim $top = null;
+    pub Dim $right = null;
+    pub Dim $bottom = null;
+    pub Dim $left = null;
+    pub int $z = 0;
+    pub string $overflow = "visible";   // visible|hidden|auto|scroll
+    pub string $boxSizing = "border-box";
+
+    // box
+    pub Dim $width = null;
+    pub Dim $height = null;
+    pub Dim $minW = null;
+    pub Dim $minH = null;
+    pub Dim $maxW = null;
+    pub Dim $maxH = null;
+    pub int $padT = 0;
+    pub int $padR = 0;
+    pub int $padB = 0;
+    pub int $padL = 0;
+    pub Dim $marT = null;
+    pub Dim $marR = null;
+    pub Dim $marB = null;
+    pub Dim $marL = null;
+    pub int $bwT = 0;
+    pub int $bwR = 0;
+    pub int $bwB = 0;
+    pub int $bwL = 0;
+    pub int $bcT = -1;
+    pub int $bcR = -1;
+    pub int $bcB = -1;
+    pub int $bcL = -1;
+    pub int $radius = 0;
+
+    // paint
+    pub int $bg = -1;
+    pub int $fg = 0xcccccc;
+
+    // text
+    pub string $family = "Segoe UI";
+    pub int $fontPx = 13;
+    pub bool $bold = false;
+    pub bool $italic = false;
+    pub string $align = "left";         // left|center|right
+    pub int $lineH = 0;                 // 0 = from the font
+    pub string $whiteSpace = "normal";  // normal|nowrap|pre
+    pub bool $ellipsis = false;
+    pub bool $underline = false;
+    pub bool $strike = false;
+
+    // flex
+    pub string $dir = "row";            // row|column
+    pub string $justify = "start";      // start|center|end|between|around
+    pub string $alignItems = "stretch"; // stretch|start|center|end
+    pub string $alignSelf = "auto";
+    pub string $wrap = "nowrap";        // nowrap|wrap
+    pub int $rowGap = 0;
+    pub int $colGap = 0;
+    pub float $grow = 0.0;
+    pub float $shrink = 1.0;
+    pub Dim $basis = null;
+
+    // interaction
+    pub string $cursor = "default";
+    pub bool $selectable = true;
+
+    // resolved by layout / paint (never set from CSS)
+    pub int $font = 0;                  // canvas font id
+}
+
+/** Every field to its initial value. */
+function style_new(): Style {
+    $s = new Style();
+    style_reset_dims($s);
+    return $s;
+}
+
+function style_reset_dims(Style $s) {
+    $s->top = dim_auto();
+    $s->right = dim_auto();
+    $s->bottom = dim_auto();
+    $s->left = dim_auto();
+    $s->width = dim_auto();
+    $s->height = dim_auto();
+    $s->minW = dim_auto();
+    $s->minH = dim_auto();
+    $s->maxW = dim_auto();
+    $s->maxH = dim_auto();
+    $s->marT = dim_px(0);
+    $s->marR = dim_px(0);
+    $s->marB = dim_px(0);
+    $s->marL = dim_px(0);
+    $s->basis = dim_auto();
+}
+
+/** The style of the root: the theme, not the initial values. */
+function style_root(HtmlTheme $th): Style {
+    $s = style_new();
+    $s->bg = -1;
+    $s->fg = $th->text;
+    $s->family = $th->family;
+    $s->fontPx = $th->fontPx;
+    $s->radius = 0;
+    return $s;
+}
+
+/** A child's starting style: initial values plus what CSS inherits. */
+function style_derive(Style $p, HtmlTheme $th): Style {
+    $s = style_new();
+    if ($p == null) { return style_root($th); }
+    $s->fg = $p->fg;
+    $s->family = $p->family;
+    $s->fontPx = $p->fontPx;
+    $s->bold = $p->bold;
+    $s->italic = $p->italic;
+    $s->align = $p->align;
+    $s->lineH = $p->lineH;
+    $s->whiteSpace = $p->whiteSpace;
+    $s->cursor = $p->cursor;
+    return $s;
+}
+
+// ---------------------------------------------------------------------
+//  5. Applying declarations
+// ---------------------------------------------------------------------
+
+/** Split a value into whitespace-separated tokens (quotes respected). */
+function tokens(string $v): [string] {
+    $out: [string];
+    $buf = "";
+    $i = 0;
+    $n = strlen($v);
+    while ($i < $n) {
+        $c = substr($v, $i, 1);
+        if ($c == "\"" || $c == "'") {
+            if ($buf != "") { $out[] = $buf; $buf = ""; }
+            $i = $i + 1;
+            while ($i < $n) {
+                $d = substr($v, $i, 1);
+                $i = $i + 1;
+                if ($d == $c) { break; }
+                $buf .= $d;
+            }
+            continue;
+        }
+        if ($c == " " || $c == "\t" || $c == "\n" || $c == "\r") {
+            if ($buf != "") { $out[] = $buf; $buf = ""; }
+            $i = $i + 1;
+            continue;
+        }
+        $buf .= $c;
+        $i = $i + 1;
+    }
+    if ($buf != "") { $out[] = $buf; }
+    return $out;
+}
+
+function token_at([string] $t, int $i, string $dflt): string {
+    if ($i < count($t)) { return $t[$i]; }
+    return $dflt;
+}
+
+/** One to four values, in the CSS order (top, right, bottom, left). */
+function four_vals([string] $t, string $dflt): [string] {
+    $out: [string];
+    $n = count($t);
+    if ($n == 0) {
+        $out[] = $dflt; $out[] = $dflt; $out[] = $dflt; $out[] = $dflt;
+        return $out;
+    }
+    if ($n == 1) {
+        $out[] = $t[0]; $out[] = $t[0]; $out[] = $t[0]; $out[] = $t[0];
+        return $out;
+    }
+    if ($n == 2) {
+        $out[] = $t[0]; $out[] = $t[1]; $out[] = $t[0]; $out[] = $t[1];
+        return $out;
+    }
+    if ($n == 3) {
+        $out[] = $t[0]; $out[] = $t[1]; $out[] = $t[2]; $out[] = $t[1];
+        return $out;
+    }
+    $out[] = $t[0]; $out[] = $t[1]; $out[] = $t[2]; $out[] = $t[3];
+    return $out;
+}
+
+/** The width and colour out of `1px solid #123` (or `none`). */
+function border_parse(string $v, int $em, int $side, Style $st) {
+    $t = tokens($v);
+    $w = 0;
+    $c = -1;
+    for ($i = 0; $i < count($t); $i++) {
+        $tok = strtolower($t[$i]);
+        if ($tok == "none" || $tok == "hidden") { $w = 0; continue; }
+        if ($tok == "solid" || $tok == "dashed" || $tok == "dotted" ||
+            $tok == "double" || $tok == "thin" || $tok == "medium" ||
+            $tok == "thick") { continue; }
+        if (substr($tok, 0, 1) == "#" || strpos($tok, "rgb") === 0 ||
+            color_name($tok) != -3) {
+            $c = color_parse($tok);
+            if ($c < 0) { $c = $st->fg; }      /* `1px solid currentColor` */
+            continue;
+        }
+        $w = px_parse($tok, $em);
+    }
+    style_set_border($st, $side, $w, $c);
+}
+
+function style_set_border(Style $st, int $side, int $w, int $c) {
+    /* -1 means "no colour in the declaration": currentColor, the way a bare
+     * `border: 1px solid` works. -2 means "width only" (`border-width: 2px`),
+     * which must not repaint a border that already has a colour. */
+    $col = $c == -1 ? $st->fg : $c;
+    $setCol = ($c != -2);
+    if ($side == 0 || $side == 4) { $st->bwT = $w; if ($setCol) { $st->bcT = $col; } }
+    if ($side == 1 || $side == 4) { $st->bwR = $w; if ($setCol) { $st->bcR = $col; } }
+    if ($side == 2 || $side == 4) { $st->bwB = $w; if ($setCol) { $st->bcB = $col; } }
+    if ($side == 3 || $side == 4) { $st->bwL = $w; if ($setCol) { $st->bcL = $col; } }
+}
+
+function style_set_pad(Style $st, int $side, int $v) {
+    if ($side == 0 || $side == 4) { $st->padT = $v; }
+    if ($side == 1 || $side == 4) { $st->padR = $v; }
+    if ($side == 2 || $side == 4) { $st->padB = $v; }
+    if ($side == 3 || $side == 4) { $st->padL = $v; }
+}
+
+function style_set_margin(Style $st, int $side, Dim $v) {
+    if ($side == 0 || $side == 4) { $st->marT = $v; }
+    if ($side == 1 || $side == 4) { $st->marR = $v; }
+    if ($side == 2 || $side == 4) { $st->marB = $v; }
+    if ($side == 3 || $side == 4) { $st->marL = $v; }
+}
+
+/** Side numbers used by the four_vals helpers. */
+function side_num(string $name): int {
+    if ($name == "top") { return 0; }
+    if ($name == "right") { return 1; }
+    if ($name == "bottom") { return 2; }
+    if ($name == "left") { return 3; }
+    return 4;      /* all four */
+}
+
+/** Apply one declaration. Shorthands expand by recursing, so there is one
+ *  place that knows what `border` means and one place that knows what
+ *  `border-top-width` means. */
+function style_apply(Style $st, string $p, string $v, HtmlTheme $th) {
+    $val = trim($v);
+    if ($val == "inherit" || $val == "initial" || $val == "unset") { return; }
+    $em = $st->fontPx;
+
+    /* ---- display and flow ---- */
+    if ($p == "display") {
+        $kw = strtolower($val);
+        if ($kw == "block" || $kw == "inline" || $kw == "inline-block" ||
+            $kw == "flex" || $kw == "inline-flex" || $kw == "none" ||
+            $kw == "contents") {
+            $st->display = ($kw == "inline-flex") ? "flex" : $kw;
+        }
+        return;
+    }
+    if ($p == "position") {
+        $st->position = strtolower($val);
+        return;
+    }
+    if ($p == "top" || $p == "right" || $p == "bottom" || $p == "left") {
+        $dv = dim_parse($val);
+        if ($p == "top") { $st->top = $dv; }
+        if ($p == "right") { $st->right = $dv; }
+        if ($p == "bottom") { $st->bottom = $dv; }
+        if ($p == "left") { $st->left = $dv; }
+        return;
+    }
+    if ($p == "inset") {
+        $q = four_vals(tokens($val), "auto");
+        $st->top = dim_parse($q[0]);
+        $st->right = dim_parse($q[1]);
+        $st->bottom = dim_parse($q[2]);
+        $st->left = dim_parse($q[3]);
+        return;
+    }
+    if ($p == "z-index") {
+        $st->z = intval(num_lead($val));
+        return;
+    }
+    if ($p == "overflow" || $p == "overflow-x" || $p == "overflow-y") {
+        $st->overflow = strtolower(token_at(tokens($val), 0, "visible"));
+        return;
+    }
+    if ($p == "box-sizing") {
+        $st->boxSizing = strtolower($val);
+        return;
+    }
+
+    /* ---- box ---- */
+    if ($p == "width") { $st->width = dim_parse($val); return; }
+    if ($p == "height") { $st->height = dim_parse($val); return; }
+    if ($p == "min-width") { $st->minW = dim_parse($val); return; }
+    if ($p == "min-height") { $st->minH = dim_parse($val); return; }
+    if ($p == "max-width") { $st->maxW = dim_parse($val); return; }
+    if ($p == "max-height") { $st->maxH = dim_parse($val); return; }
+    if ($p == "padding") {
+        $q = four_vals(tokens($val), "0");
+        style_set_pad($st, 0, px_parse($q[0], $em));
+        style_set_pad($st, 1, px_parse($q[1], $em));
+        style_set_pad($st, 2, px_parse($q[2], $em));
+        style_set_pad($st, 3, px_parse($q[3], $em));
+        return;
+    }
+    if (substr($p, 0, 8) == "padding-") {
+        style_set_pad($st, side_num(substr($p, 8)), px_parse($val, $em));
+        return;
+    }
+    if ($p == "margin") {
+        $q = four_vals(tokens($val), "0");
+        style_set_margin($st, 0, dim_parse($q[0]));
+        style_set_margin($st, 1, dim_parse($q[1]));
+        style_set_margin($st, 2, dim_parse($q[2]));
+        style_set_margin($st, 3, dim_parse($q[3]));
+        return;
+    }
+    if (substr($p, 0, 7) == "margin-") {
+        style_set_margin($st, side_num(substr($p, 7)), dim_parse($val));
+        return;
+    }
+    if ($p == "border") {
+        border_parse($val, $em, 4, $st);
+        return;
+    }
+    if (substr($p, 0, 7) == "border-") {
+        $rest = substr($p, 7);
+        $at = strpos($rest, "-");
+        if ($at !== false) {
+            $side = side_num(substr($rest, 0, $at));
+            $what = substr($rest, $at + 1);
+            if ($what == "width") {
+                style_set_border($st, $side, px_parse($val, $em), 0);
+                return;
+            }
+            if ($what == "color") {
+                $c = color_parse($val);
+                style_set_border($st, $side, style_bw($st, $side), $c);
+                return;
+            }
+            if ($what == "style") { return; }
+            if ($what == "radius") {
+                $st->radius = px_parse(token_at(tokens($val), 0, "0"), $em);
+                return;
+            }
+            return;
+        }
+        /* No second hyphen: a single side (`border-top`) or a sub-property
+         * that has no side in its name. `side_num` answers "all four" for
+         * anything it does not recognise, so `border-radius: 6px` used to
+         * come out as a 6px border on every side, painted in the text
+         * colour - which is why a 1px card outline was 6px of light grey. */
+        if ($rest == "radius") {
+            $st->radius = px_parse(token_at(tokens($val), 0, "0"), $em);
+            return;
+        }
+        if ($rest == "color") {
+            style_set_border($st, 4, style_bw($st, 4), color_parse($val));
+            return;
+        }
+        if ($rest == "width") {
+            style_set_border($st, 4, px_parse($val, $em), -2);
+            return;
+        }
+        if ($rest == "style") { return; }
+        $side = side_num($rest);
+        border_parse($val, $em, $side, $st);
+        return;
+    }
+    if ($p == "border-radius") {
+        $st->radius = px_parse(token_at(tokens($val), 0, "0"), $em);
+        return;
+    }
+    if ($p == "border-color") {
+        $c = color_parse($val);
+        style_set_border($st, 4, style_bw($st, 4), $c);
+        return;
+    }
+    if ($p == "border-width") {
+        style_set_border($st, 4, px_parse($val, $em), -2);
+        return;
+    }
+    if ($p == "outline" || $p == "box-shadow" || $p == "outline-offset") {
+        /* A focus ring is drawn with a border in this engine; a shadow has
+         * no cheap equivalent on a GDI surface. Recorded, not painted. */
+        return;
+    }
+
+    /* ---- paint ---- */
+    if ($p == "background" || $p == "background-color") {
+        $st->bg = color_parse($val);
+        if ($st->bg == -1 && $p == "background") { $st->bg = -1; }
+        return;
+    }
+    if ($p == "color") {
+        $c = color_parse($val);
+        $st->fg = $c < 0 ? $st->fg : $c;
+        return;
+    }
+
+    /* ---- text ---- */
+    if ($p == "font-family") {
+        $f = token_at(tokens($val), 0, $th->family);
+        if (strtolower($f) == "monospace") { $f = $th->mono; }
+        if (strtolower($f) == "sans-serif" || strtolower($f) == "system-ui") { $f = $th->family; }
+        $st->family = $f;
+        return;
+    }
+    if ($p == "font-size") {
+        $t = tokens($val);
+        if (count($t) == 1 && (strtolower($t[0]) == "small" || strtolower($t[0]) == "smaller")) {
+            $st->fontPx = intval($st->fontPx * 0.85);
+            return;
+        }
+        if (count($t) == 1 && strtolower($t[0]) == "large") {
+            $st->fontPx = intval($st->fontPx * 1.2);
+            return;
+        }
+        $dv = dim_parse($val);
+        $st->fontPx = dim_resolve($dv, $st->fontPx, $st->fontPx);
+        if ($st->fontPx < 6) { $st->fontPx = 6; }
+        return;
+    }
+    if ($p == "font-weight") {
+        $w = strtolower($val);
+        if ($w == "bold" || $w == "bolder") { $st->bold = true; return; }
+        if ($w == "normal" || $w == "lighter") { $st->bold = false; return; }
+        $st->bold = intval(num_lead($w)) >= 600;
+        return;
+    }
+    if ($p == "font-style") {
+        $st->italic = (strtolower($val) == "italic" || strtolower($val) == "oblique");
+        return;
+    }
+    if ($p == "font") {
+        /* `font: bold italic 12px/1.4 Consolas, monospace` - the tokens up
+         * to the size are style words, everything after it is a family. */
+        $t = tokens($val);
+        $i = 0;
+        $family = "";
+        while ($i < count($t)) {
+            $tok = strtolower($t[$i]);
+            if ($tok == "bold" || $tok == "bolder") { $st->bold = true; $i = $i + 1; continue; }
+            if ($tok == "italic" || $tok == "oblique") { $st->italic = true; $i = $i + 1; continue; }
+            if ($tok == "normal") { $i = $i + 1; continue; }
+            break;
+        }
+        if ($i < count($t)) {
+            $size = $t[$i];
+            $slash = strpos($size, "/");
+            $lh = "";
+            if ($slash !== false) {
+                $lh = substr($size, $slash + 1);
+                $size = substr($size, 0, $slash);
+            }
+            /* the size first: the shorthand's line-height is a multiple
+             * OF THAT SIZE, so resolving it earlier would use the old one */
+            style_apply($st, "font-size", $size, $th);
+            if ($lh != "") { style_apply($st, "line-height", $lh, $th); }
+            $i = $i + 1;
+        }
+        while ($i < count($t)) {
+            $tok = strtolower($t[$i]);
+            if ($tok == "italic" || $tok == "oblique") { $st->italic = true; $i = $i + 1; continue; }
+            if ($tok == "bold") { $st->bold = true; $i = $i + 1; continue; }
+            if ($family == "") { $family = $t[$i]; }
+            $i = $i + 1;
+        }
+        if ($family != "") {
+            if (strtolower($family) == "monospace") { $family = $th->mono; }
+            $st->family = $family;
+        }
+        return;
+    }
+    if ($p == "text-align") {
+        $st->align = strtolower($val);
+        return;
+    }
+    if ($p == "line-height") {
+        $s = strtolower(trim($val));
+        $dv = dim_parse($s);
+        if ($dv->u == 1 && num_lead($s) > 0 && num_lead($s) < 5 &&
+            strpos($s, "px") === false && strpos($s, "%") === false) {
+            /* a bare number is a multiplier of the font size */
+            $st->lineH = intval(num_lead($s) * $st->fontPx);
+        } else {
+            $st->lineH = dim_resolve($dv, $st->fontPx, $st->fontPx);
+        }
+        return;
+    }
+    if ($p == "white-space") {
+        $w = strtolower($val);
+        /* `pre` and `pre-wrap` are not the same value: both keep the spaces
+         * the document wrote, only the second one may break a line. A code
+         * pane needs the first (a wrapped line of code is a lie), a log pane
+         * the second. */
+        if ($w == "nowrap" || $w == "pre" || $w == "pre-wrap" || $w == "normal") {
+            $st->whiteSpace = $w;
+        }
+        return;
+    }
+    if ($p == "text-overflow") {
+        $st->ellipsis = (strtolower($val) == "ellipsis");
+        return;
+    }
+    if ($p == "text-decoration" || $p == "text-decoration-line") {
+        $kw = strtolower($val);
+        $st->underline = strpos($kw, "underline") !== false;
+        $st->strike = strpos($kw, "line-through") !== false;
+        return;
+    }
+    if ($p == "user-select" || $p == "user-select-text") {
+        $st->selectable = (strtolower($val) != "none");
+        return;
+    }
+    if ($p == "letter-spacing" || $p == "text-transform" || $p == "word-break" ||
+        $p == "overflow-wrap" || $p == "word-wrap" || $p == "text-shadow" ||
+        $p == "opacity" || $p == "transition" || $p == "transform" ||
+        $p == "visibility" || $p == "list-style" || $p == "list-style-type" ||
+        $p == "font-variant" || $p == "tab-size") {
+        /* recognised and deliberately ignored - see the notes in view.hphp */
+        return;
+    }
+
+    /* ---- flex ---- */
+    if ($p == "flex-direction") {
+        $kw = strtolower($val);
+        if (substr($kw, 0, 6) == "column") { $st->dir = "column"; }
+        else { $st->dir = "row"; }
+        return;
+    }
+    if ($p == "flex-wrap") {
+        $st->wrap = (strpos(strtolower($val), "wrap") !== false &&
+                     strtolower($val) != "nowrap") ? "wrap" : "nowrap";
+        return;
+    }
+    if ($p == "justify-content") {
+        $kw = strtolower(token_at(tokens($val), 0, "flex-start"));
+        if ($kw == "flex-start" || $kw == "start") { $st->justify = "start"; }
+        else if ($kw == "center") { $st->justify = "center"; }
+        else if ($kw == "flex-end" || $kw == "end") { $st->justify = "end"; }
+        else if ($kw == "space-between") { $st->justify = "between"; }
+        else if ($kw == "space-around") { $st->justify = "around"; }
+        else if ($kw == "space-evenly") { $st->justify = "evenly"; }
+        return;
+    }
+    if ($p == "align-items") {
+        $kw = strtolower(token_at(tokens($val), 0, "stretch"));
+        if ($kw == "stretch") { $st->alignItems = "stretch"; }
+        else if ($kw == "center") { $st->alignItems = "center"; }
+        else if ($kw == "flex-end" || $kw == "end") { $st->alignItems = "end"; }
+        else { $st->alignItems = "start"; }
+        return;
+    }
+    if ($p == "align-self") {
+        $kw = strtolower($val);
+        if ($kw == "stretch" || $kw == "center" || $kw == "flex-start" ||
+            $kw == "flex-end" || $kw == "end" || $kw == "start" || $kw == "auto") {
+            $st->alignSelf = ($kw == "flex-start") ? "start" : $kw;
+        }
+        return;
+    }
+    if ($p == "gap" || $p == "grid-gap") {
+        $q = four_vals(tokens($val), "0");
+        $st->rowGap = px_parse($q[0], $em);
+        $st->colGap = px_parse($q[1], $em);
+        return;
+    }
+    if ($p == "row-gap") { $st->rowGap = px_parse($val, $em); return; }
+    if ($p == "column-gap") { $st->colGap = px_parse($val, $em); return; }
+    if ($p == "flex" || $p == "flex-grow" || $p == "flex-shrink" || $p == "flex-basis") {
+        if ($p == "flex") {
+            $t = tokens($val);
+            if (count($t) == 1 && strtolower($t[0]) == "none") {
+                $st->grow = 0.0; $st->shrink = 0.0; $st->basis = dim_auto();
+                return;
+            }
+            if (count($t) == 1 && strtolower($t[0]) == "auto") {
+                $st->grow = 1.0; $st->shrink = 1.0; $st->basis = dim_auto();
+                return;
+            }
+            $i = 0;
+            while ($i < count($t)) {
+                $tok = strtolower($t[$i]);
+                if ($tok == "auto") { $st->basis = dim_auto(); $i = $i + 1; continue; }
+                if (substr($tok, 0, 1) == "0" || num_lead($tok) > 0 ||
+                    substr($tok, 0, 1) == "1") {
+                    /* a bare number is grow (or grow + shrink); anything
+                     * with a unit is the basis */
+                    if (strpos($tok, "px") !== false || strpos($tok, "%") !== false ||
+                        strpos($tok, "em") !== false) {
+                        $st->basis = dim_parse($tok);
+                    } else if ($i == 0) {
+                        $st->grow = num_lead($tok);
+                        if ($st->grow == 1.0) { $st->basis = dim_px(0); }
+                    } else {
+                        $st->shrink = num_lead($tok);
+                    }
+                }
+                $i = $i + 1;
+            }
+            return;
+        }
+        if ($p == "flex-grow") { $st->grow = num_lead($val); return; }
+        if ($p == "flex-shrink") { $st->shrink = num_lead($val); return; }
+        $st->basis = dim_parse($val);
+        return;
+    }
+    if ($p == "order") { return; }        /* order is document order here */
+
+    /* ---- interaction ---- */
+    if ($p == "cursor") {
+        $ck = strtolower(token_at(tokens($val), 0, "default"));
+        if ($ck != "default" && $ck != "pointer" && $ck != "text" && $ck != "move" &&
+            $ck != "ew-resize" && $ck != "ns-resize" && $ck != "crosshair" &&
+            $ck != "wait" && $ck != "help" && $ck != "not-allowed") {
+            return;
+        }
+        $st->cursor = $ck;
+        return;
+    }
+    /* anything else is simply not a property this engine knows */
+}
+
+/** The border width on one side right now, for `border-color: x`. */
+function style_bw(Style $st, int $side): int {
+    if ($side == 0) { return $st->bwT; }
+    if ($side == 1) { return $st->bwR; }
+    if ($side == 2) { return $st->bwB; }
+    if ($side == 3) { return $st->bwL; }
+    return 0;
+}
+
+// ---------------------------------------------------------------------
+//  6. Computing a node's style
+// ---------------------------------------------------------------------
+
+/** The style of one node: inherit, then apply what the cascade won.
+ *
+ *  Text nodes take no declarations (they are not elements) but inherit
+ *  everything, which is what makes `<span style="color:red"> text` work:
+ *  the text node's colour comes from its parent element. */
+function style_compute(HNode $n, [CssSheet] $sheets, HState $hs, Style $parent,
+                       HtmlTheme $th): Style {
+    $st = style_derive($parent, $th);
+    $st->node = $n;
+    $st->order = $n->order;
+    if ($n->kind == 1) {
+        $st->display = "inline";
+        return $st;
+    }
+    $decls = css_collect($n, $sheets, $hs);
+    for ($i = 0; $i < count($decls); $i++) {
+        style_apply($st, $decls[$i]->p, $decls[$i]->v, $th);
+    }
+    /* a form control is not a paragraph: give the elements the engine
+     * understands a shape of their own unless the CSS says otherwise */
+    if ($n->tag == "input" || $n->tag == "button" || $n->tag == "select" ||
+        $n->tag == "textarea") {
+        return $st;
+    }
+    return $st;
+}
+
+// ---------------------------------------------------------------------
+//  7. The default stylesheet
+// ---------------------------------------------------------------------
+//  Parsed once by the view and applied *before* the document's own CSS, so
+//  a rule in the document always beats it at equal specificity. It is a
+//  real stylesheet rather than a set of defaults in code because that is
+//  one less thing to keep in sync: what it says is what the cascade does.
+
+function style_default_css(HtmlTheme $th): string {
+    return "
+* { box-sizing: border-box; }
+/* A window is not a document: the root fills the viewport and clips, the
+ * way a desktop app does. A page that wants to scroll itself says so
+ * (`body { overflow: auto }`) and gets a scrollbar-less scroll region. */
+html, body { display: block; margin: 0; padding: 0; height: 100%; overflow: hidden; }
+div, p, h1, h2, h3, h4, h5, h6, ul, ol, li, section, header, footer, main,
+aside, nav, article, form, fieldset, figure, figcaption, dl, dt, dd,
+table, thead, tbody, tfoot, tr, blockquote { display: block; }
+span, a, b, i, u, s, em, strong, small, code, kbd, samp, label, sub, sup,
+mark, abbr, cite, q, time, var, output { display: inline; }
+button, input, select, textarea, img, canvas, hr { display: inline-block; }
+h1 { font-size: 26px; font-weight: bold; margin: 12px 0; }
+h2 { font-size: 21px; font-weight: bold; margin: 10px 0; }
+h3 { font-size: 17px; font-weight: bold; margin: 8px 0; }
+h4, h5, h6 { font-size: 14px; font-weight: bold; margin: 6px 0; }
+p { margin: 0 0 6px 0; }
+ul, ol { margin: 0 0 6px 0; padding-left: 22px; }
+li { margin: 0; }
+a { color: #4daafc; cursor: pointer; }
+a:hover { text-decoration: underline; }
+b, strong, th { font-weight: bold; }
+i, em, cite { font-style: italic; }
+code, kbd, samp, pre { font-family: " . $th->mono . ", monospace; }
+pre { white-space: pre; margin: 0; }
+hr { height: 1px; border-top: 1px solid " . color_hex($th->border) . "; margin: 8px 0; }
+button { padding: 3px 10px; border: 1px solid " . color_hex($th->border) . ";
+         background-color: " . color_hex($th->elevated) . "; color: " . color_hex($th->text) . ";
+         cursor: pointer; font-family: \"" . $th->family . "\"; }
+button:hover { background-color: " . color_hex($th->surface) . "; }
+button.primary { background-color: " . color_hex($th->accent) . "; color: " . color_hex($th->onAccent) . ";
+                 border-color: " . color_hex($th->accent) . "; }
+input, select, textarea { padding: 2px 6px; border: 1px solid " . color_hex($th->border) . ";
+                          background-color: " . color_hex($th->bg) . ";
+                          color: " . color_hex($th->text) . "; cursor: text; }
+input:focus, textarea:focus { border-color: " . color_hex($th->accent) . "; }
+table { margin: 0; }
+th { text-align: left; }
+";
+}
+
+// ---------------------------------------------------------------------
+//  8. Fonts
+// ---------------------------------------------------------------------
+//  The canvas takes a point size, CSS speaks pixels, and 96 dpi puts a
+//  point at 4/3 of a pixel. The cache keys a font by everything that
+//  changes its shape, and a measurement by (font, text) - text width is
+//  the single hottest call in layout, and a UI redraws the same strings.
+
+class FontCache {
+    pub [string] $fk = [];      // "family|pt|b|i"
+    pub [int] $fid = [];
+    pub [int] $fh = [];         // height per font id, grown on demand
+    pub [string] $mk = [];      // "fontid\ttext"
+    pub [int] $mw = [];
+    pub int $hits = 0;
+    pub int $misses = 0;
+
+    /** The canvas font for a CSS font, created once. */
+    pub function get(string $family, int $px, bool $bold, bool $italic): int {
+        $pt = intdiv($px * 3 + 2, 4);
+        if ($pt < 5) { $pt = 5; }
+        $key = $family . "|" . $pt . "|" . ($bold ? "1" : "0") . ($italic ? "1" : "0");
+        for ($i = 0; $i < count($this->fk); $i++) {
+            if ($this->fk[$i] == $key) { return $this->fid[$i]; }
+        }
+        $id = ui_font_new($family, $pt, $bold, $italic);
+        $this->fk[] = $key;
+        $this->fid[] = $id;
+        while (count($this->fh) < $id) { $this->fh[] = 0; }
+        $h = ui_font_height($id);
+        if ($h < 1) { $h = $pt + 3; }
+        $this->fh[$id - 1] = $h;
+        return $id;
+    }
+
+    pub function height(int $font): int {
+        if ($font < 1 || $font > count($this->fh)) { return 14; }
+        $h = $this->fh[$font - 1];
+        return $h < 1 ? 14 : $h;
+    }
+
+    /** The pixel width of a string in a font, measured once. */
+    pub function width(int $font, string $text): int {
+        if ($text == "") { return 0; }
+        $key = $font . "\t" . $text;
+        for ($i = 0; $i < count($this->mk); $i++) {
+            if ($this->mk[$i] == $key) { $this->hits = $this->hits + 1; return $this->mw[$i]; }
+        }
+        $w = ui_font_width($font, $text);
+        $this->misses = $this->misses + 1;
+        $this->mk[] = $key;
+        $this->mw[] = intval($w);
+        return intval($w);
+    }
+
+    /** The line height of a style: its own, or one that fits its font. */
+    pub function line_of(Style $st): int {
+        if ($st->lineH > 0) { return $st->lineH; }
+        $h = $this->height($st->font);
+        return $h + 2;
+    }
+
+    /** Empty the measurement cache (the fonts themselves stay). */
+    pub function dropMeasures() {
+        array_splice($this->mk, 0, count($this->mk));
+        array_splice($this->mw, 0, count($this->mw));
+    }
+}

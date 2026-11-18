@@ -1,0 +1,146 @@
+// device_feed.hphp — a WebSocket feed of smart-home dummy data.
+//
+//   hphp examples/device_feed.hphp            (or build: hphp build examples/device_feed.hphp -o device_feed)
+//
+// Clients connect with:
+//
+//   const ws = new WebSocket("ws://127.0.0.1:9501");
+//   ws.onmessage = (e) => render(JSON.parse(e.data));   // the deviceData array
+//
+// Each client receives the full deviceData array the moment it connects, and
+// then a fresh copy every second in which every deviceValue has been nudged a
+// little inside a plausible range for its deviceType (temperature, level, %).
+import "websocket";
+
+class DeviceFeed {
+    pub $rooms = [];
+
+    public function __construct(array $rooms): void {
+        $this->rooms = $rooms;
+    }
+
+    /* Nudge every device value a little, staying inside a plausible range
+     * for the device type so consumers never see silly numbers. */
+    public function drift(): void {
+        $rooms = $this->rooms;
+        foreach ($rooms as $i => $room) {
+            foreach ($room["devices"] as $j => $dev) {
+                $step = 1;
+                $lo = 0;
+                $hi = 100;
+                if ($dev["deviceType"] == "thermostat") {
+                    $step = 1;
+                    $lo = 16;
+                    $hi = 28;
+                } elseif ($dev["deviceType"] == "speaker") {
+                    $step = 2;
+                    $lo = 20;
+                    $hi = 90;
+                } elseif ($dev["deviceType"] == "lightbulb") {
+                    $step = 4;
+                    $lo = 0;
+                    $hi = 100;
+                }
+                $v = $dev["deviceValue"] + rand(-$step, $step);
+                if ($v < $lo) { $v = $lo; }
+                if ($v > $hi) { $v = $hi; }
+                $rooms[$i]["devices"][$j]["deviceValue"] = $v;
+            }
+        }
+        $this->rooms = $rooms;
+    }
+
+    /* The whole deviceData array as JSON — exactly the shape clients expect. */
+    public function snapshot(): string {
+        return json_encode($this->rooms);
+    }
+}
+
+$feed = new DeviceFeed([
+    [
+        "roomId" => 1,
+        "roomName" => "Bbc Applis",
+        "devices" => [
+            [
+                "deviceId" => 1,
+                "deviceName" => "Thermostat",
+                "deviceType" => "thermostat",
+                "devicePoweredOn" => true,
+                "deviceValue" => 22,
+                "unit" => "°C"
+            ],
+            [
+                "deviceId" => 2,
+                "deviceName" => "Mikrofon",
+                "deviceType" => "speaker",
+                "devicePoweredOn" => true,
+                "deviceValue" => 32,
+                "unit" => "dB"
+            ],
+            [
+                "deviceId" => 5,
+                "deviceName" => "Licht",
+                "deviceType" => "lightbulb",
+                "devicePoweredOn" => true,
+                "deviceValue" => 75,
+                "unit" => "%"
+            ]
+        ]
+    ],
+    [
+        "roomId" => 2,
+        "roomName" => "Bbc Applis",
+        "devices" => [
+            [
+                "deviceId" => 3,
+                "deviceName" => "Thermostat",
+                "deviceType" => "thermostat",
+                "devicePoweredOn" => true,
+                "deviceValue" => 22,
+                "unit" => "°C"
+            ],
+            [
+                "deviceId" => 4,
+                "deviceName" => "Mikrofon",
+                "deviceType" => "speaker",
+                "devicePoweredOn" => true,
+                "deviceValue" => 32,
+                "unit" => "dB"
+            ]
+        ]
+    ]
+]);
+
+$server = new WebSocketServer("tcp://127.0.0.1:9501");
+$server->verbose = true;
+if (!$server->listen()) {
+    echo "cannot bind tcp://127.0.0.1:9501 (already running?)\n";
+    exit(1);
+}
+echo "device feed on ws://127.0.0.1:9501 — one snapshot per second\n";
+
+/* A fresh client gets the current snapshot immediately, so nobody waits
+ * up to a second for its first data. */
+$server->onOpen = function(int $client) use ($server, $feed): void {
+    echo "client " . $client . " connected (" . $server->clientCount() . " total)\n";
+    $server->send($client, $feed->snapshot());
+};
+
+$server->onClose = function(int $client, int $code) use ($server): void {
+    echo "client " . $client . " left (code " . $code . ")\n";
+};
+
+/* The tick loop doubles as the 1-second ticker: drift a little, then push. */
+$last = microtime();
+while ($server->tick(50)) {
+    $now = microtime();
+    if ($now - $last >= 1.0) {
+        $last = $now;
+        $feed->drift();
+        if ($server->clientCount() > 0) {
+            $server->broadcast($feed->snapshot());
+        }
+    }
+    usleep(10000);   /* 10 ms nap between I/O passes */
+}
+echo "server shut down\n";

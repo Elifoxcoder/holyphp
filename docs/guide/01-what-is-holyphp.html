@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+  <title>Chapter 1: What is HolyPHP? — HolyPHP Guide</title>
+  <link rel="stylesheet" href="../assets/style.css?v=6">
+</head>
+
+<body>
+  <div class="layout">
+    <script src="../assets/nav.html.js?v=3"></script>
+    <main>
+      <div class="breadcrumb">
+        <a href="index.html">Guide</a> » <a href="index.html#part1">Part 1: Getting Started</a> » Chapter 1
+      </div>
+
+      <h1>Chapter 1: What is <span class="ph">HolyPHP</span>?</h1>
+
+      <h2>Understanding HolyPHP</h2>
+      <p>HolyPHP is a low-level, compiled programming language with the soul of PHP. It combines the familiar, easy-to-learn syntax of PHP with the safety and performance of compiled languages like Rust and C.</p>
+
+      <p>Think of it this way: if you know PHP, you'll feel right at home. If you've ever wished PHP was faster, safer, or could compile to a standalone executable, HolyPHP is what you're looking for.</p>
+
+      <h2>Key Features</h2>
+      <div class="concept-grid">
+        <div class="concept-card">
+          <h4>🐘 PHP Familiar</h4>
+          <p>Uses <code>$variables</code>, looks like PHP, has 305 compatible built-in functions</p>
+        </div>
+        <div class="concept-card">
+          <h4>⚡ Compiled to Native Code</h4>
+          <p>Compiles directly to machine code, no interpreter or VM. Fast like C!</p>
+        </div>
+        <div class="concept-card">
+          <h4>🔒 Memory Safe</h4>
+          <p>Compile-time borrow checker prevents memory errors, use-after-free, and data races</p>
+        </div>
+        <div class="concept-card">
+          <h4>📦 Standalone Executables</h4>
+          <p>One command produces a single <code>.exe</code> with everything bundled</p>
+        </div>
+        <div class="concept-card">
+          <h4>🎯 Ownership & Borrowing</h4>
+          <p>Rust-inspired memory model without garbage collection</p>
+        </div>
+        <div class="concept-card">
+          <h4>🛠️ Batteries Included</h4>
+          <p>Built-in GUI, HTML/CSS engine, threading, async, WebSocket libraries</p>
+        </div>
+      </div>
+
+      <h2>How Does It Work?</h2>
+      <p>HolyPHP goes through a complete compilation pipeline:</p>
+      <pre><code class="plain">source .hphp → lexer → parser → type & borrow checker → native binary</code></pre>
+
+      <p>The entire toolchain is one self-contained <code>hphp</code> binary. It embeds its own runtime and libraries, so you don't need to install dependencies. When you compile, you get a native executable that runs anywhere (on the same platform) with no runtime required.</p>
+
+      <h2>HolyPHP vs PHP</h2>
+      <table>
+        <tr><th>Feature</th><th>PHP</th><th>HolyPHP</th></tr>
+        <tr><td>Execution</td><td>Interpreted by Zend Engine</td><td>Compiled to native machine code</td></tr>
+        <tr><td>Performance</td><td>Slower</td><td>~25x faster than PHP 8 (in benchmarks)</td></tr>
+        <tr><td>Memory Safety</td><td>Runtime errors possible</td><td>Compile-time borrow checker</td></tr>
+        <tr><td>Distribution</td><td>Needs PHP runtime installed</td><td>Single standalone executable</td></tr>
+        <tr><td>Type System</td><td>Dynamic, optional types</td><td>Dynamic by default, strong when typed + ownership</td></tr>
+        <tr><td>Concurrency</td><td>Limited</td><td>Real OS threads with channels</td></tr>
+        <tr><td>GUI</td><td>Not built-in</td><td>Native Win32 GUI library included</td></tr>
+      </table>
+
+      <h2>HolyPHP vs Rust</h2>
+      <table>
+        <tr><th>Feature</th><th>Rust</th><th>HolyPHP</th></tr>
+        <tr><td>Learning Curve</td><td>Steep</td><td>Easier if you know PHP</td></tr>
+        <tr><td>Syntax</td><td>Unique, heavy on keywords</td><td>PHP-style, familiar</td></tr>
+        <tr><td>Ownership</td><td>Strict, everywhere</td><td>Rust-inspired but PHP-friendly</td></tr>
+        <tr><td>Macros/Templates</td><td>Complex</td><td>Simpler</td></tr>
+        <tr><td>Time to "Hello World"</td><td>Longer setup</td><td>Immediate</td></tr>
+      </table>
+
+      <h2>When Should You Use HolyPHP?</h2>
+      <ul>
+        <li><strong>Fast CLI tools</strong> - Compile to a single executable, no PHP needed</li>
+        <li><strong>Desktop applications</strong> - Use the built-in <code>ui</code> library for native GUIs</li>
+        <li><strong>Performance-critical scripts</strong> - Get C-like speed with PHP-like syntax</li>
+        <li><strong>Learning systems programming</strong> - Learn ownership/borrowing in a gentler way</li>
+        <li><strong>Safe concurrent programs</strong> - Real threads with compile-time safety</li>
+      </ul>
+
+      <div class="note">
+        <b>Key Concept:</b> HolyPHP gives you the best of both worlds - the productivity of PHP with the performance and safety of compiled languages.
+      </div>
+
+      <div class="challenge"><strong class="exercise-title">Try it yourself</strong><b>Explain the toolchain.</b> In your own words, write down what each stage does: source file, compiler checks, native program. Name one kind of program you might build.<details class="solution"><summary>Show a hint</summary><p>Take one small step at a time. Follow the instructions above, write down the result you expect, and compare it with what your terminal or Playground shows. If a command fails, check the filename and that you opened a new terminal after installation.</p></details></div>
+
+      <div class="chapter-nav">
+        <a href="index.html" class="nav-prev">← Table of Contents</a>
+        <a href="02-installation.html" class="nav-next">Next: Installation & Setup →</a>
+      </div>
+
+    </main>
+  </div>
+  <script src="../assets/site.js?v=4"></script>
+<script src="../assets/theme.js?v=1"></script>
+</body>
+
+</html>

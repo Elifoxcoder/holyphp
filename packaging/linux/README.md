@@ -1,8 +1,8 @@
 # HolyPHP — Linux installers (.deb + AppImage)
 
 Both packages ship **the compiler only**: the `hphp` ELF binary with the
-runtime and the five standard libraries (`ui`, `websocket`, `async`, `thread`,
-`mathx`) embedded — imports work offline. Extra libraries come from the
+runtime and six libraries (`ui`, `websocket`, `async`, `thread`, `html`, `ide`)
+embedded — imports work offline. Extra libraries come from the
 public registry through the package manager:
 
 ```bash
@@ -12,18 +12,19 @@ hphp pkg install <name>
 ## Build (on Linux or WSL)
 
 ```bash
-bash packaging/linux/make-deb.sh        # -> packaging/linux/out/holyphp_1.0.0_amd64.deb
-bash packaging/linux/make-appimage.sh   # -> packaging/linux/out/HolyPHP-1.0.0-x86_64.AppImage
+bash packaging/linux/make-deb.sh        # -> packaging/linux/out/holyphp_1.0.2_amd64.deb
+bash packaging/linux/make-appimage.sh   # -> packaging/linux/out/HolyPHP-1.0.2-x86_64.AppImage
 ```
 
 Both scripts build `./hphp` themselves if it's missing
 (`packaging/linux/build-linux.sh` — the gcc-driver twin of `scripts/build.sh`,
-which is Windows/MinGW-only).
+which is Windows/MinGW-only). The Linux builder needs `gcc`, `dpkg-deb`,
+`libsqlite3-dev` and `liburing-dev` (`sudo apt install build-essential dpkg-dev libsqlite3-dev liburing-dev`).
 
 ## The `.deb` — system install
 
 ```bash
-sudo apt install ./holyphp_1.0.0_amd64.deb
+sudo apt install ./holyphp_1.0.2_amd64.deb
 ```
 
 | Installs | Role |
@@ -41,9 +42,9 @@ installed via the manager live in `~/.local/share/hphp` and survive removal.
 ## The AppImage — portable + optional install wizard
 
 ```bash
-./HolyPHP-1.0.0-x86_64.AppImage run hello.hphp   # zero-install: runs from anywhere
-./HolyPHP-1.0.0-x86_64.AppImage install          # wizard: adds to PATH, checks gcc
-./HolyPHP-1.0.0-x86_64.AppImage uninstall        # undo the PATH entries
+./HolyPHP-1.0.2-x86_64.AppImage run hello.hphp   # zero-install: runs from anywhere
+./HolyPHP-1.0.2-x86_64.AppImage install          # wizard: adds to PATH, checks gcc
+./HolyPHP-1.0.2-x86_64.AppImage uninstall        # undo the PATH entries
 ```
 
 `install` (in `AppDir/AppRun`) prepends the AppImage's own directory to `PATH`

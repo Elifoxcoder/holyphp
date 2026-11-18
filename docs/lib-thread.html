@@ -3,12 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
 <title>thread — HolyPHP standard library</title>
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/style.css?v=6">
 </head>
 <body>
 <div class="layout">
-<script src="assets/nav.html.js"></script>
+<script src="assets/nav.html.js?v=3"></script>
 <main>
   <h1>thread</h1>
   <p class="lead">Real OS threads for HolyPHP with Go-style channels, mutexes,
@@ -51,7 +52,7 @@ thr_spawn(function() use ($ch) {
 while (true) {
     $msg = chan_recv($ch);
     if ($msg === false) { break; }     // closed and drained
-    echo $msg . "\n";
+    echo $msg;
 }</code></pre>
   <div class="note"><b>Rule:</b> captured arrays and objects are COW copies — each
   thread sees its own snapshot. Never write one captured array from several
@@ -59,7 +60,7 @@ while (true) {
   there are no data races to debug.</div>
 
   <h2>Parallel map, one call</h2>
-<pre><code class="hphp">import "thread";
+<pre class="fragment"><code class="hphp">import "thread";
 
 $squares = thr_parallel_map(function($x) { return $x * $x; }, [1,2,3,4,5]);
 // [1, 4, 9, 16, 25] — input order kept regardless of finish order
@@ -68,7 +69,7 @@ $squares = thr_parallel_map(function($x) { return $x * $x; }, [1,2,3,4,5]);
 $out = thr_map_chunked(function($x) { return heavy($x); }, $bigArray);</code></pre>
 
   <h2>The Pool class</h2>
-<pre><code class="hphp">import "thread";
+<pre class="fragment"><code class="hphp">import "thread";
 
 $pool = new Pool(4);                     // 4 strided workers
 $pool->start(function($items, $wid) {
@@ -96,7 +97,7 @@ thr_spawn(function() use ($ch) {
 $lp = new Loop();
 $lp->every(100, function() use ($ch, $lp) {
     $n = chan_try_recv($ch);
-    if ($n !== false) { echo "fetched $n bytes\n"; $lp->stop(); }
+    if ($n !== false) { echo "fetched $n bytes"; $lp->stop(); }
 });
 $lp->run();</code></pre>
 
@@ -107,6 +108,7 @@ hphp run examples/thr_demo.hphp</code></pre>
   works offline. Source: <code>lib/thread/thread.hphp</code>.</p>
 </main>
 </div>
-<script src="assets/site.js"></script>
+<script src="assets/site.js?v=4"></script>
+<script src="assets/theme.js?v=1"></script>
 </body>
 </html>

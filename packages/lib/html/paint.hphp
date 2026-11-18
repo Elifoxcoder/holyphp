@@ -1,0 +1,293 @@
+// =====================================================================
+//  HolyHTML — paint: the box tree as canvas draw calls
+// =====================================================================
+//
+//  Part of lib/html (import "html"). This is the only file that touches
+//  the canvas, and it touches it in one direction: rectangles, rounded
+//  rectangles, lines and text. Nothing here decides anything - the boxes
+//  already know where they are.
+//
+//  Two things are worth knowing:
+//
+//  1. PAINT ORDER IS THE BOX ORDER. Background, then border, then the
+//     box's own text, then its children, then its out-of-flow children
+//     sorted by z-index. That is CSS's painting order collapsed to what a
+//     UI actually uses, and it is why a popup (position: absolute) can sit
+//     on top of the row it belongs to.
+//
+//  2. A DRY RUN PRODUCES A DRAW LIST INSTEAD OF INK. With `$dry` set the
+//     painter records every call as a string. That makes the whole
+//     pipeline testable without a window: layout a document, paint it
+//     dry, and assert on the commands and their coordinates.
+//
+//  Clipping follows the canvas: `ui_draw_clip` intersects with the current
+//  clip, so the stack here re-applies the remaining rectangles on the way
+//  out (`unclip` clears the region entirely).
+// =====================================================================
+
+// Text flags, as the canvas wants them: 1 ellipsis, 2 vertical centre,
+// 4 right align. They are passed through from here, never interpreted.
+
+class Painter {
+    pub int $cv = 0;
+    pub bool $dry = false;
+    pub [string] $log = [];         // dry run: "rect 0,0 10x10 #1e1e1e"
+    pub int $ops = 0;               // draw calls issued
+    pub [int] $clip = [];           // clip stack, four ints per level
+
+    pub function __construct(int $cv, bool $dry) {
+        $this->cv = $cv;
+        $this->dry = $dry;
+    }
+
+    /** Begin a frame: clear the surface and drop any clip. */
+    pub function begin(int $bg) {
+        $this->ops = 0;
+        array_splice($this->log, 0, count($this->log));
+        array_splice($this->clip, 0, count($this->clip));
+        if ($this->dry) {
+            $this->log[] = "clear " . color_hex($bg);
+            return;
+        }
+        ui_draw_unclip($this->cv);
+        ui_draw_clear($this->cv, $bg);
+    }
+
+    // ---- primitives ---------------------------------------------------
+    pub function rect(int $x, int $y, int $w, int $h, int $rgb) {
+        if ($w <= 0 || $h <= 0 || $rgb < 0) { return; }
+        $this->ops = $this->ops + 1;
+        if ($this->dry) {
+            $this->log[] = "rect " . $x . "," . $y . " " . $w . "x" . $h . " " . color_hex($rgb);
+            return;
+        }
+        ui_draw_rect($this->cv, $x, $y, $w, $h, $rgb);
+    }
+
+    pub function round(int $x, int $y, int $w, int $h, int $r, int $fill, int $stroke, int $sw) {
+        if ($w <= 0 || $h <= 0) { return; }
+        $this->ops = $this->ops + 1;
+        if ($this->dry) {
+            $this->log[] = "round " . $x . "," . $y . " " . $w . "x" . $h . " r" . $r .
+                           " fill" . color_hex($fill) . " stroke" . color_hex($stroke) . " w" . $sw;
+            return;
+        }
+        ui_draw_round($this->cv, $x, $y, $w, $h, $r, $fill, $stroke, $sw);
+    }
+
+    pub function line(int $x1, int $y1, int $x2, int $y2, int $rgb, int $w) {
+        if ($rgb < 0) { return; }
+        $this->ops = $this->ops + 1;
+        if ($this->dry) {
+            $this->log[] = "line " . $x1 . "," . $y1 . " -> " . $x2 . "," . $y2 . " " .
+                           color_hex($rgb) . " w" . $w;
+            return;
+        }
+        ui_draw_line($this->cv, $x1, $y1, $x2, $y2, $rgb, $w);
+    }
+
+    /** flags: 1 ellipsis, 2 vertical centre, 4 right align */
+    pub function text(int $x, int $y, int $w, int $h, string $s, int $rgb, int $font, int $flags) {
+        if ($s == "" || $rgb < 0) { return; }
+        $this->ops = $this->ops + 1;
+        if ($this->dry) {
+            $this->log[] = "text " . $x . "," . $y . " " . $w . "x" . $h . " f" . $font .
+                           " " . color_hex($rgb) . " fl" . $flags . " [" . $s . "]";
+            return;
+        }
+        ui_draw_text($this->cv, $x, $y, $w, $h, $s, $rgb, $font, $flags);
+    }
+
+    /** Intersect the clip with a rectangle; `level` restores it. */
+    pub function clip_push(int $x, int $y, int $w, int $h) {
+        $this->clip[] = $x;
+        $this->clip[] = $y;
+        $this->clip[] = $w;
+        $this->clip[] = $h;
+        if ($this->dry) {
+            $this->log[] = "clip " . $x . "," . $y . " " . $w . "x" . $h . " (level " .
+                           (count($this->clip) / 4) . ")";
+            return;
+        }
+        ui_draw_clip($this->cv, $x, $y, $w, $h);
+    }
+
+    /** Back to the clip that was in force before the matching push. */
+    pub function clip_pop() {
+        $n = count($this->clip);
+        if ($n >= 4) { array_splice($this->clip, $n - 4, 4); }
+        if ($this->dry) {
+            $this->log[] = "clip pop (level " . (count($this->clip) / 4) . ")";
+            return;
+        }
+        ui_draw_unclip($this->cv);
+        /* restore the enclosing region: the canvas clip is a region, and
+         * unclip threw it away, so every remaining level is re-applied */
+        $i = 0;
+        while ($i + 3 < count($this->clip)) {
+            ui_draw_clip($this->cv, $this->clip[$i], $this->clip[$i + 1],
+                         $this->clip[$i + 2], $this->clip[$i + 3]);
+            $i = $i + 4;
+        }
+    }
+
+    // ---- the tree -----------------------------------------------------
+    pub function paint(Box $root, int $bg) {
+        if ($root == null) { return; }
+        $this->begin($bg);
+        $this->box($root);
+    }
+
+    pub function box(Box $b) {
+        $st = $b->st;
+        if (!$b->anon) {
+            if ($st->bg >= 0) {
+                if ($st->radius > 0) {
+                    $this->round($b->x, $b->y, $b->w, $b->h, $st->radius, $st->bg, -1, 0);
+                } else {
+                    $this->rect($b->x, $b->y, $b->w, $b->h, $st->bg);
+                }
+            }
+            $this->border($b);
+        }
+        $clip = $b->clips();
+        if ($clip) { $this->clip_push($b->x, $b->y, $b->w, $b->h); }
+        if (count($b->lines) > 0) { $this->lines($b); }
+        for ($i = 0; $i < count($b->kids); $i++) {
+            $this->box($b->kids[$i]);
+        }
+        if ($clip) { $this->clip_pop(); }
+        /* out of flow: after the flow, lowest z first */
+        $abs = $this->by_z($b->abs);
+        for ($i = 0; $i < count($abs); $i++) {
+            $this->box($abs[$i]);
+        }
+    }
+
+    /** Insertion sort by z-index, stable, so equal z keeps document order. */
+    function by_z([Box] $in): [Box] {
+        $out: [Box];
+        $n = count($in);
+        for ($i = 0; $i < $n; $i++) {
+            $x = $in[$i];
+            $out[] = $x;
+        }
+        for ($i = 1; $i < $n; $i++) {
+            $x = $out[$i];
+            $j = $i - 1;
+            while ($j >= 0 && $out[$j]->st->z > $x->st->z) {
+                $out[$j + 1] = $out[$j];
+                $j = $j - 1;
+            }
+            $out[$j + 1] = $x;
+        }
+        return $out;
+    }
+
+    /** The four sides of the border, painted as bands. */
+    pub function border(Box $b) {
+        $st = $b->st;
+        $same = ($st->bwT == $st->bwR) && ($st->bwR == $st->bwB) && ($st->bwB == $st->bwL) &&
+                ($st->bcT == $st->bcR) && ($st->bcR == $st->bcB) && ($st->bcB == $st->bcL);
+        if ($same && $st->bwT > 0 && $st->bcT >= 0) {
+            if ($st->radius > 0) {
+                /* a rounded border is one rounded rectangle drawn as an
+                 * outline: four bands would square off the corners */
+                $this->round($b->x, $b->y, $b->w, $b->h, $st->radius, -1, $st->bcT, $st->bwT);
+            } else {
+                $this->rect($b->x, $b->y, $b->w, $st->bwT, $st->bcT);
+                $this->rect($b->x, $b->y + $b->h - $st->bwB, $b->w, $st->bwB, $st->bcB);
+                $this->rect($b->x, $b->y, $st->bwL, $b->h, $st->bcL);
+                $this->rect($b->x + $b->w - $st->bwR, $b->y, $st->bwR, $b->h, $st->bcR);
+            }
+            return;
+        }
+        if ($st->bwT > 0 && $st->bcT >= 0) { $this->rect($b->x, $b->y, $b->w, $st->bwT, $st->bcT); }
+        if ($st->bwB > 0 && $st->bcB >= 0) {
+            $this->rect($b->x, $b->y + $b->h - $st->bwB, $b->w, $st->bwB, $st->bcB);
+        }
+        if ($st->bwL > 0 && $st->bcL >= 0) { $this->rect($b->x, $b->y, $st->bwL, $b->h, $st->bcL); }
+        if ($st->bwR > 0 && $st->bcR >= 0) {
+            $this->rect($b->x + $b->w - $st->bwR, $b->y, $st->bwR, $b->h, $st->bcR);
+        }
+    }
+
+    /** Do two atoms look the same? Consecutive atoms that do are drawn as
+     *  one run, and a run is the unit an inline background covers. */
+    function same_look(Atom $a, Atom $b): bool {
+        if ($a->font != $b->font) { return false; }
+        if ($a->chip != $b->chip) { return false; }
+        $x = $a->st;
+        $y = $b->st;
+        if ($x->fg != $y->fg) { return false; }
+        if ($x->bg != $y->bg) { return false; }
+        if ($x->underline != $y->underline) { return false; }
+        if ($x->strike != $y->strike) { return false; }
+        return true;
+    }
+
+    /** Text: one draw call per atom, one background per run.
+     *
+     *  Only text that came from an inline element paints a background of
+     *  its own; text that just sits in a block has the block's background
+     *  already, and painting it again would double the ink (and the
+     *  alpha-less surface cannot hide it). */
+    pub function lines(Box $b) {
+        $ox = $b->cx() - $b->scrollX;
+        $oy = $b->cy() - $b->scrollY;
+        $right = $ox + $b->cw;
+        $ell = $b->st->ellipsis || $b->st->whiteSpace == "nowrap";
+        for ($i = 0; $i < count($b->lines); $i++) {
+            $l = $b->lines[$i];
+            $ly = $oy + $l->y;
+            $x = $ox + $l->x;
+            $n = count($l->atoms);
+            $k = 0;
+            while ($k < $n) {
+                $a = $l->atoms[$k];
+                if ($a->space) { $x = $x + $a->w; $k = $k + 1; continue; }
+                /* the run: every following atom with the same look */
+                $j = $k;
+                $runw = 0;
+                while ($j < $n && !$l->atoms[$j]->space && $this->same_look($l->atoms[$j], $a)) {
+                    $runw = $runw + $l->atoms[$j]->w;
+                    $j = $j + 1;
+                }
+                $st = $a->st;
+                if ($a->chip && $st->bg >= 0) {
+                    $this->rect($x - $st->padL, $ly, $runw + $st->padL + $st->padR, $l->h, $st->bg);
+                }
+                $m = $k;
+                $ax = $x;
+                while ($m < $j) {
+                    $at = $l->atoms[$m];
+                    $last = ($m == $n - 1);
+                    $avail = $right - $ax;
+                    if ($avail < 0) { $avail = 0; }
+                    /* Every atom is drawn in the width it was measured in.
+                     * The last one used to be drawn in "whatever is left of
+                     * the box", which turns a rounding difference of one
+                     * pixel into a missing letter - and it also means an
+                     * overflowing line gets cut mid-glyph instead of at the
+                     * box edge. An ellipsis is the one case where the box
+                     * width IS the answer, so only then is the atom clamped. */
+                    $dw = $at->w;
+                    $flags = 2;
+                    if ($last && $ell && $avail < $at->w) { $dw = $avail; $flags = $flags | 1; }
+                    $this->text($ax, $ly, $dw, $l->h, $at->text, $st->fg, $at->font, $flags);
+                    if ($st->underline) {
+                        $this->line($ax, $ly + $l->h - 3, $ax + $at->w, $ly + $l->h - 3, $st->fg, 1);
+                    }
+                    if ($st->strike) {
+                        $this->line($ax, $ly + intdiv($l->h, 2), $ax + $at->w,
+                                    $ly + intdiv($l->h, 2), $st->fg, 1);
+                    }
+                    $ax = $ax + $at->w;
+                    $m = $m + 1;
+                }
+                $x = $x + $runw;
+                $k = $j;
+            }
+        }
+    }
+}

@@ -20,10 +20,12 @@ cd "$(dirname "$0")/.."
 
 VERSION=""
 DEPLOY=1
-VPS_HOST="${HPHP_VPS_HOST:-root@91.216.248.93}"
-VPS_DL_DIR="${HPHP_VPS_DL_DIR:-/var/www/hphp.ch/dl}"
-SITE="${HPHP_SITE:-https://hphp.ch}"
-REPO_SLUG="${HPHP_REPO_SLUG:-Elifoxcoder/holyphp}"
+# shellcheck source=scripts/vps.env
+source scripts/vps.env
+VPS_HOST="$HPHP_VPS_HOST"
+VPS_DL_DIR="$HPHP_VPS_DL_DIR"
+SITE="$HPHP_SITE"
+REPO_SLUG="$HPHP_REPO_SLUG"
 
 die() { echo "error: $*" >&2; exit 1; }
 

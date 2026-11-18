@@ -1,0 +1,243 @@
+// holyhtml_demo.hphp — lib/html: an HTML/CSS surface drawn by HolyPHP.
+//
+//   hphp run examples/holyhtml_demo.hphp
+//   hphp build examples/holyhtml_demo.hphp -o holyhtml_demo.exe
+//
+// The window holds one canvas and nothing else. The document below is
+// parsed, styled, laid out and painted by lib/html — every widget you see
+// is a <div> with a class, every colour comes from the stylesheet, and the
+// code here only reacts to events the view hands back.
+//
+// It doubles as the engine's acceptance test: after a few frames it reads
+// pixels back out of the surface and asserts that the sidebar is where the
+// CSS says it is, that the accent border is the accent colour, and that the
+// page background is the theme background. A layout can be wrong and every
+// unit test still pass; a pixel cannot.
+
+import "html";
+
+$W = 760;
+$H = 460;
+
+$win = ui_window("HolyHTML — a UI described in CSS", -1, -1, $W, $H);
+$cv  = ui_add($win, 18, "", 0, 0, $W, $H);     // 18 = HPUI_CANVAS
+
+$th = html_theme_dark();
+
+// The root is a column flex: the app fills whatever is left, the status bar
+// keeps its 22px. That is what puts the status bar on screen instead of one
+// window-height below it.
+$css = "
+.root { display: flex; flex-direction: column; height: 100%; }
+.app { display: flex; flex: 1; }
+.side {
+    width: 200px; background-color: #252526; flex: none;
+    padding: 8px 0;
+}
+.side .title {
+    height: 22px; padding: 0 12px; color: #8b8b8b;
+    font-size: 11px; text-transform: none;
+}
+.file {
+    height: 24px; padding: 0 12px; color: #cccccc;
+    border-left: 2px solid #252526;
+}
+.file:hover { background-color: #2a2d2e; }
+.file.active { background-color: #37373d; border-left: 2px solid #007acc; color: #ffffff; }
+
+.main { flex: 1; background-color: #1e1e1e; }
+.tabs { height: 30px; background-color: #252526; display: flex; }
+.tab {
+    height: 30px; padding: 0 14px; color: #969696;
+    border-bottom: 2px solid #252526;
+}
+.tab.active { background-color: #1e1e1e; color: #ffffff; border-bottom: 2px solid #007acc; }
+
+.body { padding: 14px; }
+.body h1 { font-size: 20px; color: #ffffff; height: 30px; font-weight: bold; }
+.body p { font-size: 12px; color: #b8b8b8; height: 20px; }
+.card {
+    background-color: #252526; border: 1px solid #3c3c3c; border-radius: 6px;
+    padding: 10px 12px; margin-bottom: 10px;
+}
+.card .label { font-size: 11px; color: #8b8b8b; height: 18px; }
+.card .value { font-size: 18px; color: #4ec9b0; height: 26px; }
+.bar { height: 8px; background-color: #3c3c3c; border-radius: 4px; }
+.bar .fill { width: 62%; height: 8px; background-color: #007acc; border-radius: 4px; }
+
+.status { flex: none; height: 22px; background-color: #007acc; color: #ffffff;
+          padding: 0 10px; }
+";
+
+$html =
+  "<div class='root'>"
+  . "<div class='app'>"
+  .   "<div class='side'>"
+  .     "<div class='title'>EXPLORER</div>"
+  .     "<div class='file active'>main.hphp</div>"
+  .     "<div class='file'>layout.hphp</div>"
+  .     "<div class='file'>style.css</div>"
+  .     "<div class='file'>README.md</div>"
+  .   "</div>"
+  .   "<div class='main'>"
+  .     "<div class='tabs'>"
+  .       "<div class='tab active'>main.hphp</div>"
+  .       "<div class='tab'>style.css</div>"
+  .       "<div class='tab'>README.md</div>"
+  .     "</div>"
+  .     "<div class='body'>"
+  .       "<h1>HolyHTML</h1>"
+  .       "<p>HTML and CSS, parsed and painted by HolyPHP.</p>"
+  .       "<div class='card'>"
+  .         "<div class='label'>boxes laid out</div>"
+  .         "<div class='value' id='boxes'>0</div>"
+  .         "<div class='bar'><div class='fill'></div></div>"
+  .       "</div>"
+  .       "<div class='card'>"
+  .         "<div class='label'>pointer</div>"
+  .         "<div class='value' id='ptr'>–</div>"
+  .       "</div>"
+  .     "</div>"
+  .   "</div>"
+  . "</div>"
+  . "<div class='status' id='status'>ready</div>"
+  . "</div>";
+
+$view = new HtmlView($cv, $W, $H, $th);
+$view->load($html, $css);
+$view->ensure();
+
+echo "boxes=" . count($view->lay->all) . " measures=" . $view->lay->measures . "\n";
+$view->set_text($view->find("#boxes"), "" . count($view->lay->all));
+
+// The status bar is 22px tall, so the document above it is $H - 22. Report
+// what the engine thinks the body box is; that is the number to check when
+// the layout changes.
+$side = $view->box_of($view->find(".side"));
+echo "sidebar: " . $side->x . "," . $side->y . " " . $side->w . "x" . $side->h . "\n";
+
+// Every probe below is derived from a box the engine laid out, never from a
+// hand-typed coordinate: a probe that drifts with the stylesheet proves
+// nothing, and one that lands on a glyph is noise. Each one asks a question
+// the CSS answers: is the sidebar its colour, is the active row's accent
+// border where the CSS put it, is the status bar actually on screen.
+$px_side   = $view->box_of($view->find(".side"));
+$px_active = $view->box_of($view->find(".file.active"));
+$px_tab    = $view->box_of($view->find(".tab.active"));
+$px_body   = $view->box_of($view->find(".body"));
+$px_card   = $view->box_of($view->find(".card"));
+$px_status = $view->box_of($view->find(".status"));
+
+// A layout dump, so a failing probe below can be read next to the boxes it
+// was derived from instead of guessing at coordinates.
+$probe_sels = [".root", ".app", ".side", ".file.active", ".main", ".tabs",
+               ".tab.active", ".body", "h1", ".card", ".status"];
+for ($i = 0; $i < count($probe_sels); $i++) {
+    $bx = $view->box_of($view->find($probe_sels[$i]));
+    if ($bx == null) { echo "  box " . $probe_sels[$i] . " = none\n"; continue; }
+    echo "  box " . $probe_sels[$i] . " = " . $bx->x . "," . $bx->y
+       . " " . $bx->w . "x" . $bx->h . "\n";
+}
+
+// ---- input: the view does the bookkeeping, this decides what it means -----
+$frames  = 0;
+$probed  = false;
+$fails   = 0;
+
+function expect(string $what, int $got, int $want, int &$fails) {
+    if ($got == $want) {
+        echo "  ok   " . $what . " = " . color_hex($got) . "\n";
+    } else {
+        echo "  FAIL " . $what . " = " . color_hex($got) . " (want " . color_hex($want) . ")\n";
+        $fails = $fails + 1;
+    }
+}
+
+ui_on($cv, 8, function($x, $y, $b) use ($view) {          // MOVE
+    $ev = $view->mouse("move", $x, $y, 0, 0);
+    if ($ev->state) { $view->paint(); }
+});
+
+ui_on($cv, 6, function($x, $y, $button) use ($view) {      // DOWN
+    $view->mouse("down", $x, $y, $button, 0);
+    $view->paint();
+});
+
+ui_on($cv, 7, function($x, $y, $button) use ($view) {      // UP
+    $ev = $view->mouse("up", $x, $y, $button, 0);
+    if ($ev->node != null) {
+        $view->add_class($ev->node, "active");
+        $view->set_text($view->find("#status"), "clicked " . $ev->node->tag);
+        $view->set_text($view->find("#ptr"), $ev->node->attr("class"));
+    }
+    $view->paint();
+});
+
+ui_on($cv, 9, function($x, $y, $notches) use ($view) {     // WHEEL
+    $ev = $view->mouse("wheel", $x, $y, 0, $notches);
+    if ($ev->state) { $view->paint(); }
+});
+
+ui_on($cv, 4, function($vk, $ch, $mods) use ($view) {      // KEY
+    $view->key($vk, $ch, $mods);
+});
+
+// ---- the frame loop ------------------------------------------------------
+ui_timer(50, function() use (&$frames, &$probed, &$fails, $view, $cv, $W, $H,
+                          $win, $th) {
+    $frames = $frames + 1;
+    $view->set_text($view->find("#ptr"), "frame " . $frames);
+    $view->paint();
+    ui_canvas_flush($cv);
+
+    if ($frames == 3 && !$probed) {
+        $probed = true;
+        echo "pixel probes:\n";
+        // the sidebar background, below its last file row
+        expect("sidebar bg",
+               ui_canvas_pixel($cv, $px_side->x + 100, $px_side->y + $px_side->h - 12),
+               0x252526, $fails);
+        // the active file row's 2px left border is the accent colour
+        expect("accent border",
+               ui_canvas_pixel($cv, $px_active->x, $px_active->y + 12), 0x007acc, $fails);
+        // the active tab's bottom border, and the strip behind it
+        expect("tab underline",
+               ui_canvas_pixel($cv, $px_tab->x + 6, $px_tab->y + $px_tab->h - 1),
+               0x007acc, $fails);
+        expect("tab strip bg",
+               ui_canvas_pixel($cv, $px_tab->x + $px_tab->w + 20, $px_tab->y + 4),
+               0x252526, $fails);
+        // the editor pane, below its last card (the body has no background of
+        // its own, so this is the pane showing through)
+        expect("editor bg",
+               ui_canvas_pixel($cv, $px_body->x + 400, $px_body->y + 380),
+               0x1e1e1e, $fails);
+        // the card's 1px border, and the fill just inside it
+        expect("card border",
+               ui_canvas_pixel($cv, $px_card->x, $px_card->y + 30), 0x3c3c3c, $fails);
+        expect("card bg",
+               ui_canvas_pixel($cv, $px_card->x + $px_card->w - 20, $px_card->y + 30),
+               0x252526, $fails);
+        // the status bar is on screen at the bottom, as the column flex says
+        expect("status bg",
+               ui_canvas_pixel($cv, $px_status->x + 300, $px_status->y + 10),
+               0x007acc, $fails);
+        // and the boxes themselves: the app stops where the status bar starts
+        expect("sidebar height", $px_side->h, $H - 22, $fails);
+        expect("status bottom",  $px_status->y + $px_status->h, $H, $fails);
+        expect("sidebar width",  $px_side->w, 200, $fails);
+        if ($fails == 0) { echo "pixels ok\n"; }
+        else { echo "pixels MISMATCH\n"; }
+    }
+
+    if ($frames >= 60) {
+        echo "frames=" . $frames . " paints=" . $view->paints
+           . " relayouts=" . $view->relayouts . "\n";
+        echo $fails == 0 ? "holyhtml_demo ok\n" : "holyhtml_demo FAILED\n";
+        ui_close($win);
+        ui_quit();
+    }
+});
+
+$view->paint();
+ui_run_main();

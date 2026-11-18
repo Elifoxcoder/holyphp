@@ -1,0 +1,7 @@
+[Unit]
+Description=Combined resource budget for HolyPHP playground jobs
+
+[Slice]
+CPUQuota=75%
+MemoryMax=1G
+TasksMax=192

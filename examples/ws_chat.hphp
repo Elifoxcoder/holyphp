@@ -33,3 +33,5 @@ while ($server->tick()) {
     usleep(10000);   /* 10 ms loop; the library does the I/O multiplexing */
 }
 echo "server shut down\n";
+$string = str "HolyPHP chat server on ws://";
+echo typeof($string) . "\n";

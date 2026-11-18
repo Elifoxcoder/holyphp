@@ -61,6 +61,98 @@ bool type_is_value(TypeKind k) {
     }
 }
 
+bool type_is_nullable(TypeKind k) { return k == TY_NULLABLE; }
+
+bool type_is_union(TypeKind k) { return k == TY_UNION; }
+
+/* The type of a nullable value once the null is ruled out: `?int` -> int.
+ * A union loses its null member; if that leaves one member, that member is
+ * the result, otherwise the union stays a union. `drop` names the kind of
+ * member to remove (TY_NULL for the null itself). */
+const Type *type_without_member(const Type *t, TypeKind drop) {
+    if (!t) return NULL;
+    if (t->kind == TY_NULL) return (drop == TY_NULL) ? NULL : t;
+    if (t->kind == TY_NULLABLE) {
+        const Type *el = t->elem;
+        if (!el) return t;
+        if (el->kind == drop) return type_new(TY_NULL);   /* ?int without int */
+        if (drop == TY_NULL) return el;                   /* ?int without null */
+        return t;
+    }
+    if (t->kind != TY_UNION) return t;
+    size_t keep = 0;
+    const Type **kept = xmalloc(sizeof(Type *) * (t->nmembers ? t->nmembers : 1));
+    for (size_t i = 0; i < t->nmembers; i++) {
+        const Type *m = t->members[i];
+        if (m && m->kind == drop) continue;
+        kept[keep++] = m;
+    }
+    const Type *out;
+    if (keep == 0) out = type_new(TY_NULL);
+    else if (keep == 1) out = kept[0];
+    else {
+        Type *u = type_new(TY_UNION);
+        u->members = kept;
+        u->nmembers = keep;
+        out = u;
+    }
+    if (keep != 1) free(kept);
+    return out;
+}
+
+const Type *type_without_null(const Type *t) {
+    return type_without_member(t, TY_NULL);
+}
+
+/* Do two types name the same member of a union?
+ *
+ * The kind is not enough: a union of two classes has two members that are
+ * both "a class", and dropping one of them by kind would drop both. The
+ * named types carry their name, so that is what decides. */
+bool type_same_member(const Type *a, const Type *b) {
+    if (!a || !b) return false;
+    if (a->kind != b->kind) return false;
+    switch (a->kind) {
+    case TY_CLASS: case TY_STRUCT: case TY_INTERFACE: case TY_ENUM: case TY_FN:
+        return a->name && b->name && strcmp(a->name, b->name) == 0;
+    default:
+        return true;
+    }
+}
+
+/* The type left after dropping one member, matched by the member itself. */
+const Type *type_without_type(const Type *t, const Type *drop) {
+    if (!t) return NULL;
+    if (!drop) return t;
+    if (t->kind == TY_NULL) return (drop->kind == TY_NULL) ? NULL : t;
+    if (t->kind == TY_NULLABLE) {
+        const Type *el = t->elem;
+        if (!el) return t;
+        if (type_same_member(el, drop)) return type_new(TY_NULL);
+        if (drop->kind == TY_NULL) return el;
+        return t;
+    }
+    if (t->kind != TY_UNION) return t;
+    size_t keep = 0;
+    const Type **kept = xmalloc(sizeof(Type *) * (t->nmembers ? t->nmembers : 1));
+    for (size_t i = 0; i < t->nmembers; i++) {
+        const Type *m = t->members[i];
+        if (m && type_same_member(m, drop)) continue;
+        kept[keep++] = m;
+    }
+    const Type *out;
+    if (keep == 0) out = type_new(TY_NULL);
+    else if (keep == 1) out = kept[0];
+    else {
+        Type *u = type_new(TY_UNION);
+        u->members = kept;
+        u->nmembers = keep;
+        out = u;
+    }
+    if (keep != 1) free(kept);
+    return out;
+}
+
 const char *type_kind_name(TypeKind k) {
     switch (k) {
     case TY_ERROR: return "<error>";
@@ -90,6 +182,9 @@ const char *type_kind_name(TypeKind k) {
     case TY_TUPLE: return "tuple";
     case TY_OPTION: return "Option";
     case TY_RESULT: return "Result";
+    case TY_NULL: return "null";
+    case TY_NULLABLE: return "nullable";
+    case TY_UNION: return "union";
     case TY_SELF: return "self";
     }
     return "?";
@@ -152,6 +247,22 @@ char *type_to_string(const Type *t) {
     case TY_RESULT: {
         char *o = type_to_string(t->ok), *e = type_to_string(t->err);
         buf_printf(&b, "Result<%s, %s>", o, e); free(o); free(e);
+        break;
+    }
+    case TY_NULL:
+        buf_puts(&b, "null");
+        break;
+    case TY_NULLABLE: {
+        char *e = type_to_string(t->elem);
+        buf_printf(&b, "?%s", e); free(e);
+        break;
+    }
+    case TY_UNION: {
+        for (size_t i = 0; i < t->nmembers; i++) {
+            if (i) buf_puts(&b, "|");
+            char *m = type_to_string(t->members[i]);
+            buf_puts(&b, m); free(m);
+        }
         break;
     }
     case TY_FN: {

@@ -1,56 +1,84 @@
-/* nav.html.js — injects the shared navigation into every docs page.
- * Desktop: sticky sidebar. Mobile (<880px): hamburger button + slide-in
- * drawer; the button is hidden while printing. */
+/* Shared top navigation plus a persistent chapter rail on both learning guides. */
+var NAV_BASE = (function () {
+  var script = document.currentScript;
+  if (script && script.src) return script.src.replace(/assets\/nav\.html\.js.*$/, "");
+  var path = location.href.split("#")[0].split("?")[0];
+  path = path.slice(0, path.lastIndexOf("/") + 1);
+  if (/\/guide\/$/.test(path)) path = path.slice(0, -"guide/".length);
+  return path;
+})();
+
+var NAV_PATH = location.pathname;
+var INTERACTIVE_GUIDE = /\/guide\.html$/.test(NAV_PATH);
+var BEGINNER_GUIDE = /\/guide\/(?:[^/]+\.html)?$/.test(NAV_PATH);
+var GUIDE_RAIL = "";
+
+if (INTERACTIVE_GUIDE) {
+  var interactiveLessons = [
+    ["step1", "Hello, World!", "Your first program"],
+    ["step2", "Variables & types", "Store and describe values"],
+    ["step3", "Functions", "Reuse small pieces of code"],
+    ["step4", "Decisions & loops", "Choose and repeat actions"],
+    ["step5", "Arrays & maps", "Work with collections"],
+    ["step6", "Classes", "Group data and behavior"],
+    ["step7", "Memory safety", "References and ownership"],
+    ["step8", "Build an application", "Libraries and next steps"]
+  ];
+  GUIDE_RAIL = `<aside class="guide-sidebar" aria-label="Guide chapters">
+    <div class="guide-rail-heading"><span class="section-kicker">Learning path</span><strong>Learn HolyPHP</strong><span>${interactiveLessons.length} interactive lessons</span></div>
+    <nav class="guide-steps" aria-label="Lessons">${interactiveLessons.map((item, i) => `<a class="guide-step-link" href="#${item[0]}" data-guide-section="${item[0]}"><span class="guide-step-index">${String(i + 1).padStart(2, "0")}</span><span class="guide-step-copy"><b>${item[1]}</b><small>${item[2]}</small></span></a>`).join("")}</nav>
+    <div class="guide-rail-foot"><a href="${NAV_BASE}docs.html" target="_blank" rel="noopener">Open the full docs ↗</a><p>Go at your own pace. Each lesson has an example and an exercise.</p></div>
+  </aside>`;
+} else if (BEGINNER_GUIDE) {
+  var beginnerChapters = [
+    ["01-what-is-holyphp.html", "What is HolyPHP?"],
+    ["02-installation.html", "Install the compiler"],
+    ["03-hello-world.html", "Your first program"],
+    ["04-using-the-playground.html", "Use the Playground"],
+    ["05-what-are-variables.html", "Variables"],
+    ["06-data-types.html", "Data types"],
+    ["07-operators.html", "Operators"],
+    ["08-input-and-output.html", "Input and output"],
+    ["09-comments.html", "Comments"]
+  ];
+  GUIDE_RAIL = `<aside class="guide-sidebar beginner-sidebar" aria-label="Beginner guide chapters">
+    <div class="guide-rail-heading"><span class="section-kicker">Beginner guide</span><strong>Start with the basics</strong><span>9 short chapters</span></div>
+    <nav class="guide-steps" aria-label="Chapters"><a class="guide-step-link guide-overview-link" href="${NAV_BASE}guide/index.html"><span class="guide-step-index">↗</span><span class="guide-step-copy"><b>Guide overview</b><small>See the full learning path</small></span></a>${beginnerChapters.map((item, i) => `<a class="guide-step-link${NAV_PATH.endsWith(item[0]) ? " active" : ""}" href="${NAV_BASE}guide/${item[0]}"><span class="guide-step-index">${String(i + 1).padStart(2, "0")}</span><span class="guide-step-copy"><b>${item[1]}</b><small>Chapter ${i + 1}</small></span></a>`).join("")}</nav>
+    <div class="guide-rail-foot"><a href="${NAV_BASE}guide.html">Continue to practice →</a><p>Learn a concept, try the example, then solve the exercise.</p></div>
+  </aside>`;
+}
+
 document.write(`
-<button class="nav-burger" id="nav-burger" aria-label="Open navigation"
-        aria-expanded="false" aria-controls="side-nav">
-  <span></span><span></span><span></span>
-</button>
-<div class="nav-scrim" id="nav-scrim" hidden></div>
-
-<nav class="side" id="side-nav">
-  <a class="logo" href="index.html">Holy<b>PHP</b></a>
-  <span class="tag">compiled &#183; memory-safe &#183; PHP-easy</span>
-
-  <h4>Start</h4>
-  <a class="item" href="index.html">Overview</a>
-  <a class="item" href="lang.html">Language reference</a>
-  <a class="item" href="examples.html">Examples</a>
-
-  <h4>Standard library</h4>
-  <a class="item" href="lib-async.html">async &#8212; event loop &amp; HTTP</a>
-  <a class="item" href="lib-thread.html">thread &#8212; concurrency</a>
-  <a class="item" href="lib-ui.html">ui &#8212; desktop GUI</a>
-  <a class="item" href="lib-websocket.html">websocket</a>
-  <a class="item" href="builtins.html">Built-in functions</a>
-
-  <h4>Toolchain</h4>
-  <a class="item" href="cli.html">hphp command line</a>
-  <a class="item" href="pkg.html">Packages &#8212; hphp pkg</a>
-</nav>
-
+<header class="site-header">
+  <div class="site-nav">
+    <a class="site-brand" href="${NAV_BASE}index.html" aria-label="HolyPHP home"><span class="brand-mark">H</span><span>Holy<span>PHP</span></span></a>
+    <button class="nav-burger" id="nav-burger" aria-label="Open navigation" aria-expanded="false" aria-controls="site-links"><span></span><span></span></button>
+    <nav class="site-links" id="site-links" aria-label="Main navigation">
+      <a href="${NAV_BASE}docs.html" target="_blank" rel="noopener">Docs <span aria-hidden="true">↗</span></a>
+      <a href="${NAV_BASE}playground.html" target="_blank" rel="noopener">Playground <span aria-hidden="true">↗</span></a>
+      <a href="${NAV_BASE}development.html">Development</a>
+      <a class="github-link" href="https://github.com/Elifoxcoder/holyphp" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a>
+    </nav>
+    <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode"><span class="theme-toggle-icon" aria-hidden="true">☾</span><span class="theme-toggle-label" data-theme-label>Dark mode</span></button>
+  </div>
+</header>
+${GUIDE_RAIL}
 <script>
 (function() {
-  var burger = document.getElementById("nav-burger");
-  var nav = document.getElementById("side-nav");
-  var scrim = document.getElementById("nav-scrim");
-  if (!burger || !nav || !scrim) return;
-  function setOpen(open) {
-    nav.classList.toggle("open", open);
-    scrim.hidden = !open;
-    burger.setAttribute("aria-expanded", open ? "true" : "false");
-    document.body.classList.toggle("nav-lock", open);
-  }
-  burger.addEventListener("click", function() {
-    setOpen(!nav.classList.contains("open"));
+  if (document.querySelector('.guide-sidebar')) document.body.classList.add('has-guide-sidebar');
+  var button = document.getElementById('nav-burger');
+  var links = document.getElementById('site-links');
+  if (!button || !links) return;
+  button.addEventListener('click', function() {
+    var open = button.getAttribute('aria-expanded') !== 'true';
+    button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    links.classList.toggle('is-open', open);
   });
-  scrim.addEventListener("click", function() { setOpen(false); });
-  document.addEventListener("keydown", function(e) {
-    if (e.key === "Escape") setOpen(false);
-  });
-  nav.addEventListener("click", function(e) {
-    if (e.target && e.target.classList && e.target.classList.contains("item"))
-      setOpen(false);
+  links.addEventListener('click', function(event) {
+    if (event.target.closest('a')) {
+      button.setAttribute('aria-expanded', 'false');
+      links.classList.remove('is-open');
+    }
   });
 })();
 </script>

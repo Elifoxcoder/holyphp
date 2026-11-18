@@ -3,14 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
 <title>Built-in functions — HolyPHP</title>
-<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/style.css?v=6">
 <style>
 /* fallback theme — mirrors assets/style.css so the page stays readable even
  * when the stylesheet fails to load (e.g. single-file preview servers) */
-:root { --bg: #14151a; --bg2: #1b1c23; --bg3: #22242d; --fg: #e8e6e3; --dim: #9a97a3;
-        --line: #2c2e38; --purple: #8892bf; --purple-hi: #aeb6e8; --ember: #ff7b3d;
-        --green: #7ec699; --code-bg: #101116;
+:root { --bg: #f6f4ef; --bg2: #fffefa; --bg3: #eeeae2; --fg: #242331; --dim: #706e79;
+        --line: #dedbd3; --purple: #665ca8; --purple-hi: #53488f; --ember: #d45d35;
+        --green: #34765a; --code-bg: #22232c;
         --mono: "Cascadia Code", "JetBrains Mono", Consolas, Menlo, monospace;
         --sans: system-ui, "Segoe UI", sans-serif; }
 body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); line-height: 1.55; }
@@ -41,7 +42,7 @@ input[type="search"] { background: var(--bg2); color: var(--fg); border: 1px sol
 </head>
 <body>
 <div class="layout">
-<script src="assets/nav.html.js"></script>
+<script src="assets/nav.html.js?v=3"></script>
 <main>
   <h1>Built-in <span class="ph">functions</span></h1>
   <p class="lead">305 functions compiled into the language, generated from the
@@ -414,7 +415,7 @@ input[type="search"] { background: var(--bg2); color: var(--fg); border: 1px sol
   <p class="small muted" id="bi-none" style="display:none">No functions match.</p>
 </main>
 </div>
-<script src="assets/site.js"></script>
+<script src="assets/site.js?v=4"></script>
 <script>
 const q = document.getElementById("bi-search");
 q.addEventListener("input", () => {
@@ -437,5 +438,6 @@ q.addEventListener("input", () => {
   document.getElementById("bi-none").style.display = any ? "none" : "";
 });
 </script>
+<script src="assets/theme.js?v=1"></script>
 </body>
 </html>

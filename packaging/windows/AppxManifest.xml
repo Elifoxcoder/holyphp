@@ -25,7 +25,7 @@
   <Identity
       Name="HolyPHP.HolyPHP"
       Publisher="CN=HolyPHP"
-      Version="1.0.0.0"
+      Version="1.0.2.0"
       ProcessorArchitecture="x64" />
 
   <Properties>

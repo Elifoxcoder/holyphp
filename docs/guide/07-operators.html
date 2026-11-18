@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+  <title>Chapter 7: Operators — HolyPHP Guide</title>
+  <link rel="stylesheet" href="../assets/style.css?v=6">
+</head>
+
+<body>
+  <div class="layout">
+    <script src="../assets/nav.html.js?v=3"></script>
+    <main>
+      <div class="breadcrumb">
+        <a href="index.html">Guide</a> » <a href="index.html#part2">Part 2: The Basics</a> » Chapter 7
+      </div>
+
+      <h1>Chapter 7: <span class="ph">Operators</span></h1>
+
+      <p>An <strong>operator</strong> is a symbol that does something with values: add them, compare
+        them, join them. You have already used the most important one, <code>=</code>, which puts a
+        value into a variable. This chapter covers the rest.</p>
+
+      <h2>Arithmetic</h2>
+
+      <pre><code class="hphp">$sum = 10 + 5;        // 15
+$difference = 10 - 5;   // 5
+$product = 10 * 5;      // 50
+$quotient = 10 / 4;     // 2.5 — division always yields a float
+$remainder = 10 % 3;    // 1   — the modulo (rest after dividing)
+$power = 2 ** 10;       // 1024 — exponent</code></pre>
+
+      <p>Modulo is the remainder of a division: <code>10 % 3</code> is <code>1</code> because
+        10 divided by 3 is 3 with 1 left over. It is how you test for even and odd:
+        <code>$n % 2 == 0</code> means <code>$n</code> is even.</p>
+
+      <div class="note">
+        <b>Division:</b> <code>10 / 4</code> is <code>2.5</code> and <code>10 / 2</code> is
+        <code>5.0</code> — division always produces a <code>float</code>, never an integer.
+        Use <code>intdiv()</code> when you want a whole number back.
+      </div>
+
+      <h2>Assignment operators</h2>
+
+      <p><code>=</code> stores a value. The combined operators do a calculation and store the
+        result in the same step:</p>
+
+      <pre><code class="hphp">$score = 100;
+$score += 25;    // 125 — same as $score = $score + 25
+$score -= 50;    // 75
+$score *= 2;     // 150
+$score /= 5;     // 30
+$score %= 7;     // 2  — the rest of 30 / 7</code></pre>
+
+      <p>Watch the types while you do this: <code>$score /= 5</code> keeps <code>$score</code> an
+        integer, so it rounds down if the result has decimals. The plain operator behaves
+        differently — <code>$score / 4</code> is a <code>float</code> no matter what was on the left.</p>
+
+      <p>There is also <code>.=</code>, which appends to a <em>string</em>:</p>
+
+      <pre><code class="hphp">$name = "Ada";
+$name .= " Lovelace";
+echo $name;     // Ada Lovelace</code></pre>
+
+      <div class="note">
+        <b>Types are checked:</b> <code>.=</code> needs a string on the left, so appending to
+        <code>$n = 9;</code> is a compile error — the checker tells you before the program ever runs.
+      </div>
+
+      <h2>Increment and decrement</h2>
+
+      <pre><code class="hphp">$i = 5;
+$i++;             // $i is now 6
+$i--;             // $i is back to 5
+echo $i;</code></pre>
+
+      <p>These are written as their own statement: <code>$i++;</code> on a line by itself.
+        When you need the value in the middle of an expression, do the arithmetic there
+        instead (<code>$i + 1</code>).</p>
+
+      <h2>Comparisons</h2>
+
+      <table>
+        <tr><th>Operator</th><th>Reads as</th></tr>
+        <tr><td><code>==</code></td><td>equal to (loose: types may differ)</td></tr>
+        <tr><td><code>!=</code></td><td>not equal to (loose)</td></tr>
+        <tr><td><code>===</code></td><td>identical: same value <em>and</em> same type</td></tr>
+        <tr><td><code>!==</code></td><td>not identical</td></tr>
+        <tr><td><code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code></td><td>smaller, greater, smaller-or-equal, greater-or-equal</td></tr>
+        <tr><td><code>&lt;=&gt;</code></td><td>spaceship: <code>-1</code>, <code>0</code> or <code>1</code></td></tr>
+      </table>
+
+      <pre><code class="hphp">echo ("5" == 5 ? "loose" : "strict");    // loose
+echo ("5" === 5 ? "same" : "different"); // different
+echo (3 &lt;=&gt; 5);                        // -1
+echo (5 &lt;=&gt; 5);                        // 0</code></pre>
+
+      <div class="note">
+        <b>Prefer <code>===</code>:</b> <code>==</code> converts types to compare them, which is
+        convenient (<code>"5" == 5</code>) and surprising (<code>0 == ""</code>). Use
+        <code>===</code> unless you specifically want PHP's loose behaviour.
+      </div>
+
+      <h2>Logical operators</h2>
+
+      <pre><code class="hphp">$age = 20;
+$hasTicket = true;
+
+if ($age &gt;= 18 &amp;&amp; $hasTicket) {
+    echo "you may come in";
+}
+
+if ($age &lt; 0 || $age &gt; 120) {
+    echo "that age looks wrong";
+}
+
+if (!$hasTicket) {
+    echo "no ticket";
+}</code></pre>
+
+      <p><code>&amp;&amp;</code> needs both sides to be true, <code>||</code> needs one, and
+        <code>!</code> flips a value. Both <code>&amp;&amp;</code> and <code>||</code> stop as soon
+        as the answer is decided — if the left side of <code>&amp;&amp;</code> is false, the right
+        side is never evaluated.</p>
+
+      <h2>Ternary and null coalescing</h2>
+
+      <pre><code class="hphp">$age = 20;
+$msg = $age &gt;= 18 ? "adult" : "minor";
+echo $msg;     // adult
+
+$config = null;
+$mode = $config ?? "default";
+echo $mode;    // default</code></pre>
+
+      <p><code>condition ? a : b</code> picks one of two values. <code>??</code> returns the value
+        on the right only when the left side is <code>null</code> (or missing), which is how you
+        give optional settings a fallback.</p>
+
+      <h2>Bitwise (a glimpse)</h2>
+
+      <pre><code class="hphp">echo (5 &amp; 3);    // 1  — bits set in both
+echo (5 | 3);    // 7  — bits set in either
+echo (5 ^ 3);    // 6  — bits set in one but not the other
+echo (1 &lt;&lt; 4);   // 16 — shift left: 1 moved four places
+echo (12 &gt;&gt; 2);  // 3  — shift right</code></pre>
+
+      <p>These work on the binary representation of integers. Everyday programs rarely need them,
+        but they show up in flags, masks and packing things into small numbers.</p>
+
+      <h2>Precedence: who binds tighter</h2>
+
+      <p>When an expression mixes operators, the tighter ones grab their operands first:</p>
+
+      <table>
+        <tr><th>Level</th><th>Operators</th></tr>
+        <tr><td>1 (tightest)</td><td><code>**</code></td></tr>
+        <tr><td>2</td><td><code>*</code> <code>/</code> <code>%</code></td></tr>
+        <tr><td>3</td><td><code>+</code> <code>-</code></td></tr>
+        <tr><td>4</td><td><code>.</code> (concatenation)</td></tr>
+        <tr><td>5</td><td>comparisons: <code>== === &lt; &gt; &lt;=&gt;</code> …</td></tr>
+        <tr><td>6</td><td><code>&amp;&amp;</code></td></tr>
+        <tr><td>7</td><td><code>||</code></td></tr>
+        <tr><td>8</td><td><code>?</code> <code>:</code></td></tr>
+        <tr><td>9 (loosest)</td><td><code>=</code> <code>+=</code> <code>-=</code> <code>.=</code> …</td></tr>
+      </table>
+
+      <p>So <code>1 + 2 . "x"</code> is <code>"3x"</code> — the addition happens first, then the two
+        pieces are joined. When in doubt, add parentheses: they cost nothing and read better than a
+        precedence puzzle.</p>
+
+      <div class="challenge">
+        <strong>Challenge:</strong> Write a program that takes a number, computes whether it is
+        even with <code>%</code>, doubles it with <code>*</code>, prints a sentence built with
+        <code>.</code>, and uses <code>?</code> <code>:</code> to pick the sentence's wording.
+      </div>
+
+      <div class="chapter-nav">
+        <a href="06-data-types.html" class="nav-prev">← Previous: Data Types</a>
+        <a href="08-input-and-output.html" class="nav-next">Next: Input and Output →</a>
+      </div>
+
+    </main>
+  </div>
+  <script src="../assets/site.js?v=4"></script>
+<script src="../assets/theme.js?v=1"></script>
+</body>
+
+</html>

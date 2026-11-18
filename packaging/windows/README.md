@@ -1,7 +1,7 @@
 # HolyPHP — Windows installer (MSIX)
 
 Ships **the compiler only**: `hphp.exe` with runtime + stdlib embedded. No gcc,
-and the five standard libraries (`ui`, `websocket`, `async`, `thread`, `mathx`)
+and six libraries (`ui`, `websocket`, `async`, `thread`, `html`, `ide`)
 are already embedded — extras come from the public registry:
 `hphp pkg install <name>`.
 
@@ -9,9 +9,9 @@ are already embedded — extras come from the public registry:
 
 ```powershell
 bash scripts/build.sh                                # -> hphp.exe at repo root
-powershell -File packaging/windows/make-msix.ps1     # -> packaging/windows/out/HolyPHP-1.0.0-x64.msix
+powershell -File packaging/windows/make-msix.ps1     # -> packaging/windows/out/HolyPHP-1.0.2-x64.msix
 powershell -File packaging/windows/sign-msix.ps1     # sign with the HolyPHP dev cert
-powershell -File packaging/windows/make-exe.ps1      # -> packaging/windows/out/HolyPHP-1.0.0-x64-setup.exe
+powershell -File packaging/windows/make-exe.ps1      # -> packaging/windows/out/HolyPHP-1.0.2-x64-setup.exe
 ```
 
 `make-exe.ps1` builds the standard setup.exe with [Inno Setup](https://jrsoftware.org/isinfo.php).
@@ -59,7 +59,7 @@ Either way you get:
 4. checks for `gcc` and, if missing, tells you how to get one
    (`winget install MSYS2.MSYS2` / `choco install mingw`) — `hphp run/build`
    shells out to gcc to compile your programs
-5. prints the `hphp pkg` commands for the `ui` / `websocket` libraries
+5. reports the bundled libraries: `ui`, `websocket`, `async`, `thread`, `html` and `ide`
 
 ## Uninstall
 

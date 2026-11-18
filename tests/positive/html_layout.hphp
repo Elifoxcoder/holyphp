@@ -1,0 +1,146 @@
+// tests/positive/html_layout.hphp — the layout and border rules a flex chrome
+// depends on. Pure layout: no window, no canvas, so it runs anywhere.
+//
+// Guards three bugs that made a VSCode-shaped layout come out wrong:
+//   * `flex: 1` in a column container had height 0 — the cross-axis pass
+//     re-measured the item afterwards and threw the assigned height away.
+//   * a row container's height was the SUM of its items instead of the tallest,
+//     so a two-pane app measured twice its height and pushed the status bar
+//     off the window.
+//   * `border-radius: 6px` was parsed as "6px border on all four sides, in the
+//     text colour", because the border- branch treats an unknown name as
+//     "all sides".
+//   * an inline span inside a flex row was merged into the container's text
+//     instead of being blockified into an item, so a toolbar of buttons laid
+//     out as one line of words: no boxes, no padding, no backgrounds and no
+//     click targets.
+//   * an absolutely positioned child was never measured, so every popup and
+//     palette was a zero-by-zero box that painted nothing.
+//
+// Run: hphp run tests/positive/html_layout.hphp   (exit 0 = all good)
+
+import "html";
+
+function check(bool $cond, string $what): void {
+    if ($cond) {
+        echo "OK   " . $what . "\n";
+    } else {
+        echo "FAIL " . $what . "\n";
+        exit(1);
+    }
+}
+
+/** A view sized like a window, with no canvas behind it. */
+function view_of(string $html, string $css, int $w, int $h): HtmlView {
+    $v = new HtmlView(0, $w, $h, html_theme_dark());
+    $v->load($html, $css);
+    $v->ensure();
+    return $v;
+}
+
+function box_of_sel(HtmlView $v, string $sel): Box {
+    return $v->box_of($v->find($sel));
+}
+
+/* ---- a column chrome: growing pane, fixed footer ---------------------- */
+$v = view_of(
+    "<div class='root'><div class='app'><div class='side'></div><div class='main'></div></div>"
+  . "<div class='status'>ready</div></div>",
+    ".root { display: flex; flex-direction: column; height: 100%; }
+     .app { display: flex; flex: 1; }
+     .side { width: 200px; }
+     .main { flex: 1; }
+     .status { flex: none; height: 22px; }",
+    760, 460);
+
+check(box_of_sel($v, ".root")->h == 460, "column root fills the viewport");
+check(box_of_sel($v, ".app")->h == 438, "flex: 1 pane takes the space left over");
+check(box_of_sel($v, ".status")->y == 438, "the footer starts where the pane ends");
+check(box_of_sel($v, ".status")->y + box_of_sel($v, ".status")->h == 460,
+      "the footer ends at the viewport edge");
+check(box_of_sel($v, ".side")->h == 438, "a stretched item fills the pane's height");
+check(box_of_sel($v, ".side")->w == 200, "a fixed width survives the stretch");
+check(box_of_sel($v, ".main")->w == 560, "the growing pane takes the rest of the width");
+
+/* ---- an auto-height row takes its tallest item, not the sum ----------- */
+$v2 = view_of(
+    "<div class='row'><div class='tall'></div><div class='short'></div>"
+  . "<div class='fixed'></div></div>",
+    ".row { display: flex; }
+     .tall { width: 100px; height: 80px; }
+     .short { width: 100px; }
+     .fixed { width: 100px; height: 30px; }",
+    400, 200);
+check(box_of_sel($v2, ".row")->h == 80, "a row is as tall as its tallest item");
+check(box_of_sel($v2, ".short")->h == 80, "an auto-height item stretches to match");
+check(box_of_sel($v2, ".fixed")->h == 30, "an explicit height is left alone");
+
+/* ---- a 30px bar above the pane ---------------------------------------- */
+$v3 = view_of(
+    "<div class='root'><div class='bar'></div><div class='pane'></div>"
+  . "<div class='foot'></div></div>",
+    ".root { display: flex; flex-direction: column; height: 100%; }
+     .bar { flex: none; height: 30px; }
+     .pane { flex: 1; }
+     .foot { flex: none; height: 22px; }",
+    300, 200);
+check(box_of_sel($v3, ".bar")->y == 0 && box_of_sel($v3, ".bar")->h == 30, "top bar");
+check(box_of_sel($v3, ".pane")->y == 30 && box_of_sel($v3, ".pane")->h == 148,
+      "the grower sits between the bars");
+check(box_of_sel($v3, ".foot")->y == 178, "the footer follows the grower");
+
+/* ---- borders: a radius is a radius ----------------------------------- */
+$v4 = view_of(
+    "<div class='card'></div><div class='rule'></div><div class='boxy'></div>",
+    ".card { border: 1px solid #3c3c3c; border-radius: 6px; }
+     .rule { border-left: 2px solid #007acc; }
+     .boxy { border: 1px solid #123456; border-width: 3px; }",
+    200, 100);
+
+$card = style_of_node($v4->lay, $v4->find(".card"));
+check($card->radius == 6, "border-radius sets the radius");
+check($card->bwT == 1, "border-radius does not widen the border");
+check($card->bcT == 0x3c3c3c, "border-radius does not repaint the border");
+
+$rule = style_of_node($v4->lay, $v4->find(".rule"));
+check($rule->bwL == 2 && $rule->bcL == 0x007acc, "border-left keeps side, width and colour");
+check($rule->bwT == 0, "border-left leaves the other sides alone");
+
+$boxy = style_of_node($v4->lay, $v4->find(".boxy"));
+check($boxy->bwT == 3, "border-width overrides the width");
+check($boxy->bcT == 0x123456, "border-width keeps the colour");
+
+/* ---- inline children of a flex container become items ----------------- */
+$v5 = view_of(
+    "<div class='bar'><span class='b'>Save</span><span class='b'>Run</span></div>",
+    ".bar { display: flex; height: 30px; }
+     .b { padding: 0 10px; border: 1px solid #4a4a4a; white-space: nowrap; }",
+    400, 60);
+$btn = box_of_sel($v5, ".b");
+check($btn != null, "a span in a flex row gets a box");
+check($btn->h > 0, "with a height of its own");
+/* "Save" plus 20px of padding and 2px of border: the box is the label plus
+ * its chrome, which is exactly what merging it into text threw away */
+$label = $v5->fonts->width(style_of_node($v5->lay, $v5->find(".b"))->font, "Save");
+check($btn->w == $label + 22,
+      "sized from its label and its own padding (" . $btn->w . " vs " . ($label + 22) . ")");
+check(count($v5->find_all(".b")) == 2, "and each of them is still its own element");
+check(box_of_sel($v5, ".b")->up != null, "inside the container, not beside it");
+
+/* ---- an out-of-flow child is measured, not just positioned ------------ */
+$v6 = view_of(
+    "<div class='wrap'><div class='pop'><div class='pi'>one</div>"
+  . "<div class='pi'>two</div></div></div>",
+    ".wrap { position: relative; height: 100%; }
+     .pop { position: absolute; left: 20px; top: 10px; width: 240px;
+            background-color: #252526; }
+     .pi { height: 20px; }",
+    400, 300);
+$pop = box_of_sel($v6, ".pop");
+check($pop != null, "an absolute box is in the layout");
+check($pop->w == 240, "its explicit width is honoured (" . $pop->w . ")");
+check($pop->h == 40, "and its height comes from its content (" . $pop->h . ")");
+check($pop->x == 20 && $pop->y == 10, "placed by its offsets inside the positioned parent");
+check(box_of_sel($v6, ".wrap")->h == 300, "and it takes no room in the flow");
+
+echo "html layout ok\n";

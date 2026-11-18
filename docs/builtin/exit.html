@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
 <title>exit() — HolyPHP built-ins</title>
 <style>
 :root { --bg: #14151a; --bg2: #1b1c23; --bg3: #22242d; --fg: #e8e6e3; --dim: #9a97a3;
@@ -50,6 +51,7 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
 .nav .mid { color: var(--dim); }
 .muted { color: var(--dim); }
 </style>
+<link rel="stylesheet" href="../assets/theme.css?v=2">
 </head>
 <body>
 <main>
@@ -62,7 +64,7 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
 <tr><td class="pn">$code</td><td class="pt">int</td><td>process exit code (default 0)<span class="opt">optional</span></td></tr>
 </table>
   <h2>Return value</h2><p class="ret">Terminates the program immediately.</p>
-  <h2>Example</h2><pre>echo &quot;before\n&quot;;
+  <h2>Example</h2><pre>echo &quot;before&quot;;
 if (true) { exit(0); }
 echo &quot;unreachable&quot;;</pre><pre class="out">before</pre>
   <h2>See also</h2><div class="see"><a href="die.html">die()</a></div>
@@ -72,5 +74,6 @@ echo &quot;unreachable&quot;;</pre><pre class="out">before</pre>
   <a href="die.html">die() &rarr;</a>
 </div>
 </main>
+<script src="../assets/theme.js?v=1"></script>
 </body>
 </html>

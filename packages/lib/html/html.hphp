@@ -1,0 +1,38 @@
+// =====================================================================
+//  HolyHTML — the whole library in one import
+// =====================================================================
+//
+//      import "html";
+//
+//      $doc = html_parse("<div class='pane'>hello</div>");
+//      $view = new HtmlView($canvas);
+//      $view->load($html, $css);
+//
+//  HolyHTML is an HTML/CSS engine written in HolyPHP, for HolyPHP: it
+//  parses a document, computes styles, lays the boxes out, paints them
+//  onto a canvas control and routes input back to the nodes. That is the
+//  whole of what a browser does for a desktop UI, and doing it here means
+//  a HolyPHP program can describe its window in HTML and CSS without
+//  shipping a browser engine.
+//
+//  The layers, each in its own file and testable on its own:
+//
+//      dom.hphp      the document tree and a tolerant HTML parser
+//      css.hphp      selectors, specificity, the cascade
+//      style.hphp    computed style, the default stylesheet, values
+//      layout.hphp   block, inline and flex layout, text wrapping
+//      paint.hphp    the draw list, clipping, scrolling
+//      view.hphp     the facade: mount, hit-test, events, repaint
+//
+//  No layer below `view` knows that a canvas exists, and none of them
+//  knows anything about the application. A "control" here is just an
+//  element with a class, and behaviour is HolyPHP code listening to the
+//  view - which is what keeps a UI built on this modular.
+// =====================================================================
+
+import "html/dom.hphp";
+import "html/css.hphp";
+import "html/style.hphp";
+import "html/layout.hphp";
+import "html/paint.hphp";
+import "html/view.hphp";

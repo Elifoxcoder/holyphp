@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+  <title>Chapter 8: Input and Output — HolyPHP Guide</title>
+  <link rel="stylesheet" href="../assets/style.css?v=6">
+</head>
+
+<body>
+  <div class="layout">
+    <script src="../assets/nav.html.js?v=3"></script>
+    <main>
+      <div class="breadcrumb">
+        <a href="index.html">Guide</a> » <a href="index.html#part2">Part 2: The Basics</a> » Chapter 8
+      </div>
+
+      <h1>Chapter 8: <span class="ph">Input and Output</span></h1>
+
+      <p>A program that never says anything and never asks anything is hard to use. Output is how
+        your program talks to the person running it; input is how it listens back.</p>
+
+      <h2>Output with <code>echo</code></h2>
+
+      <p><code>echo</code> prints a value and automatically starts the next line. You do not need to
+        add <code>"\n"</code> at the end of an echo statement:</p>
+
+      <pre><code class="hphp">echo "Hello, world!";
+
+$name = "Ada";
+echo "Hello, {$name}!";
+echo "Two plus two is " . (2 + 2);</code></pre>
+
+      <p>Each <code>echo</code> statement ends its output with a line break. This makes it easy to
+        print several values on separate lines without adding anything to each string. Functions
+        such as <code>printf</code> do not add that line break; include <code>\n</code> in their
+        format string only when you want one.</p>
+
+      <h2>Formatted output: <code>printf</code> and <code>sprintf</code></h2>
+
+      <p>When you build a string out of several pieces, a format string is often clearer than a
+        chain of <code>.</code>:</p>
+
+      <pre><code class="hphp">printf("%s = %.2f\n", "price", 9.5);   // price = 9.50
+printf("%04d\n", 42);                  // 0042
+printf("%s has %d items\n", "Ada", 3); // Ada has 3 items</code></pre>
+
+      <table>
+        <tr><th>Placeholder</th><th>Expects</th><th>Example</th></tr>
+        <tr><td><code>%d</code></td><td>integer</td><td><code>42</code></td></tr>
+        <tr><td><code>%f</code></td><td>float</td><td><code>9.500000</code></td></tr>
+        <tr><td><code>%.2f</code></td><td>float, 2 decimals</td><td><code>9.50</code></td></tr>
+        <tr><td><code>%s</code></td><td>anything, as text</td><td><code>Ada</code></td></tr>
+        <tr><td><code>%04d</code></td><td>integer, padded to 4</td><td><code>0042</code></td></tr>
+      </table>
+
+      <p><code>sprintf</code> does the same thing but returns the string instead of printing it:</p>
+
+      <pre><code class="hphp">$label = sprintf("%04d", 42);
+echo "id: " . $label;    // id: 0042</code></pre>
+
+      <h2>Inspecting values: <code>var_dump</code> and <code>print_r</code></h2>
+
+      <p>While learning, you will want to see what a value actually <em>is</em> — not just how it
+        prints, but its type and, for collections, its structure:</p>
+
+      <pre><code class="hphp">var_dump(3.5);                          // float(3.5)
+var_dump("hello");                      // string(5) "hello"
+
+print_r(["name" => "Ada", "lang" => "HolyPHP"]);</code></pre>
+
+      <p><code>var_dump</code> is the compact one — type, size, value. <code>print_r</code> lays
+        arrays and maps out as a tree, which is what you want when a nested structure looks wrong.</p>
+
+      <h2>Input with <code>readline</code></h2>
+
+      <p><code>readline</code> prints a prompt and reads one line from standard input:</p>
+
+      <pre><code class="hphp">$name = readline("Your name? ");
+echo "Hello, {$name}!";
+
+$answer = readline("Continue? (yes/no) ");
+if ($answer === "yes") {
+    echo "carrying on";
+}</code></pre>
+
+      <p>The value it returns is always a <code>string</code>, and the trailing newline is already
+        removed for you — what comes back is the line itself:</p>
+
+      <pre><code class="hphp">$line = readline("");
+echo "you typed " . strlen($line) . " characters: " . $line;</code></pre>
+
+      <p>Input that came from a file or another program can still carry stray spaces, so
+        <code>trim()</code> is cheap insurance before you compare:</p>
+
+      <pre><code class="hphp">$answer = trim(readline("Continue? "));
+if ($answer === "yes") { echo "carrying on"; }</code></pre>
+
+      <p>When the input runs out, <code>readline</code> returns an empty string
+        (<code>""</code>) rather than blocking forever. That makes a program safe to feed from a
+        file or a pipe:</p>
+
+      <pre><code class="hphp">$name = readline("");
+if ($name === "") {
+    echo "no input";
+}</code></pre>
+
+      <div class="note">
+        <b>In the playground:</b> there is no terminal attached, so <code>readline</code> returns
+        <code>""</code> immediately. Everything else on this page — <code>echo</code>,
+        <code>printf</code>, <code>var_dump</code>, <code>print_r</code> — works exactly as it
+        does on your own machine.
+      </div>
+
+      <h2>Reading a whole file</h2>
+
+      <p>For input that is not interactive, read it in one call:</p>
+
+      <pre><code class="hphp">$text = file_get_contents("data.txt");
+echo strlen($text) . " bytes";</code></pre>
+
+      <div class="challenge">
+        <strong>Challenge:</strong> Ask for a name and a price, then print a receipt line with
+        <code>printf</code> — pad the price to two decimals — and dump both values with
+        <code>var_dump</code> to see their types.
+      </div>
+
+      <div class="chapter-nav">
+        <a href="07-operators.html" class="nav-prev">← Previous: Operators</a>
+        <a href="09-comments.html" class="nav-next">Next: Comments →</a>
+      </div>
+
+    </main>
+  </div>
+  <script src="../assets/site.js?v=4"></script>
+<script src="../assets/theme.js?v=1"></script>
+</body>
+
+</html>

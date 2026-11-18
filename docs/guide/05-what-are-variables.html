@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+  <title>Chapter 5: What are Variables? — HolyPHP Guide</title>
+  <link rel="stylesheet" href="../assets/style.css?v=6">
+</head>
+
+<body>
+  <div class="layout">
+    <script src="../assets/nav.html.js?v=3"></script>
+    <main>
+      <div class="breadcrumb">
+        <a href="index.html">Guide</a> » <a href="index.html#part2">Part 2: The Basics</a> » Chapter 5
+      </div>
+
+      <h1>Chapter 5: What are <span class="ph">Variables?</span></h1>
+
+      <h2>Definition</h2>
+      <p>A <strong>variable</strong> is a named container that holds a value. Think of it like a labeled box where you can store information and retrieve it later. You can also change what's inside the box.</p>
+
+      <p>In HolyPHP (and PHP), variables always start with a dollar sign <code>$</code>.</p>
+
+      <h2>Creating Variables</h2>
+      <p>To create a variable, just assign a value to it using the <code>=</code> operator:</p>
+      <pre><code class="hphp">$name = "Alice";
+$age = 25;
+$pi = 3.14159;</code></pre>
+
+      <p>You don't need to declare the variable type first - HolyPHP will figure it out automatically based on the value you assign. This is called <strong>type inference</strong>.</p>
+
+      <h2>Using Variables</h2>
+      <pre><code class="hphp">$name = "Bob";
+echo "My name is " . $name;
+
+// Or use string interpolation
+echo "My name is {$name}";</code></pre>
+
+      <p>Both work, but string interpolation with <code>{$variable}</code> is often cleaner and more readable.</p>
+
+      <h2>Variable Naming Rules</h2>
+      <ul>
+        <li>Must start with <code>$</code> followed by a letter or underscore</li>
+        <li>Can contain letters, numbers, and underscores</li>
+        <li>Case-sensitive: <code>$name</code> and <code>$Name</code> are different</li>
+        <li>Cannot start with a number</li>
+        <li>No spaces allowed</li>
+      </ul>
+
+      <p><strong>Valid names:</strong></p>
+      <pre><code class="hphp">$firstName = "John";
+$_count = 10;
+$user_id = 123;</code></pre>
+
+      <p><strong>Invalid names:</strong></p>
+      <pre><code class="hphp">$1name = "John";    // Can't start with number
+$first name = "John"; // No spaces
+$first-name = "John"; // Hyphens not allowed</code></pre>
+
+      <h2>Reassigning Variables</h2>
+      <p>You can change the value of a variable anytime:</p>
+      <pre><code class="hphp">$x = 5;
+echo $x; // Outputs: 5
+
+$x = 10;
+echo $x; // Outputs: 10
+
+$x = "hello";
+echo $x; // Outputs: hello</code></pre>
+
+      <p>Notice that in HolyPHP, a variable can change its type when reassigned (unlike languages with strict static typing). This is flexible like PHP!</p>
+
+      <h2>Variable Scope (Intro)</h2>
+      <p>For now, just know that variables defined in your main program are available throughout. We'll learn more about scope in functions later.</p>
+
+      <div class="note">
+        <b>Good Practice:</b> Use descriptive variable names. <code>$userAge</code> is better than <code>$ua</code> - your future self will thank you!
+      </div>
+
+      <div class="challenge">
+        <strong>Challenge:</strong> Create variables for a person (name, age, city, isStudent), assign values, and print them using string interpolation.
+      </div>
+
+      <div class="chapter-nav">
+        <a href="04-using-the-playground.html" class="nav-prev">← Previous: Using the Playground</a>
+        <a href="06-data-types.html" class="nav-next">Next: Data Types →</a>
+      </div>
+
+    </main>
+  </div>
+  <script src="../assets/site.js?v=4"></script>
+<script src="../assets/theme.js?v=1"></script>
+</body>
+
+</html>

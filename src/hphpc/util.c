@@ -1,4 +1,5 @@
 #include "util.h"
+#include "diag.h"
 #include <stdarg.h>
 
 void *xmalloc(size_t n) {
@@ -30,12 +31,14 @@ char *xstrndup(const char *s, size_t n) {
 }
 
 void fatal(const char *fmt, ...) {
+    char msg[8192];
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "hphpc: error: ");
-    vfprintf(stderr, fmt, ap);
-    fprintf(stderr, "\n");
+    vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
+    /* Render it like any other diagnostic: a terminal gets the source frame,
+     * a pipe the one-line form. */
+    diag_fatal_message(msg);
     exit(1);
 }
 

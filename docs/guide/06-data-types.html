@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+  <title>Chapter 6: Data Types — HolyPHP Guide</title>
+  <link rel="stylesheet" href="../assets/style.css?v=6">
+</head>
+
+<body>
+  <div class="layout">
+    <script src="../assets/nav.html.js?v=3"></script>
+    <main>
+      <div class="breadcrumb">
+        <a href="index.html">Guide</a> » <a href="index.html#part2">Part 2: The Basics</a> » Chapter 6
+      </div>
+
+      <h1>Chapter 6: <span class="ph">Data Types</span></h1>
+
+      <p>Every piece of data in HolyPHP has a <strong>type</strong>. The type tells the computer what kind of data it is and what operations you can do with it.</p>
+
+      <h2>Basic Data Types</h2>
+
+      <h3>1. Integer (<code>int</code>)</h3>
+      <p>Whole numbers, positive or negative, no decimal point.</p>
+      <pre><code class="hphp">$age = 25;
+$temperature = -10;
+$bigNumber = 1234567890;</code></pre>
+      <p>HolyPHP uses 64-bit signed integers.</p>
+
+      <h3>2. Float (<code>float</code>)</h3>
+      <p>Numbers with decimal points.</p>
+      <pre><code class="hphp">$pi = 3.14159;
+$price = 19.99;
+$temperature = 98.6;</code></pre>
+      <p>HolyPHP uses 64-bit IEEE floating point numbers.</p>
+
+      <h3>3. Boolean (<code>bool</code>)</h3>
+      <p>True or false values. Used for making decisions.</p>
+      <pre><code class="hphp">$isActive = true;
+$isLoggedIn = false;</code></pre>
+
+      <h3>4. String (<code>string</code>)</h3>
+      <p>Text, enclosed in double quotes <code>"</code> or single quotes <code>'</code>.</p>
+      <pre><code class="hphp">$name = "Alice";
+$greeting = 'Hello';
+$message = "She said \"Hi!\""; // Escaping quotes</code></pre>
+
+      <h3>5. Array (<code>array</code>)</h3>
+      <p>Lists of values (we'll cover this in detail later).</p>
+      <pre><code class="hphp">$fruits = ["apple", "banana", "cherry"];
+$numbers = [1, 2, 3, 4, 5];</code></pre>
+
+      <h3>6. Null</h3>
+      <p>Represents "no value" or empty.</p>
+      <pre><code class="hphp">$value = null;</code></pre>
+
+      <h2>Explicit Type Annotations</h2>
+      <p>While types are usually inferred, you can explicitly declare them when you want:</p>
+      <pre><code class="hphp">$count: int = 5;
+$price: float = 9.99;
+$name: string = "Bob";
+$active: bool = true;</code></pre>
+
+      <p>Adding explicit types is good practice when you want to be clear about your intent, especially in functions.</p>
+
+      <h2>Checking Types</h2>
+      <p>HolyPHP has built-in functions to check types:</p>
+      <pre><code class="hphp">$x = 42;
+var_dump($x);        // Shows type and value
+
+echo gettype($x);    // Returns "integer"
+
+// Type checking functions
+if (is_int($x)) { echo "It's an integer"; }
+if (is_string($x)) { echo "It's a string"; }
+if (is_float($x)) { echo "It's a float"; }
+if (is_bool($x)) { echo "It's a boolean"; }
+if (is_array($x)) { echo "It's an array"; }
+if (is_null($x)) { echo "It's null"; }</code></pre>
+
+      <h2>Type Conversion (Casting)</h2>
+      <p>Sometimes you need to convert between types:</p>
+      <pre><code class="hphp">$numString = "123";
+$num = intval($numString);  // Convert to int
+echo $num + 1; // 124
+
+$floatNum = floatval("3.14");
+echo $floatNum;
+
+$str = strval(123); // Convert to string
+echo "Value: " . $str;</code></pre>
+
+      <h2>Strings and Concatenation</h2>
+      <p>Use the dot <code>.</code> operator to concatenate strings:</p>
+      <pre><code class="hphp">$firstName = "John";
+$lastName = "Doe";
+$fullName = $firstName . " " . $lastName;
+echo $fullName; // John Doe</code></pre>
+
+      <div class="note">
+        <b>Remember:</b> In HolyPHP, <code>+</code> is for numeric addition, <code>.</code> is for string concatenation (like PHP).
+      </div>
+
+      <div class="challenge">
+        <strong>Challenge:</strong> Create variables of different types, use <code>var_dump()</code> to inspect them, and practice concatenation with <code>.</code>
+      </div>
+
+      <div class="chapter-nav">
+        <a href="05-what-are-variables.html" class="nav-prev">← Previous: What are Variables?</a>
+        <a href="07-operators.html" class="nav-next">Next: Operators →</a>
+      </div>
+
+    </main>
+  </div>
+  <script src="../assets/site.js?v=4"></script>
+<script src="../assets/theme.js?v=1"></script>
+</body>
+
+</html>

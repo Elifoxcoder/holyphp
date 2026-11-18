@@ -1,0 +1,236 @@
+// canvas_demo.hphp — the canvas control: a surface a HolyPHP script paints.
+//
+//   hphp run examples/canvas_demo.hphp
+//   hphp build examples/canvas_demo.hphp -o canvas_demo.exe
+//
+// Nothing in this window is a widget. It holds one canvas, the code below
+// draws every pixel in it, and the input arrives as plain numbers: pointer
+// position in logical 96-dpi pixels, wheel notches, key codes, typed
+// characters. That is the whole contract an HTML/CSS engine needs — it
+// computes boxes, this draws them, and nothing in between decides anything.
+//
+// Click the swatches, drag the bar, scroll, and type: every event prints one
+// line to stdout, so the program is as testable as it is watchable. After
+// ten seconds it draws its last frame and exits on its own, so it can also be
+// run unattended.
+
+import "ui";
+
+$W = 720;
+$H = 440;
+
+$win = ui_window("Canvas — painted by HolyPHP", -1, -1, $W, $H);
+$cv  = ui_add($win, 18, "", 0, 0, $W, $H);
+
+// ---- fonts: family, points, bold, italic ---------------------------------
+// A code editor needs an exact monospace grid while the chrome beside it uses
+// Segoe UI, so the family is part of the font key.
+$mono   = ui_font_new("Consolas", 11, false, false);
+$ui     = ui_font_new("Segoe UI", 11, false, false);
+$uiBold = ui_font_new("Segoe UI", 15, true, false);
+
+echo "canvas font: mono id={$mono} height=" . ui_font_height($mono) . "\n";
+echo "measure 'Hello, canvas' = " . ui_font_width($mono, "Hello, canvas") . " px\n";
+
+// ---- state the paint callback reads --------------------------------------
+$mode    = 0;             // which swatch is selected
+$pulse   = 0;             // animated fill of the meter
+$drag    = 0;             // 0..100, dragged with the mouse
+$dragging = false;
+$chars   = "";            // typed characters, in order
+$status  = "click a swatch, drag the bar, scroll, type";
+$mx = -1; $my = -1;       // last pointer position
+
+$swatches = [0x4C7DFF, 0x22C3A6, 0xF2607A, 0xE8A33D, 0xB07CFF];
+
+function swatch_x(int $i): int { return 28 + $i * 74; }
+
+// ---- painting ------------------------------------------------------------
+function paint($cv, $mono, $ui, $uiBold, $mode, $pulse, $drag, $mx, $my,
+               $chars, $status, $swatches, $W, $H) {
+    $sz = ui_canvas_size($cv);
+    if ($sz == null) { return; }
+    $w = $sz[0];
+    $h = $sz[1];
+
+    ui_draw_clear($cv, 0x0F1115);
+
+    // a title bar, drawn like any other rectangle
+    ui_draw_rect($cv, 0, 0, $w, 44, 0x171A21);
+    ui_draw_text($cv, 20, 12, 400, 22, "HolyPHP canvas", 0xE8EAF0, $uiBold, 0);
+    ui_draw_text($cv, $w - 300, 15, 280, 20, $status, 0x969FB0, $ui, 1 | 4);
+    ui_draw_line($cv, 0, 44, $w, 44, 0x2B313D, 1);
+
+    // swatches: round rectangles with a ring on the selected one
+    for ($i = 0; $i < count($swatches); $i++) {
+        $x = swatch_x($i);
+        $c = $swatches[$i];
+        $hover = ($mx >= $x && $mx <= $x + 56 && $my >= 70 && $my <= 126);
+        $radius = $hover ? 16 : 12;
+        ui_draw_round($cv, $x, $hover ? 68 : 70, 56, 56, $radius, $c, -1, 0);
+        if ($mode == $i) {
+            ui_draw_round($cv, $x - 4, $hover ? 64 : 66, 64, 64, $radius + 4,
+                          -1, 0xE8EAF0, 2);
+        }
+    }
+    ui_draw_text($cv, 28, 140, 300, 20, "swatches — click to select",
+                 0x969FB0, $ui, 0);
+
+    // the draggable bar
+    $bx = 28; $bw = $w - 56; $by = 180;
+    ui_draw_round($cv, $bx, $by, $bw, 14, 7, 0x1E222B, -1, 0);
+    $filled = $bw * $drag / 100;
+    ui_draw_round($cv, $bx, $by, $filled, 14, 7, $swatches[$mode], -1, 0);
+    $knob = $bx + $filled - 9;
+    ui_draw_round($cv, $knob, $by - 5, 18, 24, 9, 0xE8EAF0, -1, 0);
+    ui_draw_text($cv, 28, 158, 300, 18, "drag — " . $drag . "%", 0x969FB0, $ui, 0);
+
+    // animated meter, driven by a timer rather than by input
+    ui_draw_round($cv, 28, 240, $bw, 10, 5, 0x1E222B, -1, 0);
+    ui_draw_round($cv, 28, 240, $bw * $pulse / 100, 10, 5, 0x22C3A6, -1, 0);
+
+    // typed text in the monospace face, on a grid
+    ui_draw_text($cv, 28, 268, 400, 20, "typed:", 0x969FB0, $ui, 0);
+    $show = $chars;
+    if (strlen($show) > 46) { $show = substr($show, strlen($show) - 46); }
+    ui_draw_text($cv, 28, 290, $w - 56, 24, $show . "_", 0xE8EAF0, $mono, 0);
+
+    // every string is clipped to its box, so a long one cannot overrun
+    ui_draw_text($cv, 28, 330, 300, 20, "clipped to its box:", 0x969FB0, $ui, 0);
+    ui_draw_text($cv, 28, 352, 240, 20,
+                 "this label is far too long to fit here", 0xE8EAF0, $mono,
+                 1 | 2);
+
+    // pointer read-out in the corner
+    ui_draw_text($cv, $w - 220, $h - 34, 200, 20, "pointer: " . $mx . ", " . $my,
+                 0x6B7280, $mono, 0);
+    ui_draw_round($cv, 16, $h - 32, 8, 8, 4, $mode == 0 ? 0x4C7DFF : 0x2B313D,
+                  -1, 0);
+}
+
+function repaint($cv, $mono, $ui, $uiBold, $mode, $pulse, $drag, $mx, $my,
+                 $chars, $status, $swatches, $W, $H) {
+    paint($cv, $mono, $ui, $uiBold, $mode, $pulse, $drag, $mx, $my,
+          $chars, $status, $swatches, $W, $H);
+    ui_canvas_invalidate($cv);
+}
+
+// ---- input ---------------------------------------------------------------
+// Mouse events carry logical pixels: (x, y, button) for a press, (x, y, 0)
+// for a move, (x, y, notches) for the wheel, and a typed character arrives as
+// its own event so dead keys and layouts are already resolved by Windows.
+ui_on($cv, 6, function($x, $y, $button) use (&$status, &$drag, &$dragging,
+                                             &$mode, &$pulse, $cv, $mono, $ui,
+                                             $uiBold, $mx, $my, $chars,
+                                             $swatches, $W, $H) {
+    $pulse = 30;
+    if ($button != 1) { return; }
+    // a swatch?
+    for ($i = 0; $i < count($swatches); $i++) {
+        $sx = swatch_x($i);
+        if ($x >= $sx - 4 && $x <= $sx + 60 && $y >= 64 && $y <= 132) {
+            $mode = $i;
+            $status = "swatch " . $i . " selected";
+            repaint($cv, $mono, $ui, $uiBold, $mode, $pulse, $drag, $mx, $my,
+                    $chars, $status, $swatches, $W, $H);
+            return;
+        }
+    }
+    // the bar?
+    if ($y >= 165 && $y <= 210) {
+        $dragging = true;
+        $drag = intval(($x - 28) * 100 / ($W - 56));
+        if ($drag < 0) { $drag = 0; }
+        if ($drag > 100) { $drag = 100; }
+        $status = "bar " . $drag . "%";
+        repaint($cv, $mono, $ui, $uiBold, $mode, $pulse, $drag, $mx, $my,
+                $chars, $status, $swatches, $W, $H);
+    }
+});
+
+ui_on($cv, 7, function($x, $y, $button) use (&$dragging, &$status) {
+    if ($dragging) { $status = "released at " . $x . ", " . $y; }
+    $dragging = false;
+});
+
+ui_on($cv, 8, function($x, $y) use (&$mx, &$my, &$drag, &$dragging) {
+    $mx = $x;
+    $my = $y;
+    if ($dragging) {
+        $drag = intval(($x - 28) * 100 / ($W - 56));
+        if ($drag < 0) { $drag = 0; }
+        if ($drag > 100) { $drag = 100; }
+    }
+});
+
+ui_on($cv, 9, function($x, $y, $notches) use (&$status, &$pulse) {
+    $status = "wheel " . $notches . " at " . $y;
+    $pulse = $pulse + $notches * 5;
+    if ($pulse < 0) { $pulse = 0; }
+    if ($pulse > 100) { $pulse = 100; }
+});
+
+// key events come as (virtual key, character, modifiers) with 1 = Ctrl,
+// 2 = Shift, 4 = Alt — the same encoding the toolkit's other controls use.
+ui_on($cv, 4, function($vk, $ch, $mods) use (&$status, &$chars) {
+    echo "key vk={$vk} ch={$ch} mods={$mods}\n";
+    if ($mods == 1 && $vk == 65) { $status = "Ctrl+A"; }
+});
+
+ui_on($cv, 11, function($code) use (&$chars, &$status) {
+    if ($code == 8) {
+        if (strlen($chars) > 0) { $chars = substr($chars, 0, strlen($chars) - 1); }
+        return;
+    }
+    if ($code == 13) { $status = "entered: " . $chars; return; }
+    if ($code < 32) { return; }
+    $chars = $chars . chr($code);
+    echo "char " . chr($code) . "\n";
+});
+
+ui_on($cv, 12, function($x, $y, $button) use (&$status) {
+    $status = "double click at " . $x . ", " . $y;
+});
+
+ui_on($cv, 13, function() use (&$mx, &$my) { $mx = -1; $my = -1; });
+ui_on($cv, 10, function($w, $h) use (&$status) { $status = "resized to " . $w . "x" . $h; });
+
+// ---- animation -----------------------------------------------------------
+// A timer drives the meter and the pointer read-out; ui_canvas_flush() shows
+// the frame at once instead of waiting for the paint queue, which is what
+// makes an animated canvas smooth.
+$frames = 0;
+ui_timer(60, function() use (&$frames, &$pulse, &$mx, &$my, &$chars, &$status,
+                            &$mode, &$drag, &$swatches, $cv, $mono, $ui,
+                            $uiBold, $win, $W, $H) {
+    $frames = $frames + 1;
+    $pulse = ($pulse + 4) % 100;
+    paint($cv, $mono, $ui, $uiBold, $mode, $pulse, $drag, $mx, $my,
+          $chars, $status, $swatches, $W, $H);
+    ui_canvas_flush($cv);
+    if ($frames == 3) {
+        // Read a few pixels back out of the surface. This is how the drawing
+        // API is verified without eyes: the title bar must be the bar colour,
+        // the first swatch the accent blue, and the corner empty space.
+        $bar = ui_canvas_pixel($cv, 5, 5);
+        $sw = ui_canvas_pixel($cv, 56, 98);
+        $low = ui_canvas_pixel($cv, 3, $H - 6);
+        echo "pixel bar=" . dechex($bar) . " swatch=" . dechex($sw)
+           . " corner=" . dechex($low) . "\n";
+        if ($bar == 0x171A21 && $sw == 0x4C7DFF && $low == 0x0F1115) {
+            echo "pixels ok\n";
+        } else {
+            echo "pixels MISMATCH\n";
+        }
+    }
+    if ($frames >= 160) {
+        echo "frames=" . $frames . " drag=" . $drag . " chars=" . $chars . "\n";
+        echo "canvas_demo ok\n";
+        ui_close($win);
+        ui_quit();
+    }
+});
+
+repaint($cv, $mono, $ui, $uiBold, $mode, $pulse, $drag, $mx, $my, $chars,
+        $status, $swatches, $W, $H);
+ui_run_main();

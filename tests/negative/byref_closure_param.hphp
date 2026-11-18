@@ -1,0 +1,7 @@
+// A closure is called with its arguments boxed into hvals: there is no caller
+// slot to alias, so a by-ref parameter on a closure is rejected instead of
+// silently writing into a copy. Use `use (&$x)` to share a variable instead.
+$add = function(int &$x): void { $x = $x + 1; };
+$n = 1;
+$add($n);
+echo $n;
