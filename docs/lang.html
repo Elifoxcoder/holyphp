@@ -200,7 +200,7 @@ function colorName(Farbe $f): string {
     <tr><td>Immutable borrow</td><td><code>&amp;$x</code></td><td>read-only alias, many allowed</td></tr>
     <tr><td>Mutable borrow</td><td><code>&amp;mut $x</code></td><td>exactly one at a time</td></tr>
     <tr><td>Owned box</td><td><code>own&lt;T&gt;</code></td><td>exclusive ownership, moves</td></tr>
-    <tr><td>Shared pointer</td><td><code>Rc&lt;T&gt;</code></td><td>shared ownership syntax; runtime reference counting is not implemented yet</td></tr>
+    <tr><td>Shared pointer</td><td><code>Rc&lt;T&gt;</code></td><td>shared ownership syntax backed by the reference-counting runtime</td></tr>
     <tr><td>Raw pointer</td><td><code>*T</code> / <code>&amp;$x</code> under <code>unsafe</code></td><td>only inside <code>unsafe {}</code></td></tr>
   </table>
 <pre><code class="hphp">// borrow checker at compile time:
@@ -221,10 +221,12 @@ echo laenge($w);        // owner keeps $w
   <div class="note warn"><b>unsafe:</b> raw pointer operations need an unsafe block. The
   compiler cannot guarantee memory safety for code that uses raw pointers or escapes the
   supported borrow rules.</div>
-  <p><b>Runtime memory:</b> HolyPHP currently has no tracing garbage collector, and its
-  reference-count increment/decrement and dynamic-value free hooks are not implemented.
-  Heap allocations may therefore remain allocated until process exit. Compile-time borrow
-  checking does not itself reclaim memory.</p>
+  <p><b>Runtime memory:</b> strings, arrays, and closures carry reference counters, and the
+  runtime now exposes retain/release primitives. Compiler-generated owners are not yet
+  consistently retained and released, so this is not a complete reclamation guarantee.
+  Objects still need a common drop protocol. The target model adds automatic object-cycle
+  collection and weak properties. See the <a href="guide/memory-model.md">memory model
+  guide</a> for the ownership rules and implementation boundary.</p>
 
   <h2 id="imports">Imports &amp; the stdlib</h2>
   <p>Libraries ship inside the compiler binary — <code>import</code> finds them with no files

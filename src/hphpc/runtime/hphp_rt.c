@@ -39,8 +39,23 @@ void *hp_alloc(size_t n) {
     return p;
 }
 
-void hp_rc_inc(void *p) { (void)p; }
-void hp_rc_dec(void *p) { (void)p; }
+/* Generic Rc<T> pointers use this hook. All runtime heap headers keep their
+ * reference count at the same offset; generated class objects are wired into
+ * this protocol by the object-layout work. */
+typedef struct { uint32_t rc; } hp_rc_header;
+
+void hp_rc_inc(void *p) {
+    if (!p) return;
+    hp_rc_header *h = (hp_rc_header *)p;
+    if (h->rc != UINT32_MAX) h->rc++;
+}
+
+void hp_rc_dec(void *p) {
+    if (!p) return;
+    hp_rc_header *h = (hp_rc_header *)p;
+    if (h->rc == 0 || h->rc == UINT32_MAX) return;
+    if (--h->rc == 0) free(p);
+}
 
 void hp_echo(hval v) {
     hstr *s = hp_val_to_str(v);
@@ -1372,12 +1387,41 @@ hval hp_closure_call(hclosure *c, int nargs, const hval *args) {
 }
 
 /* ---------------- smart pointers / objects ---------------- */
-/* Rc<T> runtime hooks are placeholders. The compiler currently emits these
- * calls, but no object header/drop protocol is implemented, so allocations
- * are not reclaimed here. */
-void hp_val_free(hval v) { (void)v; }
-void hp_val_rc_inc(hval v) { (void)v; }
-void hp_val_rc_dec(hval v) { (void)v; }
+/* Literal strings have a saturated count and are process-lifetime values.
+ * Mutable strings and arrays start at one. Arrays own their entries once the
+ * compiler's ownership-aware container API is used. */
+void hp_val_free(hval v) { hp_val_rc_dec(v); }
+
+void hp_val_rc_inc(hval v) {
+    switch (v.tag) {
+    case HV_STR: if (v.u.s && v.u.s->rc != UINT32_MAX) v.u.s->rc++; break;
+    case HV_ARR: if (v.u.a && v.u.a->rc != UINT32_MAX) v.u.a->rc++; break;
+    case HV_CLO: if (v.u.c && v.u.c->rc != UINT32_MAX) v.u.c->rc++; break;
+    /* Generated class layouts do not yet have a common drop header. */
+    case HV_OBJ: break;
+    default: break;
+    }
+}
+
+void hp_val_rc_dec(hval v) {
+    switch (v.tag) {
+    case HV_STR:
+        if (v.u.s && v.u.s->rc != UINT32_MAX && v.u.s->rc && --v.u.s->rc == 0)
+            hp_str_free(v.u.s);
+        break;
+    case HV_ARR:
+        if (v.u.a && v.u.a->rc != UINT32_MAX && v.u.a->rc && --v.u.a->rc == 0)
+            hp_arr_free(v.u.a);
+        break;
+    case HV_CLO:
+        if (v.u.c && v.u.c->rc != UINT32_MAX && v.u.c->rc && --v.u.c->rc == 0)
+            hpclosure_free(v.u.c);
+        break;
+    /* Generated class layouts do not yet have a common drop header. */
+    case HV_OBJ: break;
+    default: break;
+    }
+}
 
 /* ---------------- lifecycle ---------------- */
 static bool hp_inited = false;
