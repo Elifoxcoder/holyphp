@@ -202,7 +202,11 @@ static char *hphp_dir(void) {
  * lines only ever contain simple relative paths. */
 static const char *work_dir(void) {
 #ifdef _WIN32
+    /* HPHP_WORK_DIR overrides the scratch directory (must not contain
+     * spaces), e.g. for sandboxed builds that may only write in one tree. */
     static const char *wd = "C:/hphpbuild";
+    const char *env = getenv("HPHP_WORK_DIR");
+    if (env && *env && !strchr(env, ' ')) wd = env;
     (void)hphp_dir();
     return wd;
 #else
