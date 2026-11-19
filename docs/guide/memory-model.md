@@ -157,10 +157,13 @@ Builtin ownership metadata also remains for task 1.4, so builtins that retain,
 consume, or alias heap arguments still require a separate audit. WSL is
 unavailable in the current environment, so sanitizer verification has not run.
 
-Array-list and string indexing now checks bounds in the runtime and throws a
+Array-list and string indexing checks bounds in the runtime and throws a
 catchable error on an invalid read. Map lookups remain nullable for missing
-keys. The compiler currently emits a check for each such read; loop range
-proofs and check elimination are not implemented.
+keys. A narrow compiler proof removes the per-read check for
+`for ($i = 0; $i < count($a); $i++)` when the body contains no calls, writes to
+`$a`, writes to `$i`, or unsupported control effects. All other indexed reads
+keep runtime checks. `foreach` advances a checked runtime iterator directly
+and does not perform an indexed lookup for each element.
 
 The parser and semantic checker support the per-file
 `declare(enforce_memory_safety=1);` directive. It rejects unsafe blocks and
@@ -168,12 +171,20 @@ builtin calls whose `builtins.c` entry has its unsafe flag set. Safe code
 continues to compile normally. The directive does not imply that all of the
 remaining guarantees in the safety plan have been implemented.
 
-Thread checking is currently partial: literal closures passed directly to
-`thr_spawn` or `thr_parallel_map` reject by-reference and non-Sync captures.
-Indirectly passed callbacks are rejected because their captures cannot yet be
-verified. Only immutable scalar/string capture types are currently accepted;
-class names do not establish `Sync`, and class captures are rejected until a
-verifiable Sync contract exists. The checker does not yet enforce channel
-ownership transfer, and the bundled `Thread`/`Pool` wrappers fail the current
-callback restrictions. The thread runtime shares raw heap handles across
-threads, so the threading guarantee is not yet enforced.
+Thread callbacks are checked at the point where a known closure crosses the
+thread boundary. A closure capture or channel payload moves from its source;
+the borrow checker rejects later uses of that source. Immutable scalar and
+string values are shareable. Arrays and maps can move when their nested values
+are themselves safe value types; mutation then uses copy-on-write. Ordinary
+class objects and closures cannot be sent as channel payloads. Unknown
+`mixed` channel payloads are checked again by the runtime. Heap reference
+counts and the collector registry use synchronization so independent worker
+threads can retain and drop immutable shared values safely; this does not make
+mutable object fields `Sync`.
+
+The compiler accepts an indirect callback only when its static type carries a
+closure origin or a `thread_callable` contract established at a checked call
+boundary. The bundled `Thread`, `Pool.map`, channel, and chunked-map wrappers
+use that contract. The runtime moves the closure environment into the worker;
+each invocation creates owned local captures so concurrent calls detach
+copy-on-write arrays independently.

@@ -235,8 +235,19 @@ echo laenge($w);        // owner keeps $w
   <p><b>Indexing:</b> array-list and string reads check their bounds at runtime. An
   out-of-range read raises a catchable error ("Array index out of bounds" or
   "String index out of bounds"). Map lookups for absent keys continue to return
-  <code>null</code>. Bounds checks currently run on each read; the compiler does not
-  yet remove checks for proven-safe loops.</p>
+  <code>null</code>. The compiler removes checks in a canonical counted loop only
+  when it proves the array and induction variable are not changed in the body;
+  other reads retain runtime checks. <code>foreach</code> uses a runtime iterator.
+  <code>array_sum()</code> promotes to a float if adding integer elements would
+  overflow <code>int64</code>.</p>
+  <p><b>Threads:</b> captured values and channel payloads move across the thread
+  boundary, so later use of a moved source is a compile error. Immutable scalar and
+  string values may be shared; arrays and maps move when their contents are safe
+  value types and keep copy-on-write behavior. Ordinary mutable objects cannot be
+  sent through channels. Known closures are checked at the boundary, including
+  indirect callbacks typed as <code>thread_callable</code>. The bundled
+  <code>Thread</code> and <code>Pool</code> wrappers use the same checks. See the
+  <a href="guide/memory-model.md">memory model guide</a> for the proof limits.</p>
 
   <h2 id="imports">Imports &amp; the stdlib</h2>
   <p>Libraries ship inside the compiler binary — <code>import</code> finds them with no files

@@ -9,9 +9,11 @@ behaves differently, what they have to change.
 
 ## Unreleased
 
+- The semantic checker now recovers with an error type when an invalid or partially parsed expression has no type, avoiding a compiler crash. `array_sum()` promotes to a float when summing integers would overflow.
 - Array-list and string reads outside their bounds now raise catchable errors instead of returning an empty value or risking an invalid access. Missing map keys still return `null`.
+- Canonical counted loops over a stable array avoid repeated index bounds checks when the compiler can prove the index stays in range. Other indexed reads keep their checks.
 - Files can use `declare(enforce_memory_safety=1);` to make unsafe blocks and calls to builtins marked unsafe compile errors.
-- Thread checking currently accepts only direct literal callbacks with immutable scalar/string captures; indirect callbacks and class captures without a verified `Sync` contract are rejected. Channel ownership transfer is not yet enforced, so this is not a complete cross-thread safety guarantee.
+- Thread captures and channel payloads now move their source values; later use of a moved source is rejected. Immutable scalar and string captures can be shared, and the bundled `Thread` and `Pool` wrappers use statically checked `thread_callable` callbacks.
 - Strings, arrays, closures, and class instances now release generated owners automatically; shared arrays detach on write. Object, array, and closure cycles are collected automatically, and `weak` class properties clear when their targets die.
 - Ordinary `new Class()` expressions now have the normal copyable class type; explicit `own Class` slots can still take a fresh instance.
 - By-reference calls to mutating builtins are checked as one write, and separate scalar by-reference arguments no longer conflict merely because their storage is boxed.
