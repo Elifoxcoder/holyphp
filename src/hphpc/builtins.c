@@ -521,7 +521,7 @@ void builtins_init(void) {
     add("bt_col_off",                 B_MISC,  ty_int, true, false);
     add("bt_cols",                    B_MISC,  ty_int, false, false);
     add("bt_count_key",               B_MISC,  ty_int, false, false);
-    add("bt_count_range",             B_MISC,  ty_bool, false, false);
+    add("bt_count_range",             B_MISC,  ty_int, false, false);
     add("bt_first",                   B_MISC,  ty_int, false, false);
     add("bt_last",                    B_MISC,  ty_int, false, false);
     add("bt_multi_keys",              B_MISC,  ty_int, false, false);
@@ -535,7 +535,7 @@ void builtins_init(void) {
     add("bt_payload_ptr",             B_MISC,  ty_int, true, false);
     add("bt_payload_size",            B_MISC,  ty_int, false, false);
     add("bt_prev",                    B_MISC,  ty_int, false, false);
-    add("bt_read",                    B_MISC,  ty_bool, true, false);
+    add("bt_read",                    B_MISC,  ty_int, true, false);
     add("bt_root",                    B_MISC,  ty_int, true, false);
     add("bt_rowid",                   B_MISC,  ty_int, false, false);
     add("bt_seek",                    B_MISC,  ty_int, false, false);
@@ -604,7 +604,7 @@ void builtins_init(void) {
     add("sqlite_open_vfs",            B_MISC,  ty_int, true, false);
     add("sqlite_prepare",             B_MISC,  ty_int, true, false);
     add("sqlite_reset",               B_MISC,  ty_int, false, false);
-    add("sqlite_status",              B_MISC,  ty_int, false, false);
+    add("sqlite_status",              B_MISC,  ty_string, false, false);
     add("sqlite_step",                B_MISC,  ty_int, false, false);
     add("str_at_eq",                  B_MISC,  ty_bool, false, false);
     add("str_find_range",             B_MISC,  ty_int, false, false);
