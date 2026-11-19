@@ -1617,10 +1617,13 @@ hval hpbi_file_get_contents(hval path) {
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
-    char *buf = hp_alloc((size_t)n + 1);
+    char *buf = (char *)malloc((size_t)n + 1);
+    if (!buf) { fclose(f); RETB(false); }
     size_t got = fread(buf, 1, (size_t)n, f);
     fclose(f);
-    RETS(hp_str_new(buf, got));
+    hstr *r = hp_str_new(buf, got);
+    free(buf);
+    RETS(r);
 }
 hval hpbi_file_put_contents(hval path, hval data, hval flags) {
     /* PHP: flags & FILE_APPEND (8) appends instead of truncating; an array
@@ -1967,6 +1970,13 @@ hval hpbi_shell_exec(hval command) {
 /* Stream a shell command's stdout directly to this process. Keep stderr
  * attached to the caller so diagnostics remain visible, matching passthru's
  * usual command-line behavior. */
+/* exec() has a one-argument table contract but a two-argument C prototype in
+ * hphp_rt.h (PHP's optional output/return-code parameters). hphp_ext.h maps
+ * the call to this variadic entry point so both forms link. */
+hval hpbi_exec_call(hval command, ...) {
+    return hpbi_shell_exec(command);
+}
+
 hval hpbi_passthru(hval command) {
     hstr *cmd = hp_val_to_str(command);
 #if defined(_WIN32)
@@ -3129,8 +3139,11 @@ hval hpbi_basename(hval path, hval suffix) {
     size_t blen = end - start;
     hstr *r = hp_str_new(p->data + start, blen);
     if (suffix.tag == HV_STR && suffix.u.s->len && r->len > suffix.u.s->len &&
-        memcmp(r->data + r->len - suffix.u.s->len, suffix.u.s->data, suffix.u.s->len) == 0)
-        r = hp_str_new(r->data, r->len - suffix.u.s->len);
+        memcmp(r->data + r->len - suffix.u.s->len, suffix.u.s->data, suffix.u.s->len) == 0) {
+        hstr *trimmed = hp_str_new(r->data, r->len - suffix.u.s->len);
+        hp_str_free(r);
+        r = trimmed;
+    }
     RETS(r);
 }
 hval hpbi_pathinfo(hval path, hval flags) {
@@ -3147,7 +3160,10 @@ hval hpbi_pathinfo(hval path, hval flags) {
         hp_arr_set(m, hp_of_str(hp_str_lit("filename")),
                    hp_of_str(hp_str_new(base->data, (size_t)(dot - base->data))));
     }
-    if (flags.tag == HV_INT && flags.u.i == 2) return hp_of_str(base);
+    if (flags.tag == HV_INT && flags.u.i == 2) {
+        hp_arr_free(m);   /* the map is not returned in this mode */
+        return hp_of_str(base);
+    }
     return hp_of_arr(m);
 }
 hval hpbi_realpath(hval path) {
@@ -3184,6 +3200,7 @@ hval hpbi_is_writable(hval path) {
     /* file may not exist: check the directory */
     hstr *dir = hp_val_to_str(hpbi_dirname(hp_of_str(p)));
     f = fopen(dir->data, "rb");
+    hp_str_free(dir);
     if (f) { fclose(f); RETB(true); }
     RETB(false);
 }

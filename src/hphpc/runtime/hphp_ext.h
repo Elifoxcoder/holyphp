@@ -54,6 +54,10 @@ hval hpbi_epoll_wait_into(hval outv, hval timeout_ms);
 hval hpbi_ffi_call(hval fn, hval args);
 hval hpbi_ffi_load(hval lib);
 hval hpbi_heap_dump(hval p);
+hval hpbi_exec_call(hval cmd, ...);
+/* exec() is declared with two C parameters in hphp_rt.h but the language
+ * contract is one argument; route both forms to the variadic entry point. */
+#define hpbi_exec(...) hpbi_exec_call(__VA_ARGS__)
 hval hpbi_http_request_bounds(hval s);
 hval hpbi_i64_at(hval p, hval off);
 hval hpbi_i64_set(hval p, hval off, hval v);

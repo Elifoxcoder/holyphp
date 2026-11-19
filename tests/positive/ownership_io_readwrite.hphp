@@ -1,0 +1,42 @@
+<?php
+/* ownership_io_readwrite.hphp — file handles borrow the path strings; every
+ * read builtin returns a fresh string and fclose releases the handle. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$dir = sys_get_temp_dir();
+$path = $dir . "/hphp_ownership_rw.txt";
+$modeWrite = "wb";
+$modeRead = "rb";
+$line = "first line\n";
+$rest = "second";
+
+$f = fopen($path, $modeWrite);
+check("fopen for writing", $f != false);
+check("fwrite line", fwrite($f, $line) == strlen($line));
+check("fwrite rest", fwrite($f, $rest) == strlen($rest));
+check("fclose", fclose($f));
+
+$f = fopen($path, $modeRead);
+check("fopen for reading", $f != false);
+$r = fgets($f);
+check("fgets first line", $r == "first line");
+unsafe { str_free($r); }
+$r = fread($f, 100);
+check("fread rest", $r == "second");
+unsafe { str_free($r); }
+check("feof after the last read", feof($f));
+check("second fclose", fclose($f));
+
+$content = file_get_contents($path);
+check("file_get_contents", $content == "first line\nsecond");
+unsafe { str_free($content); }
+
+check("the path survived", str_contains($path, "hphp_ownership_rw"));
+unlink($path);
+unsafe { str_free($path); str_free($line); str_free($rest); }
+echo "ownership io readwrite ok\n";

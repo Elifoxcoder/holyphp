@@ -27,6 +27,11 @@ behaves differently, what they have to change.
 - `sqlite_status()` now really returns its JSON text (its declaration said
   `int`), and `bt_read()` / `bt_count_range()` return the integer count /
   status they produce instead of being declared `bool`.
+- Builtin ownership audit, file/io: `file_get_contents()` releases its read
+  buffer, `basename()` releases the intermediate string when it strips a
+  suffix, `pathinfo()`/`is_writable()` no longer leave temporary strings
+  behind, and `exec()` works again (the builtin had a two-argument C prototype
+  but no implementation; both `exec($cmd)` and `exec($cmd, $out)` now run).
 - Builtin ownership audit, JSON: the pretty printer returns a string whose
   intermediate buffer is released (it leaked the whole compact document per
   call), and the fast field readers are documented as borrowing the JSON text
