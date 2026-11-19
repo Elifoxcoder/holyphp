@@ -50,6 +50,7 @@ typedef struct Scope {
     AstFn *cur_fn;
     AstClass *cur_class;
     bool in_unsafe;
+    bool enforce_memory_safety;
     int loop_depth;
     int depth;
     const Type *self_type;
@@ -58,6 +59,12 @@ typedef struct Scope {
 
 static void check_stmt(Scope *sc, Stmt *s);
 static const Type *check_expr(Scope *sc, Expr *e);
+
+static const Type *nullable_type_of(const Type *inner) {
+    Type *t = type_new(TY_NULLABLE);
+    t->elem = inner;
+    return t;
+}
 
 /* ---- closure capture collection ----
  * While checking a closure body, every variable that resolves OUTSIDE the
@@ -154,6 +161,26 @@ static bool type_is_mutable_alias(const Type *t) {
             if (type_is_mutable_alias(t->members[i])) return true;
         return false;
     default: return false;
+    }
+}
+
+/* Cross-thread captures are limited to immutable value types for now.
+ * Class-name conventions are not a Sync proof: user code can define a
+ * mutable class named Channel/Mutex/etc. Arrays and all class instances are
+ * rejected until the language has a verifiable Sync contract. */
+static bool thread_capture_is_sync(const Type *t) {
+    if (!t) return false;
+    switch (t->kind) {
+    case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64:
+    case TY_FLOAT: case TY_F32: case TY_F64: case TY_BOOL: case TY_STRING:
+    case TY_ENUM: case TY_NULL:
+        return true;
+    case TY_CLASS: case TY_STRUCT: case TY_INTERFACE:
+        return false;
+    case TY_NULLABLE: case TY_OPTION:
+        return thread_capture_is_sync(t->elem);
+    default:
+        return false;
     }
 }
 
@@ -1094,6 +1121,7 @@ static void scope_child_init(Scope *child, Scope *parent) {
     child->cur_fn = parent->cur_fn;
     child->cur_class = parent->cur_class;
     child->in_unsafe = parent->in_unsafe;
+    child->enforce_memory_safety = parent->enforce_memory_safety;
     child->loop_depth = parent->loop_depth;
     child->self_type = parent->self_type;
 }
@@ -2082,6 +2110,28 @@ static const Type *check_builtin_call(Scope *sc, Expr *e, const Builtin *b) {
                        "cannot unset a place reached through a shared reference; use &mut");
         reject_untracked_reference(arg, at, NULL, b->name);
     }
+    if ((strcmp(b->name, "thr_spawn") == 0 ||
+         strcmp(b->name, "thr_parallel_map") == 0) && na > 0) {
+        Expr *worker = e->u.call.args.items[0];
+        if (worker->kind != EX_CLOSURE || !worker->u.closure.fn) {
+            sema_error(&worker->tok,
+                       "%s() requires a closure literal so its cross-thread captures can be checked",
+                       b->name);
+        } else {
+            AstFn *closure = worker->u.closure.fn;
+            for (size_t i = 0; i < closure->captures.len; i++) {
+                VarSym *capture = closure->captures.items[i];
+                if (capture->captured_byref || !thread_capture_is_sync(capture->type))
+                    sema_error(&capture->tok,
+                               "thread closure captures mutable or non-Sync value $%s; use an immutable value or a channel",
+                               capture->name);
+            }
+            if (closure->uses_this &&
+                !thread_capture_is_sync(class_type_of(closure->owner_cls)))
+                sema_error(&worker->tok,
+                           "thread closure captures mutable $this; use a channel or synchronized primitive");
+        }
+    }
     if (strcmp(b->name, "array_push") == 0 && na >= 2) {
         const Type *container = ((Expr *)e->u.call.args.items[0])->type;
         const Type *element = container && container->kind == TY_MAP
@@ -2234,7 +2284,9 @@ static const Type *check_call(Scope *sc, Expr *e) {
             AstFn *fn = find_function(name);
             const Builtin *b = builtin_lookup(name);
             if (b && !fn) {
-                if (b->unsafe && !sc->in_unsafe) {
+                if (b->unsafe && sc->enforce_memory_safety) {
+                    sema_error(&e->tok, "unsafe builtin '%s' is forbidden by declare(enforce_memory_safety=1)", name);
+                } else if (b->unsafe && !sc->in_unsafe) {
                     sema_error(&e->tok, "call to unsafe function '%s' requires an unsafe block", name);
                 }
                 return check_builtin_call(sc, e, b);
@@ -2589,7 +2641,8 @@ static const Type *check_expr(Scope *sc, Expr *e) {
                     e->u.field.owner = ot;
                     /* an untyped property is hval-valued, never NULL-typed:
                      * `pub $cb = null;` is the PHP-style dynamic member */
-                    e->type = f->type ? resolve_type(sc, f->type, f->name_tok) : ty_mixed;
+                    const Type *ft = f->type ? resolve_type(sc, f->type, f->name_tok) : ty_mixed;
+                    e->type = f->is_weak ? nullable_type_of(ft) : ft;
                     return e->type;
                 }
             }
@@ -2981,6 +3034,10 @@ static const Type *check_expr(Scope *sc, Expr *e) {
             if ((bt && bt->kind == TY_REF) || expr_through_shared_ref(base))
                 sema_error(&tgt->tok, "cannot mutate through an immutable reference; use &mut");
             tt = check_expr(sc, tgt);
+            if (tgt->kind == EX_FIELD && tgt->u.field.sf &&
+                ((StructField *)tgt->u.field.sf)->is_weak &&
+                e->u.assign.op.kind != T_ASSIGN)
+                sema_error(&tgt->tok, "weak properties support plain assignment only");
             if (vt && (vt->kind == TY_REF || vt->kind == TY_MUTREF))
                 sema_error(&tgt->tok, "references cannot be stored in fields or collection slots without lifetime tracking");
             /* element assignment on collections is allowed by runtime;
@@ -3186,6 +3243,7 @@ static const Type *check_expr(Scope *sc, Expr *e) {
         fs.cur_class = sc->cur_class;
         fs.self_type = sc->self_type;
         fs.in_unsafe = sc->in_unsafe;
+        fs.enforce_memory_safety = fn->enforce_memory_safety;
         g_clo_body_seq[d] = fs.seq;
         /* declare real params */
         for (size_t i = 0; i < fn->params.len; i++) {
@@ -3887,6 +3945,8 @@ static void check_stmt(Scope *sc, Stmt *s) {
         break;
     }
     case ST_UNSAFE_BLOCK: {
+        if (sc->enforce_memory_safety)
+            sema_error(&s->tok, "unsafe block is forbidden by declare(enforce_memory_safety=1)");
         Scope inner;
         scope_init(&inner, sc);
         inner.cur_fn = sc->cur_fn;
@@ -3953,6 +4013,7 @@ static void check_fn_body(Scope *parent, AstFn *fn, const Type *self_type) {
     scope_init(&sc, parent);
     sc.cur_fn = fn;
     sc.self_type = self_type;
+    sc.enforce_memory_safety = fn->enforce_memory_safety;
     for (size_t i = 0; i < fn->params.len; i++) {
         Param *pm = fn->params.items[i];
         const Type *pt = pm->type ? resolve_type(&sc, pm->type, pm->name_tok) : ty_mixed;
@@ -4010,7 +4071,13 @@ static void check_class(AstClass *c) {
     for (size_t i = 0; i < c->fields.len; i++) {
         StructField *f = c->fields.items[i];
         if (f->type) {
-            resolve_type(&sc, f->type, f->name_tok);
+            const Type *ft = resolve_type(&sc, f->type, f->name_tok);
+            if (f->is_weak && ft->kind != TY_CLASS && ft->kind != TY_INTERFACE)
+                sema_error(&f->name_tok, "weak property $%s must have a class or interface type", f->name);
+            if (f->is_weak && f->is_static)
+                sema_error(&f->name_tok, "weak properties cannot be static");
+            if (f->is_weak && f->dflt && f->dflt->kind != EX_NULL)
+                sema_error(&f->name_tok, "weak property defaults must be null");
         } else if (f->dflt) {
             const Type *dt = check_expr(&sc, f->dflt);
             /* `pub $cb = null;` is a dynamic slot: the field holds a
@@ -4020,6 +4087,8 @@ static void check_class(AstClass *c) {
         } else {
             sema_error(&f->name_tok, "field $%s needs a type annotation", f->name);
         }
+        if (f->is_weak && !f->type)
+            sema_error(&f->name_tok, "weak property $%s needs an explicit class type", f->name);
     }
     /* methods */
     for (size_t i = 0; i < c->methods.len; i++) {
@@ -4453,6 +4522,7 @@ void sema_run(Program *prog) {
     /* top-level statements (the script part) */
     Scope sc;
     scope_init(&sc, NULL);
+    sc.enforce_memory_safety = prog->enforce_memory_safety;
     check_block(&sc, prog->stmts);
     for (size_t pass = 0; pass <= g_borrow_fns.len; pass++) {
         bool changed = resolve_ref_calls_seq(prog->stmts);

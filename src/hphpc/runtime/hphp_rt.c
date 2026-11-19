@@ -39,6 +39,210 @@ void *hp_alloc(size_t n) {
     return p;
 }
 
+/* Trial-deletion collector for identity-bearing objects, arrays and
+ * closures. Each participant carries a node pointer in its header; tracing
+ * callbacks expose only strong edges. */
+struct hp_gc_node {
+    void *ptr;
+    uint32_t *rc;
+    hp_gc_node **slot;
+    void (*trace)(void *);
+    void (*clear)(void *);
+    void (*destroy)(void *);
+    int64_t trial;
+    bool marked;
+    uint64_t epoch;
+    struct hp_gc_node *prev;
+    struct hp_gc_node *next;
+};
+static hp_gc_node *hp_gc_nodes;
+static size_t hp_gc_node_count;
+static size_t hp_gc_release_count;
+static bool hp_gc_collecting;
+static unsigned hp_gc_drop_depth;
+static uint64_t hp_gc_epoch;
+static hp_gc_node **hp_gc_work;
+static size_t hp_gc_work_len, hp_gc_work_cap;
+static enum { HP_GC_IDLE, HP_GC_GATHER, HP_GC_SUBTRACT, HP_GC_MARK } hp_gc_mode;
+static bool hp_gc_oom;
+
+static bool hp_gc_work_push(hp_gc_node *node) {
+    if (hp_gc_work_len == hp_gc_work_cap) {
+        size_t cap = hp_gc_work_cap ? hp_gc_work_cap * 2 : 64;
+        hp_gc_node **items = (hp_gc_node **)realloc(hp_gc_work, cap * sizeof(*items));
+        if (!items) return false;
+        hp_gc_work = items;
+        hp_gc_work_cap = cap;
+    }
+    hp_gc_work[hp_gc_work_len++] = node;
+    return true;
+}
+
+static void hp_gc_unregister(hp_gc_node **slot) {
+    if (!slot || !*slot) return;
+    hp_gc_node *node = *slot;
+    if (node->prev) node->prev->next = node->next;
+    else if (hp_gc_nodes == node) hp_gc_nodes = node->next;
+    if (node->next) node->next->prev = node->prev;
+    if (hp_gc_node_count) hp_gc_node_count--;
+    *slot = NULL;
+    free(node);
+}
+
+void hp_gc_register(void *ptr, uint32_t *rc, hp_gc_node **slot,
+                    void (*trace)(void *), void (*clear)(void *),
+                    void (*destroy)(void *)) {
+    if (!ptr || !rc || !slot || *slot || hp_gc_collecting) return;
+    hp_gc_node *node = (hp_gc_node *)calloc(1, sizeof(*node));
+    if (!node) return; /* RC still works; only cycles may leak under OOM. */
+    node->ptr = ptr;
+    node->rc = rc;
+    node->slot = slot;
+    node->trace = trace;
+    node->clear = clear;
+    node->destroy = destroy;
+    node->next = hp_gc_nodes;
+    if (hp_gc_nodes) hp_gc_nodes->prev = node;
+    hp_gc_nodes = node;
+    *slot = node;
+    hp_gc_node_count++;
+}
+
+void hp_gc_visit(hval value) {
+    hp_gc_node *node = NULL;
+    if (value.tag == HV_ARR && value.u.a) node = value.u.a->gc;
+    else if (value.tag == HV_CLO && value.u.c) node = value.u.c->gc;
+    else if (value.tag == HV_OBJ && value.u.p) node = ((hobj *)value.u.p)->gc;
+    if (!node) return;
+    if (hp_gc_mode == HP_GC_GATHER) {
+        if (node->epoch == hp_gc_epoch) return;
+        node->epoch = hp_gc_epoch;
+        if (!hp_gc_work_push(node)) { hp_gc_oom = true; return; }
+        if (node->trace) node->trace(node->ptr);
+        return;
+    }
+    if (hp_gc_mode == HP_GC_SUBTRACT) {
+        if (node->epoch != hp_gc_epoch) return;
+        if (node->trial > 0) node->trial--;
+        return;
+    }
+    if (hp_gc_mode != HP_GC_MARK || node->epoch != hp_gc_epoch) return;
+    if (node->marked) return;
+    node->marked = true;
+    if (node->trace) node->trace(node->ptr);
+}
+
+static void hp_gc_trace_array(void *raw) {
+    harr *a = (harr *)raw;
+    for (size_t i = 0; i < a->len; i++) {
+        hp_gc_visit(a->vals[i]);
+        if (a->is_map && a->keys) hp_gc_visit(a->keys[i]);
+    }
+}
+
+static void hp_gc_trace_closure(void *raw) {
+    hclosure *c = (hclosure *)raw;
+    if (c->trace_env) c->trace_env((char *)c + sizeof(*c));
+}
+
+static void hp_gc_destroy_array(void *raw) { hp_arr_free((harr *)raw); }
+static void hp_gc_destroy_closure(void *raw) { hpclosure_free((hclosure *)raw); }
+static void hp_gc_clear_array(void *raw) {
+    harr *a = (harr *)raw;
+    for (size_t i = 0; i < a->len; i++) {
+        hp_val_rc_dec(a->vals[i]);
+        if (a->is_map && a->keys) hp_val_rc_dec(a->keys[i]);
+    }
+    a->len = 0;
+}
+static void hp_gc_clear_closure(void *raw) {
+    hclosure *c = (hclosure *)raw;
+    if (c->drop_env) c->drop_env((char *)c + sizeof(*c));
+    c->drop_env = NULL;
+}
+
+static void hp_gc_collect_candidate(hp_gc_node *root, bool force) {
+    if (!root || hp_gc_collecting || hp_gc_drop_depth || hp_gc_node_count == 0) return;
+    /* Follow only the graph reachable from the released candidate. This
+     * avoids rescanning unrelated live DOM/object graphs on every cycle pass. */
+    if (!force && ++hp_gc_release_count % 128 != 0) return;
+    hp_gc_collecting = true;
+    if (++hp_gc_epoch == 0) {
+        for (hp_gc_node *it = hp_gc_nodes; it; it = it->next) it->epoch = 0;
+        hp_gc_epoch = 1;
+    }
+    hp_gc_work_len = 0;
+    hp_gc_oom = false;
+    hp_gc_mode = HP_GC_GATHER;
+    if (root->slot && *root->slot == root) {
+        if (root->ptr == NULL) { hp_gc_mode = HP_GC_IDLE; hp_gc_collecting = false; return; }
+        /* The root payload is not uniform; seed the traversal from its trace
+         * callback so the candidate itself is included without a fake hval. */
+        root->epoch = hp_gc_epoch;
+        if (!hp_gc_work_push(root)) hp_gc_oom = true;
+        if (root->trace) root->trace(root->ptr);
+    }
+    if (hp_gc_oom) {
+        hp_gc_mode = HP_GC_IDLE;
+        hp_gc_collecting = false;
+        return;
+    }
+    for (size_t i = 0; i < hp_gc_work_len; i++) {
+        hp_gc_node *node = hp_gc_work[i];
+        node->trial = *node->rc == UINT32_MAX ? INT64_MAX : (int64_t)*node->rc;
+        node->marked = false;
+    }
+    hp_gc_mode = HP_GC_SUBTRACT;
+    for (size_t i = 0; i < hp_gc_work_len; i++)
+        if (hp_gc_work[i]->trace) hp_gc_work[i]->trace(hp_gc_work[i]->ptr);
+    hp_gc_mode = HP_GC_MARK;
+    for (size_t i = 0; i < hp_gc_work_len; i++) {
+        hp_gc_node *node = hp_gc_work[i];
+        if (node->trial > 0 || *node->rc == UINT32_MAX) {
+            node->marked = true;
+            if (node->trace) node->trace(node->ptr);
+        }
+    }
+    hp_gc_mode = HP_GC_IDLE;
+    hp_gc_node **dead = (hp_gc_node **)malloc(hp_gc_work_len * sizeof(*dead));
+    size_t ndead = 0;
+    if (dead) {
+        for (size_t i = 0; i < hp_gc_work_len; i++)
+            if (!hp_gc_work[i]->marked) dead[ndead++] = hp_gc_work[i];
+        /* Detach every unreachable node and zero its count before any drop
+         * callback runs, so internal edges are released exactly once. */
+        for (size_t i = 0; i < ndead; i++) {
+            hp_gc_node *node = dead[i];
+            if (node->prev) node->prev->next = node->next;
+            else if (hp_gc_nodes == node) hp_gc_nodes = node->next;
+            if (node->next) node->next->prev = node->prev;
+            if (hp_gc_node_count) hp_gc_node_count--;
+            if (node->slot) *node->slot = NULL;
+            *node->rc = 0;
+        }
+        hp_gc_drop_depth++;
+        /* First break every dead node's outgoing edges while all dead payloads
+         * are still allocated. Cycles can point in any order, so freeing one
+         * member before clearing the others would make their drops dereference
+         * freed siblings. */
+        for (size_t i = 0; i < ndead; i++)
+            if (dead[i]->clear) dead[i]->clear(dead[i]->ptr);
+        for (size_t i = 0; i < ndead; i++) {
+            if (dead[i]->destroy) dead[i]->destroy(dead[i]->ptr);
+            free(dead[i]);
+        }
+        hp_gc_drop_depth--;
+        free(dead);
+    }
+    hp_gc_collecting = false;
+}
+
+void hp_gc_collect_now(void *ptr) {
+    if (!ptr) return;
+    hp_gc_node *node = ((hobj *)ptr)->gc;
+    hp_gc_collect_candidate(node, true);
+}
+
 /* Generic strong object handles use the common generated-object header. */
 typedef struct { uint32_t rc; } hp_rc_header;
 
@@ -53,8 +257,14 @@ void hp_rc_dec(void *p) {
     hobj *h = (hobj *)p;
     if (h->rc == 0 || h->rc == UINT32_MAX) return;
     if (--h->rc == 0) {
+        hp_gc_unregister(&h->gc);
+        hp_gc_drop_depth++;
+        hp_weak_invalidate(h);
         if (h->drop) h->drop(p);
         else free(p);
+        hp_gc_drop_depth--;
+    } else {
+        hp_gc_collect_candidate(h->gc, false);
     }
 }
 
@@ -323,7 +533,8 @@ hstr *hp_str_slice(hstr *s, int64_t start, int64_t end) {
 }
 
 hstr *hp_str_char_at(hstr *s, int64_t idx) {
-    if (!s || idx < 0 || (size_t)idx >= s->len) return hp_str_lit("");
+    if (!s || idx < 0 || (uint64_t)idx >= (uint64_t)s->len)
+        hp_throw_str("String index out of bounds");
     return hp_str_new(s->data + idx, 1);
 }
 
@@ -585,6 +796,8 @@ harr *hp_arr_new(void) {
     harr *a = hp_alloc(sizeof(harr));
     a->rc = 1;
     a->next_index = 0;
+    hp_gc_register(a, &a->rc, &a->gc, hp_gc_trace_array,
+                   hp_gc_clear_array, hp_gc_destroy_array);
     return a;
 }
 
@@ -960,6 +1173,11 @@ hval hp_move_hval(hval *slot) {
  * aliases. Refuse a violated invariant rather than silently copying a value. */
 hval hp_arr_take(harr *a, hval idx) {
     if (!a) return hp_null;
+    if (!a->is_map) {
+        if (idx.tag != HV_INT) hp_throw_str("Array index must be an integer");
+        if (idx.u.i < 0 || (uint64_t)idx.u.i >= (uint64_t)a->len)
+            hp_throw_str("Array index out of bounds");
+    }
     if (a->rc != 1) {
         hp_throw(hp_of_str(hp_str_lit("cannot move an element from a shared collection")));
         return hp_null;
@@ -987,11 +1205,20 @@ hval hp_arr_take(harr *a, hval idx) {
 /* PHP-style indexing on any value: arrays/maps index normally, strings
  * return a 1-char string, null indexes to null (like PHP 8 null["]). */
 hval hp_arr_get_v(hval container, hval idx) {
-    if (container.tag == HV_ARR) return hp_arr_get(container.u.a, idx);
+    if (container.tag == HV_ARR) {
+        harr *a = container.u.a;
+        if (a && !a->is_map) {
+            if (idx.tag != HV_INT) hp_throw_str("Array index must be an integer");
+            if (idx.u.i < 0 || (uint64_t)idx.u.i >= (uint64_t)a->len)
+                hp_throw_str("Array index out of bounds");
+        }
+        return hp_arr_get(a, idx);
+    }
     if (container.tag == HV_STR) {
         int64_t i = hp_val_to_int(idx);
         hstr *s = container.u.s;
-        if (i < 0 || !s || (size_t)i >= s->len) return hp_of_str(hp_str_lit(""));
+        if (i < 0 || !s || (uint64_t)i >= (uint64_t)s->len)
+            hp_throw_str("String index out of bounds");
         return hp_of_str(hp_str_new(s->data + i, 1));
     }
     return hp_null;
@@ -1278,6 +1505,8 @@ harr *hp_range(int64_t lo, int64_t hi) {
 
 void hp_arr_free(harr *a) {
     if (!a) return;
+    hp_gc_unregister(&a->gc);
+    hp_gc_drop_depth++;
     for (size_t i = 0; i < a->len; i++) {
         hp_val_rc_dec(a->vals[i]);
         if (a->is_map && a->keys) hp_val_rc_dec(a->keys[i]);
@@ -1286,6 +1515,7 @@ void hp_arr_free(harr *a) {
     free(a->keys);
     free(a->index);
     free(a);
+    hp_gc_drop_depth--;
 }
 
 /* COW: the runtime shares arrays on assignment; writes go through
@@ -1629,20 +1859,27 @@ HP_THREAD_QUAL void *hp_cur_env = NULL;
 
 void *hp_closure_env(void) { return hp_cur_env; }
 
-hclosure *hpclosure_new(void *env, size_t envsz, void *fn, void (*drop_env)(void *)) {
+hclosure *hpclosure_new(void *env, size_t envsz, void *fn,
+                        void (*drop_env)(void *), void (*trace_env)(void *)) {
     hclosure *c = hp_alloc(sizeof(hclosure) + envsz);
     c->fn = (hfn_t)fn;
     c->rc = 1;
     c->envsz = envsz;
     c->drop_env = drop_env;
+    c->trace_env = trace_env;
     if (env && envsz) memcpy((char *)c + sizeof(hclosure), env, envsz);
+    hp_gc_register(c, &c->rc, &c->gc, hp_gc_trace_closure,
+                   hp_gc_clear_closure, hp_gc_destroy_closure);
     return c;
 }
 
 void hpclosure_free(hclosure *c) {
     if (!c) return;
+    hp_gc_unregister(&c->gc);
+    hp_gc_drop_depth++;
     if (c->drop_env) c->drop_env((char *)c + sizeof(hclosure));
     free(c);
+    hp_gc_drop_depth--;
 }
 
 hval hp_of_clo(hclosure *c) {
@@ -1698,15 +1935,74 @@ void hp_val_rc_dec(hval v) {
             hp_str_free(v.u.s);
         break;
     case HV_ARR:
-        if (v.u.a && v.u.a->rc != UINT32_MAX && v.u.a->rc && --v.u.a->rc == 0)
-            hp_arr_free(v.u.a);
+        if (v.u.a && v.u.a->rc != UINT32_MAX && v.u.a->rc) {
+            if (--v.u.a->rc == 0) hp_arr_free(v.u.a);
+            else hp_gc_collect_candidate(v.u.a->gc, false);
+        }
         break;
     case HV_CLO:
-        if (v.u.c && v.u.c->rc != UINT32_MAX && v.u.c->rc && --v.u.c->rc == 0)
-            hpclosure_free(v.u.c);
+        if (v.u.c && v.u.c->rc != UINT32_MAX && v.u.c->rc) {
+            if (--v.u.c->rc == 0) hpclosure_free(v.u.c);
+            else hp_gc_collect_candidate(v.u.c->gc, false);
+        }
         break;
     case HV_OBJ: hp_rc_dec(v.u.p); break;
     default: break;
+    }
+}
+
+static void hp_weak_unlink(hp_weak_ref *weak) {
+    if (!weak || !weak->prev) return;
+    *weak->prev = weak->next;
+    if (weak->next) weak->next->prev = weak->prev;
+    weak->target = NULL;
+    weak->next = NULL;
+    weak->prev = NULL;
+}
+
+hval hp_weak_assign(hp_weak_ref **slot, hval value) {
+    if (!slot) return value;
+    hobj *target = value.tag == HV_OBJ ? (hobj *)value.u.p : NULL;
+    hp_weak_ref *weak = *slot;
+    if (weak && weak->target == target) return value;
+    if (weak) hp_weak_unlink(weak);
+    if (!target) {
+        free(weak);
+        *slot = NULL;
+        return value;
+    }
+    if (!weak) weak = (hp_weak_ref *)calloc(1, sizeof(*weak));
+    if (!weak) { *slot = NULL; return value; }
+    weak->target = target;
+    weak->next = target->weak_refs;
+    weak->prev = &target->weak_refs;
+    if (weak->next) weak->next->prev = &weak->next;
+    target->weak_refs = weak;
+    *slot = weak;
+    return value;
+}
+
+hval hp_weak_get(const hp_weak_ref *weak) {
+    hp_gc_collect_now(weak ? weak->target : NULL);
+    return hp_of_ptr(weak ? weak->target : NULL);
+}
+
+void hp_weak_free(hp_weak_ref *weak) {
+    if (!weak) return;
+    hp_weak_unlink(weak);
+    free(weak);
+}
+
+void hp_weak_invalidate(hobj *object) {
+    if (!object) return;
+    hp_weak_ref *weak = object->weak_refs;
+    object->weak_refs = NULL;
+    while (weak) {
+        hp_weak_ref *next = weak->next;
+        weak->target = NULL;
+        weak->next = NULL;
+        weak->prev = NULL;
+        weak = next;
     }
 }
 

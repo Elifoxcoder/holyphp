@@ -1,0 +1,12 @@
+$channel = chan_new(0);
+$answer = 41;
+$tid = thr_spawn(function() use ($channel, $answer) {
+    thr_sleep_ms(20);
+    chan_send($channel, $answer + 1);
+});
+$result = chan_recv($channel);
+thr_join($tid);
+if ($result != 42) {
+    throw "thread channel transfer failed";
+}
+echo "thread sync capture ok";

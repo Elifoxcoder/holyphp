@@ -1,0 +1,3 @@
+class BadWeakScalar {
+    pub weak int $value;
+}

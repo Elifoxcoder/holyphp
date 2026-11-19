@@ -680,7 +680,18 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
         if (!genc) {
             needed[3] = needed[4] = needed[5] = true;   /* cannot tell: all */
         } else {
-            needed[3] = strstr(genc, "hp_thr_") != NULL || strstr(stdc, "hp_thr_") != NULL;
+            needed[3] = strstr(genc, "hp_thr_") != NULL ||
+                        strstr(genc, "hpbi_thr_") != NULL ||
+                        strstr(genc, "hpbi_chan_") != NULL ||
+                        strstr(genc, "hpbi_mutex_") != NULL ||
+                        strstr(genc, "hpbi_barrier_") != NULL ||
+                        strstr(genc, "hpbi_atomic_") != NULL ||
+                        strstr(stdc, "hp_thr_") != NULL ||
+                        strstr(stdc, "hpbi_thr_") != NULL ||
+                        strstr(stdc, "hpbi_chan_") != NULL ||
+                        strstr(stdc, "hpbi_mutex_") != NULL ||
+                        strstr(stdc, "hpbi_barrier_") != NULL ||
+                        strstr(stdc, "hpbi_atomic_") != NULL;
             needed[4] = strstr(genc, "hp_ui_") != NULL || strstr(genc, "hpui_") != NULL ||
                         strstr(stdc, "hp_ui_") != NULL || strstr(stdc, "hpui_") != NULL;
             needed[5] = strstr(genc, "hp_wv2_") != NULL || strstr(genc, "hpwv2_") != NULL ||
@@ -1529,6 +1540,7 @@ int do_check_file(const char *path) {
     merge_programs(w, c.programs);
     Program *r = c.programs.items[c.programs.len - 1];
     w->stmts = r->stmts;
+    w->enforce_memory_safety = r->enforce_memory_safety;
     builtins_init();
     sema_run(w);
     if (!sema_result_ok()) {
@@ -1601,6 +1613,7 @@ int main(int argc, char **argv) {
     /* root file = last loaded (it imports its deps first) */
     Program *root = ctx.programs.items[ctx.programs.len - 1];
     whole->stmts = root->stmts;
+    whole->enforce_memory_safety = root->enforce_memory_safety;
 
     builtins_init();
     sema_run(whole);

@@ -1,0 +1,3 @@
+class BadWeakDefault {
+    pub weak BadWeakDefault $parent = new BadWeakDefault();
+}

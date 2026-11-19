@@ -1,0 +1,4 @@
+declare(enforce_memory_safety=1);
+unsafe {
+    $n = 1;
+}

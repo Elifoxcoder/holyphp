@@ -1,0 +1,40 @@
+class WeakNode {
+    pub string $name = "";
+    pub weak WeakNode $root;
+    pub $next = null;
+    pub $callback = null;
+}
+
+$parent = new WeakNode();
+$parent->name = "parent";
+$child = new WeakNode();
+$child->root = $parent;
+$root = $child->root;
+if ($root === null) {
+    throw "live weak property did not resolve";
+}
+if ($root->name != "parent") {
+    throw "live weak property did not resolve";
+}
+$root = null;
+$parent = new WeakNode();
+if ($child->root != null) {
+    throw "dead weak target was not cleared";
+}
+
+$watcher = new WeakNode();
+$cycle = new WeakNode();
+$cycle->next = $cycle;
+$watcher->root = $cycle;
+$cycle = new WeakNode();
+if ($watcher->root != null) {
+    throw "weak target in an object cycle was not invalidated";
+}
+
+$watcher->root = $cycle;
+$cycle->callback = function() use ($cycle): string { return $cycle->name; };
+$cycle = new WeakNode();
+if ($watcher->root != null) {
+    throw "weak target captured by a closure cycle was not invalidated";
+}
+echo "weak property ok";

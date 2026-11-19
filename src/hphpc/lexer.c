@@ -9,7 +9,7 @@
 
 static const struct { const char *w; TokKind k; } keywords[] = {
     {"fn", T_KW_FN}, {"let", T_KW_LET}, {"mut", T_KW_MUT}, {"own", T_KW_OWN},
-    {"unsafe", T_KW_UNSAFE}, {"match", T_KW_MATCH},
+    {"unsafe", T_KW_UNSAFE}, {"weak", T_KW_WEAK}, {"match", T_KW_MATCH},
     {"if", T_KW_IF}, {"else", T_KW_ELSE}, {"elseif", T_KW_ELSEIF},
     {"while", T_KW_WHILE}, {"for", T_KW_FOR}, {"foreach", T_KW_FOREACH},
     {"as", T_KW_AS}, {"in", T_KW_IN}, {"return", T_KW_RETURN}, {"echo", T_KW_ECHO},

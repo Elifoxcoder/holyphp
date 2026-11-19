@@ -212,7 +212,7 @@ struct StructField {
     const char *name;
     Type *type;
     Vis vis;
-    bool is_mut, is_static;
+    bool is_mut, is_static, is_weak;
     Expr *dflt;
     Token name_tok;
     size_t index;              /* position in struct */
@@ -229,6 +229,7 @@ struct AstFn {
     PtrVec body;               /* Stmt* */
     bool is_method, is_static, is_abstract, is_pub;
     bool is_closure, is_unsafe, is_ctor;
+    bool enforce_memory_safety;
     bool proto_emitted;        /* codegen: closure prototype already printed */
     Vis vis;
     AstClass *cls;
@@ -298,6 +299,7 @@ typedef struct Program {
     PtrVec decls;              /* Decl* */
     PtrVec stmts;              /* top-level Stmt* */
     const char *file;
+    bool enforce_memory_safety;
 } Program;
 
 /* constructors (parser) */

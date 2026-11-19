@@ -80,9 +80,8 @@ typedef struct ThrRec {
     int64_t id;
     bool joined;                       /* false until join has consumed it */
     pthread_t pt;
+    pthread_t creator;
     hclosure *clo;                     /* the spawned closure */
-    hval *args;                        /* packed args (hp_arr_of memory) */
-    int nargs;
 } ThrRec;
 
 static ThrRec *g_thr;
@@ -108,11 +107,10 @@ static void *thr_trampoline(void *p) {
     free(p);
     hval r = hp_closure_call(b.clo, b.nargs, b.args);
     (void)r;                           /* results travel via channels */
-    /* mark the record joinable-done; join() waits on the pthread itself */
-    pthread_mutex_lock(&g_thr_mu);
-    ThrRec *rec = thr_rec(b.self_id);
-    if (rec) rec->clo = NULL;          /* drop the closure ref */
-    pthread_mutex_unlock(&g_thr_mu);
+    free(b.args);
+    /* The record owns a strong closure reference until its creator joins.
+     * Do not release it here: the closure's RC and global cycle registry are
+     * owned by the creator thread and are not worker-thread safe. */
     return NULL;
 }
 
@@ -126,21 +124,6 @@ hval hpbi_thr_spawn(hval clo, hval args) {
         for (int64_t i = 0; i < an; i++)
             packed[n++] = hp_arr_get(args.u.a, hp_of_int(i));
     }
-    pthread_mutex_lock(&g_thr_mu);
-    if (g_thr_len == g_thr_cap) {
-        g_thr_cap = g_thr_cap ? g_thr_cap * 2 : 16;
-        g_thr = (ThrRec *)realloc(g_thr, g_thr_cap * sizeof(ThrRec));
-        if (!g_thr) { fprintf(stderr, "hphp: out of memory\n"); exit(1); }
-    }
-    ThrRec *rec = &g_thr[g_thr_len];
-    rec->id = g_thr_next++;
-    rec->joined = false;
-    rec->clo = clo.u.c;
-    rec->args = NULL;
-    rec->nargs = 0;
-    int64_t id = rec->id;
-    pthread_mutex_unlock(&g_thr_mu);
-
     ThrBoot *boot = (ThrBoot *)malloc(sizeof(ThrBoot));
     if (!boot) return thr_bool(false);
     boot->clo = clo.u.c;
@@ -152,17 +135,32 @@ hval hpbi_thr_spawn(hval clo, hval args) {
     } else {
         boot->args = NULL;
     }
+
+    /* Keep the closure alive after the caller releases its temporary value.
+     * The increment and eventual decrement happen on the creator thread. */
+    hp_val_rc_inc(hp_of_clo(clo.u.c));
+    pthread_mutex_lock(&g_thr_mu);
+    if (g_thr_len == g_thr_cap) {
+        g_thr_cap = g_thr_cap ? g_thr_cap * 2 : 16;
+        g_thr = (ThrRec *)realloc(g_thr, g_thr_cap * sizeof(ThrRec));
+        if (!g_thr) { fprintf(stderr, "hphp: out of memory\n"); exit(1); }
+    }
+    ThrRec *rec = &g_thr[g_thr_len];
+    rec->id = g_thr_next++;
+    rec->joined = false;
+    rec->creator = pthread_self();
+    rec->clo = clo.u.c;
+    int64_t id = rec->id;
     boot->self_id = id;
     if (pthread_create(&rec->pt, NULL, thr_trampoline, boot) != 0) {
+        g_thr_len--;
+        pthread_mutex_unlock(&g_thr_mu);
         free(boot->args);
         free(boot);
-        pthread_mutex_lock(&g_thr_mu);
-        /* remove the placeholder record */
-        for (size_t i = 0; i < g_thr_len; i++)
-            if (g_thr[i].id == id) { g_thr[i] = g_thr[--g_thr_len]; break; }
-        pthread_mutex_unlock(&g_thr_mu);
+        hp_val_rc_dec(hp_of_clo(clo.u.c));
         return thr_bool(false);
     }
+    pthread_mutex_unlock(&g_thr_mu);
     return hp_of_int(id);
 }
 
@@ -171,19 +169,26 @@ hval hpbi_thr_join(hval tid) {
     pthread_mutex_lock(&g_thr_mu);
     ThrRec *rec = thr_rec(id);
     pthread_t pt;
+    pthread_t creator;
     bool have = rec && !rec->joined;
-    if (have) { pt = rec->pt; rec->joined = true; }
+    if (have) { pt = rec->pt; creator = rec->creator; rec->joined = true; }
     pthread_mutex_unlock(&g_thr_mu);
     if (!have) return thr_bool(false);
     pthread_join(pt, NULL);
+    hclosure *release_clo = NULL;
     pthread_mutex_lock(&g_thr_mu);
     for (size_t i = 0; i < g_thr_len; i++)
         if (g_thr[i].id == id) {
-            free(g_thr[i].args);
+            if (pthread_equal(creator, pthread_self()))
+                release_clo = g_thr[i].clo;
             g_thr[i] = g_thr[--g_thr_len];
             break;
         }
     pthread_mutex_unlock(&g_thr_mu);
+    /* A non-creator join cannot safely touch the creator's non-atomic heap
+     * counts. In that uncommon case the retained closure is leaked instead
+     * of being released from the wrong thread. */
+    if (release_clo) hp_val_rc_dec(hp_of_clo(release_clo));
     return thr_bool(true);
 }
 

@@ -1,0 +1,41 @@
+$values = ["first", "second"];
+if ($values[0] != "first" || $values[1] != "second") {
+    throw "in-range array index failed";
+}
+$caught_array = false;
+try {
+    $x = $values[2];
+} catch (string $e) {
+    $caught_array = $e == "Array index out of bounds";
+}
+if (!$caught_array) {
+    throw "out-of-range array index was not catchable";
+}
+$caught_type = false;
+try {
+    $x = $values["first"];
+} catch (string $e) {
+    $caught_type = $e == "Array index must be an integer";
+}
+if (!$caught_type) {
+    throw "invalid list index type was not catchable";
+}
+
+$text = "ok";
+if ($text[1] != "k") {
+    throw "in-range string index failed";
+}
+$caught_string = false;
+try {
+    $x = $text[2];
+} catch (string $e) {
+    $caught_string = $e == "String index out of bounds";
+}
+if (!$caught_string) {
+    throw "out-of-range string index was not catchable";
+}
+$map = ["missing" => 1];
+if ($map["unknown"] != null) {
+    throw "missing map key semantics changed";
+}
+echo "index bounds ok";

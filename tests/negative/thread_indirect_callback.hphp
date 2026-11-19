@@ -1,0 +1,2 @@
+$worker = function() {};
+thr_spawn($worker);

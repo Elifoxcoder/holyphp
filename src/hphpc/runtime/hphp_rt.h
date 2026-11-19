@@ -46,6 +46,8 @@ typedef struct harr harr;
 typedef struct hobj hobj;
 typedef struct hclosure hclosure;
 typedef struct hval hval;
+typedef struct hp_gc_node hp_gc_node;
+typedef struct hp_weak_ref hp_weak_ref;
 
 /* ---------- strings: length-prefixed, refcounted ---------- */
 struct hstr {
@@ -158,6 +160,7 @@ struct harr {
     uint32_t *index;    /* hash -> slot+1 table; NULL = not built */
     uint32_t icap;      /* power of two, or 0 */
     uint32_t ibudget;   /* inserts until full rebuild (tombstone pressure) */
+    hp_gc_node *gc;
 };
 
 harr *hp_arr_new(void);
@@ -315,9 +318,12 @@ struct hclosure {
     uint32_t rc;
     size_t envsz;
     void (*drop_env)(void *);
+    void (*trace_env)(void *);
+    hp_gc_node *gc;
     /* environment bytes follow */
 };
-hclosure *hpclosure_new(void *env, size_t envsz, void *fn, void (*drop_env)(void *));
+hclosure *hpclosure_new(void *env, size_t envsz, void *fn,
+                        void (*drop_env)(void *), void (*trace_env)(void *));
 void hpclosure_free(hclosure *c);
 void *hp_closure_env(void);                       /* env of the running closure */
 hval hp_closure_call_arr(hclosure *c, hval *args, int nargs);
@@ -327,13 +333,30 @@ hval hp_call_value(hval fn, int nargs, const hval *args);
 /* ---------- smart pointer support ---------- */
 void hp_rc_inc(void *p);
 void hp_rc_dec(void *p);
+void hp_gc_register(void *ptr, uint32_t *rc, hp_gc_node **slot,
+                    void (*trace)(void *), void (*clear)(void *),
+                    void (*destroy)(void *));
+void hp_gc_visit(hval value);
+void hp_gc_collect_now(void *ptr);
 
 /* ---------- objects ---------- */
 typedef void (*hp_drop_fn)(void *);
 struct hobj {
     uint32_t rc;
     hp_drop_fn drop; /* invoked exactly once when the strong count reaches 0 */
+    void (*trace)(void *);
+    hp_gc_node *gc;
+    hp_weak_ref *weak_refs;
 };
+struct hp_weak_ref {
+    hobj *target;
+    hp_weak_ref *next;
+    hp_weak_ref **prev;
+};
+hval hp_weak_assign(hp_weak_ref **slot, hval value);
+hval hp_weak_get(const hp_weak_ref *weak);
+void hp_weak_free(hp_weak_ref *weak);
+void hp_weak_invalidate(hobj *object);
 
 void *hp_alloc(size_t n);
 void hp_echo(hval v);              /* PHP echo: print value */

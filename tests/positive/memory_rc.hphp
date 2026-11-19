@@ -1,5 +1,7 @@
 class MemoryRcNode {
     pub string $text = "";
+    pub $next = null;
+    pub $callback = null;
 }
 
 function churn_strings(int $n): void {
@@ -33,10 +35,33 @@ function churn_closures(int $n): void {
     }
 }
 
+function churn_object_cycles(int $n): void {
+    $node = new MemoryRcNode();
+    for ($i = 0; $i < $n; $i++) {
+        $node = new MemoryRcNode();
+        $node->next = $node;
+        $node->text = "cycle " . $i;
+    }
+}
+
+function churn_closure_object_cycles(int $n): void {
+    $node = new MemoryRcNode();
+    for ($i = 0; $i < $n; $i++) {
+        $node = new MemoryRcNode();
+        $node->text = "closure cycle " . $i;
+        $node->callback = function() use ($node): string { return $node->text; };
+        if ($node->callback() != "closure cycle " . $i) {
+            throw "closure cycle lost its object before collection";
+        }
+    }
+}
+
 churn_strings(20000);
 churn_arrays(20000);
 churn_objects(20000);
 churn_closures(20000);
+churn_object_cycles(20000);
+churn_closure_object_cycles(20000);
 echo "memory rc loops ok";
 
 

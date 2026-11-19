@@ -1,0 +1,7 @@
+class ThreadMutableCounter {
+    pub int $value = 0;
+}
+$counter = new ThreadMutableCounter();
+$tid = thr_spawn(function() use ($counter) {
+    $counter->value += 1;
+});

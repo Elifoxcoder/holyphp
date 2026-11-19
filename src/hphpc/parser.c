@@ -35,6 +35,7 @@ static Type *parse_type(Parser *p);
 static AstFn *parse_fn_after_name(Parser *p, const Token *name, bool is_method, bool is_static);
 static void parse_class_body(Parser *p, AstClass *c);
 static Decl *parse_decl(Parser *p);
+static bool at_ident(Parser *p, const char *kw);
 
 const char *dup_text(const Token *t) {
     return xstrndup(t->text ? t->text : "", t->len);
@@ -165,6 +166,23 @@ Program *parse_program(const char *src, const char *filename) {
     skip_nl(p);
     while (!ts_check(p->ts, T_EOF)) {
         if (ts_check(p->ts, T_NEWLINE) || ts_check(p->ts, T_SEMI)) { ts_advance(p->ts); continue; }
+        if (at_ident(p, "declare")) {
+            Token directive = *ts_advance(p->ts);
+            ts_expect(p->ts, T_LPAREN, "'(' after declare");
+            const Token *key = ts_expect(p->ts, T_IDENT, "declare setting");
+            ts_expect(p->ts, T_ASSIGN, "'=' after declare setting");
+            const Token *value = ts_expect(p->ts, T_INT, "integer declare value");
+            ts_expect(p->ts, T_RPAREN, "')' after declare setting");
+            if (key->len == 21 && memcmp(key->text, "enforce_memory_safety", 21) == 0) {
+                if (value->ival != 0 && value->ival != 1)
+                    fatal("%s:%zu:%zu: enforce_memory_safety must be 0 or 1",
+                          directive.file, directive.line, directive.col);
+                p->enforce_memory_safety = value->ival == 1;
+                prog->enforce_memory_safety = p->enforce_memory_safety;
+            }
+            expect_nl_or_semi(p);
+            continue;
+        }
         if (ts_check(p->ts, T_KW_IMPORT)) {
             Token it = *ts_advance(p->ts);
             const Token *pth = ts_expect(p->ts, T_STR, "import path");
@@ -318,6 +336,7 @@ static AstFn *parse_fn_after_name(Parser *p, const Token *name, bool is_method, 
     fn->name_tok = *name;
     fn->is_method = is_method;
     fn->is_static = is_static;
+    fn->enforce_memory_safety = p->enforce_memory_safety;
     ts_expect(p->ts, T_LPAREN, "'(' after function name");
     while (!ts_check(p->ts, T_RPAREN) && !ts_check(p->ts, T_EOF)) {
         Param *pm = xcalloc(1, sizeof(Param));
@@ -380,6 +399,7 @@ static StructField *parse_field(Parser *p, Vis vis, bool is_const) {
     ts_match(p->ts, T_KW_OWN);
     StructField *f = xcalloc(1, sizeof(StructField));
     f->vis = vis;
+    f->is_weak = ts_match(p->ts, T_KW_WEAK);
     f->is_mut = is_mut || is_const;
     f->is_static = is_static;
     /* accepted forms:  $name: Type  |  Type $name  |  $name = expr  */
@@ -429,11 +449,12 @@ static void parse_class_body(Parser *p, AstClass *c) {
     m->vis = vis;
     ptrvec_push(&c->methods, m);
         } else if (ts_check(p->ts, T_VAR) || ts_check(p->ts, T_KW_MUT) || ts_check(p->ts, T_KW_OWN) ||
+                   ts_check(p->ts, T_KW_WEAK) ||
                    ts_check(p->ts, T_INT) || ts_check(p->ts, T_IDENT) ||
                    /* a field may lead with its type, and a collection type
                     * starts with '[' -- the same form parameters accept */
                    ts_check(p->ts, T_LBRACKET)) {
-            StructField *f = parse_field(p, vis, is_const);
+            StructField *f = parse_field(p, vis, is_const || lead_static);
             ptrvec_push(&c->fields, f);
         } else if (lead_static || ts_check(p->ts, T_KW_STATIC) || is_const) {
             /* class constant / static field: `static $x = 1` or `const X = 1` */

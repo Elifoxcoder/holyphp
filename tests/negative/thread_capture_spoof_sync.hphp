@@ -1,0 +1,7 @@
+class Channel {
+    pub int $value = 0;
+}
+$channel = new Channel();
+thr_spawn(function() use ($channel) {
+    $channel->value += 1;
+});

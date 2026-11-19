@@ -1568,6 +1568,8 @@ static void emit_field(Codegen *g, Expr *e, Buf *dst) {
         Buf obj;
         buf_init(&obj);
         emit_expr(g, e->u.field.obj, &obj);
+        char *obj_text = buf_take(&obj);
+        const char *lval;
         /* PHP inheritance: fields live in the *defining* class. The base is
          * embedded as the first member, so walk up to the defining class. */
         if (sf->cls && e->u.field.vcls && e->u.field.vcls != sf->cls) {
@@ -1575,13 +1577,16 @@ static void emit_field(Codegen *g, Expr *e, Buf *dst) {
             for (AstClass *c = e->u.field.vcls; c && c != sf->cls; c = c->base)
                 depth++;
             if (depth > 0)
-                buf_printf(dst, "(&(%s)->__base)->%s", buf_take(&obj), sf->name);
+                lval = fmt("(&(%s)->__base)->%s", obj_text, sf->name);
             else
-                buf_printf(dst, "(%s)->%s", buf_take(&obj), sf->name);
+                lval = fmt("(%s)->%s", obj_text, sf->name);
         } else {
-            buf_printf(dst, "(%s)->%s", buf_take(&obj), sf->name);
+            lval = fmt("(%s)->%s", obj_text, sf->name);
         }
-        free(obj.data);
+        if (sf->is_weak) buf_printf(dst, "hp_weak_get(%s)", lval);
+        else buf_puts(dst, lval);
+        free((void *)lval);
+        free(obj_text);
         return;
     }
     buf_puts(dst, "hp_undefined_field()");
@@ -1610,7 +1615,7 @@ static void emit_index(Codegen *g, Expr *e, Buf *dst) {
          * route through the generic runtime helper. */
         buf_printf(&out, "hp_arr_get_v(hv(%s), hv(%s))", buf_take(&o), buf_take(&ix));
     else
-        buf_printf(&out, "hp_arr_get(%s, hv(%s))", buf_take(&o), buf_take(&ix));
+        buf_printf(&out, "hp_arr_get_v(hp_of_arr(%s), hv(%s))", buf_take(&o), buf_take(&ix));
     /* Project into OUR buffer, never into the caller's.
      *
      * project_hval() REWRITES the buffer it is handed: for a class-typed
@@ -2001,6 +2006,19 @@ static void emit_closure(Codegen *g, AstFn *fn) {
     if (fn->uses_this) line(g, "hp_val_rc_dec(hp_of_ptr(_env->hp_this));");
     g->depth--;
     line(g, "}");
+    line(g, "static void %s_env_trace(void *raw) {", cname);
+    g->depth++;
+    line(g, "%s_env *_env = (%s_env*)raw;", cname, cname);
+    for (size_t i = 0; i < fn->captures.len; i++) {
+        VarSym *v = fn->captures.items[i];
+        if (v->captured_byref)
+            line(g, "if (_env->%s) hp_gc_visit(*_env->%s);", var_name(v), var_name(v));
+        else
+            line(g, "hp_gc_visit(_env->%s);", var_name(v));
+    }
+    if (fn->uses_this) line(g, "hp_gc_visit(hp_of_ptr(_env->hp_this));");
+    g->depth--;
+    line(g, "}");
     line(g, "static hclosure *%s_closure_new(%s_env _src) {", cname, cname);
     g->depth++;
     for (size_t i = 0; i < fn->captures.len; i++) {
@@ -2009,8 +2027,8 @@ static void emit_closure(Codegen *g, AstFn *fn) {
         else line(g, "hp_val_rc_inc(_src.%s);", var_name(v));
     }
     if (fn->uses_this) line(g, "hp_val_rc_inc(hp_of_ptr(_src.hp_this));");
-    line(g, "return hpclosure_new(&_src, sizeof(%s_env), (void*)%s_impl, %s_env_drop);",
-         cname, cname, cname);
+    line(g, "return hpclosure_new(&_src, sizeof(%s_env), (void*)%s_impl, %s_env_drop, %s_env_trace);",
+         cname, cname, cname, cname);
     g->depth--;
     line(g, "}");
     line(g, "");
@@ -2490,6 +2508,15 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             lval = fmt("(%s)->%s", os, sf ? sf->name : "hp_missing_field");
         }
         free((void *)os);
+        if (sf && sf->is_weak) {
+            Buf weak_value;
+            buf_init(&weak_value);
+            to_hval(g, e->u.assign.value, &weak_value);
+            buf_printf(dst, "hp_weak_assign(&(%s), %s)", lval, buf_take(&weak_value));
+            free(weak_value.data);
+            free((void *)lval); free(v.data);
+            return;
+        }
         if (op != T_ASSIGN) {
             /* `$this->x += 1` is read-modify-write on the field, exactly like
              * a plain variable: the previous value must participate. */
@@ -4372,7 +4399,7 @@ static void emit_struct(Codegen *g, AstClass *c) {
     for (size_t i = 0; i < c->fields.len; i++) {
         StructField *f = c->fields.items[i];
         if (f->is_static) continue;
-        line(g, "%s %s;", ctype_of(f->type), f->name);
+        line(g, "%s %s;", f->is_weak ? "hp_weak_ref*" : ctype_of(f->type), f->name);
     }
     g->depth--;
     line(g, "} %s;", c->name);
@@ -4424,9 +4451,10 @@ static const char *managed_field_value(const Type *t, const char *slot) {
 }
 
 static void emit_class_drop(Codegen *g, AstClass *c) {
-    line(g, "static void %s_drop(void *raw) {", c->name);
+    line(g, "static void %s_clear(void *raw) {", c->name);
     g->depth++;
     line(g, "struct %s *self = (struct %s*)raw;", c->name, c->name);
+    line(g, "hp_weak_invalidate((hobj*)self);");
     for (AstClass *k = c; k; k = k->base) {
         int depth = 0;
         for (AstClass *p = c; p && p != k; p = p->base) depth++;
@@ -4434,11 +4462,39 @@ static void emit_class_drop(Codegen *g, AstClass *c) {
             StructField *f = k->fields.items[i];
             if (f->is_static || (f->cls && f->cls != k)) continue;
             const char *lv = class_field_lval_depth(depth, f->name);
-            const char *owned = managed_field_value(f->type, lv);
-            if (owned) line(g, "hp_val_rc_dec(%s);", owned);
+            if (f->is_weak) line(g, "hp_weak_free(%s);", lv);
+            else {
+                const char *owned = managed_field_value(f->type, lv);
+                if (owned) line(g, "hp_val_rc_dec(%s);", owned);
+            }
         }
     }
-    line(g, "free(self);");
+    g->depth--;
+    line(g, "}");
+    line(g, "static void %s_drop(void *raw) {", c->name);
+    g->depth++;
+    line(g, "%s_clear(raw);", c->name);
+    line(g, "free(raw);");
+    g->depth--;
+    line(g, "}");
+    line(g, "static void %s_gc_destroy(void *raw) { free(raw); }", c->name);
+}
+
+static void emit_class_trace(Codegen *g, AstClass *c) {
+    line(g, "static void %s_trace(void *raw) {", c->name);
+    g->depth++;
+    line(g, "struct %s *self = (struct %s*)raw;", c->name, c->name);
+    for (AstClass *k = c; k; k = k->base) {
+        int depth = 0;
+        for (AstClass *p = c; p && p != k; p = p->base) depth++;
+        for (size_t i = 0; i < k->fields.len; i++) {
+            StructField *f = k->fields.items[i];
+            if (f->is_static || f->is_weak || (f->cls && f->cls != k)) continue;
+            const char *lv = class_field_lval_depth(depth, f->name);
+            const char *owned = managed_field_value(f->type, lv);
+            if (owned) line(g, "hp_gc_visit(%s);", owned);
+        }
+    }
     g->depth--;
     line(g, "}");
 }
@@ -4446,7 +4502,10 @@ static void emit_class_drop(Codegen *g, AstClass *c) {
 static void emit_class(Codegen *g, AstClass *c) {
     if (!g_structs_emitted) emit_struct(g, c);
     line(g, "static void %s_drop(void *raw);", c->name);
+    line(g, "static void %s_clear(void *raw);", c->name);
+    line(g, "static void %s_trace(void *raw);", c->name);
     emit_class_drop(g, c);
+    emit_class_trace(g, c);
     /* generic constructor: Class_new_args("Class", field-init values...) */
     line(g, "static struct %s* %s_new_args(const char* cls, ...);", c->name, c->name);
     line(g, "static struct %s* %s_new_args(const char* cls, ...) {", c->name, c->name);
@@ -4454,6 +4513,8 @@ static void emit_class(Codegen *g, AstClass *c) {
     line(g, "(void)cls;");
     line(g, "struct %s* self = hp_alloc(sizeof(struct %s));", c->name, c->name);
     line(g, "((hobj*)self)->rc = 1; ((hobj*)self)->drop = %s_drop;", c->name);
+    line(g, "((hobj*)self)->trace = %s_trace;", c->name);
+    line(g, "hp_gc_register(self, &((hobj*)self)->rc, &((hobj*)self)->gc, %s_trace, %s_clear, %s_gc_destroy);", c->name, c->name, c->name);
     line(g, "self->__cls = hp_cls_%s;", c->name);
     /* keep ancestor-level ids in sync so base-typed receivers dispatch right */
     {

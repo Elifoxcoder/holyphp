@@ -1,0 +1,8 @@
+declare(enforce_memory_safety=1);
+function safe_math(int $x): int {
+    return $x + 1;
+}
+if (safe_math(41) != 42) {
+    throw "safe code failed";
+}
+echo "memory safety declaration ok";

@@ -8,6 +8,7 @@ typedef struct Parser {
     TokenStream *ts;
     const char *file;
     int loop_depth;
+    bool enforce_memory_safety;
 } Parser;
 
 Program *parse_program(const char *src, const char *filename);

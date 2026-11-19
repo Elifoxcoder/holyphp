@@ -1,0 +1,2 @@
+declare(enforce_memory_safety=1);
+$p = malloc(8);
