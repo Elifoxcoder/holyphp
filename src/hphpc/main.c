@@ -751,7 +751,12 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
             needed[3] = needed[4] = needed[5] = true;   /* cannot tell: all */
             needed[6] = needed[7] = true;
         } else {
-            needed[3] = strstr(genc, "hp_thr_") != NULL || strstr(stdc, "hp_thr_") != NULL;
+            needed[3] = strstr(genc, "hp_thr_") != NULL || strstr(stdc, "hp_thr_") != NULL ||
+                        strstr(genc, "hpbi_thr_") != NULL ||
+                        strstr(genc, "hpbi_atomic_") != NULL ||
+                        strstr(genc, "hpbi_chan_") != NULL ||
+                        strstr(genc, "hpbi_mutex_") != NULL ||
+                        strstr(genc, "hpbi_barrier_") != NULL;
             needed[4] = strstr(genc, "hp_ui_") != NULL || strstr(genc, "hpui_") != NULL ||
                         strstr(stdc, "hp_ui_") != NULL || strstr(stdc, "hpui_") != NULL;
             needed[5] = strstr(genc, "hp_wv2_") != NULL || strstr(genc, "hpwv2_") != NULL ||

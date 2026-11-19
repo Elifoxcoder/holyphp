@@ -27,6 +27,13 @@ behaves differently, what they have to change.
 - `sqlite_status()` now really returns its JSON text (its declaration said
   `int`), and `bt_read()` / `bt_count_range()` return the integer count /
   status they produce instead of being declared `bool`.
+- Builtin ownership audit, misc: the string-builder and typed-int-array
+  handles are documented as caller-owned (`sb_take`/`sb_discard`,
+  `iarr_release`), `random_bytes()` returns a fresh binary string, and
+  `sqlite_column_text()` is proved to copy out of SQLite's page memory (the
+  string survives finalize/close). Programs that used `atomic_*`, `chan_*`,
+  `mutex_*` or `barrier_*` now link on Windows: the compiler only looked for
+  `hp_thr_` symbols when deciding whether to link the thread module.
 - Builtin ownership audit, net: `parse_url()`/`http_build_query()` and the
   socket helpers return fresh values (the query builder and `stream_peer()`
   released their intermediate strings; `stream_peer()` leaked one per call),
