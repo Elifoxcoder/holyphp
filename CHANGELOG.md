@@ -27,6 +27,11 @@ behaves differently, what they have to change.
 - `sqlite_status()` now really returns its JSON text (its declaration said
   `int`), and `bt_read()` / `bt_count_range()` return the integer count /
   status they produce instead of being declared `bool`.
+- Builtin ownership audit, regex: every `preg_*` call now frees its parsed
+  pattern tree and (for `preg_match_all`) the per-match row, `preg_replace()`
+  releases its output buffer, and `preg_split()` returns a copy of the subject
+  when the pattern is invalid instead of aliasing it. A 20000-round regex loop
+  stays flat.
 - Builtin ownership audit, file/io: `file_get_contents()` releases its read
   buffer, `basename()` releases the intermediate string when it strips a
   suffix, `pathinfo()`/`is_writable()` no longer leave temporary strings

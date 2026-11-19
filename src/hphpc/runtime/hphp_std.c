@@ -3407,7 +3407,6 @@ static void rptrvec_push(RPtrVec *v, void *p) {
     }
     v->items[v->len++] = p;
 }
-
 /* ===================== PCRE-style regex engine =====================
  * A compact backtracking matcher (recursive descent over the pattern
  * tree, continuation-passing for backtracking). Supported syntax:
@@ -3436,6 +3435,14 @@ typedef struct Rx {
     int rmin, rmax;            /* RX_REP: rmax -1 = unbounded */
     int gidx;                  /* RX_GROUP capture index, 0 = (?:...) */
 } Rx;
+
+static void rx_free(Rx *r) {
+    if (!r) return;
+    for (size_t i = 0; i < r->kids.len; i++) rx_free((Rx *)r->kids.items[i]);
+    free(r->kids.items);
+    rx_free(r->child);
+    free(r);
+}
 
 static Rx *rx_new(RxKind k) {
     Rx *r = (Rx *)calloc(1, sizeof(Rx));
@@ -3849,10 +3856,11 @@ static hval rx_first_match(hval pat, hval subj, hval *out) {
     Rx *tree; int ng;
     if (!rx_split_pattern(p, &tree, &ng)) RETB(false);
     size_t ms, me; RxCtx c;
-    if (!rx_search(tree, ng, x->data, x->len, 0, &ms, &me, &c)) RETB(false);
-    hval m = hp_of_arr(rx_match_arr(&c, x->data, ms, me));
-    if (out) *out = m;
-    return hp_of_int(1);
+    bool found = rx_search(tree, ng, x->data, x->len, 0, &ms, &me, &c);
+    if (!found) { rx_free(tree); RETB(false); }
+    if (out) *out = hp_of_arr(rx_match_arr(&c, x->data, ms, me));
+    rx_free(tree);
+    RETI(1);
 }
 hval hpbi_preg_match(hval pat, hval subj) { return rx_first_match(pat, subj, NULL); }
 hval hpbi_preg_match3(hval pat, hval subj, hval *out) { return rx_first_match(pat, subj, out); }
@@ -3876,9 +3884,11 @@ static hval rx_all_matches(hval pat, hval subj, hval *out) {
             hval colv = cols->vals[g];
             hp_arr_push(colv.u.a, cell);
         }
+        hp_arr_free(row);
         off = me > ms ? me : ms + 1;
     }
     hval r = hp_of_arr(cols);
+    rx_free(tree);
     if (out) *out = r;
     return hp_of_int((int64_t)(cols->vals[0].u.a->len));
 }
@@ -3914,7 +3924,8 @@ hval hpbi_preg_replace(hval pat, hval rep, hval subj) {
         off = me > ms ? me : ms + 1;
     }
     buf_write(&out, x->data + off, x->len - off);
-    RETS(hp_str_new(out.data, out.len));
+    rx_free(tree);
+    RETS(hp_str_take_buf(&out));
 }
 
 hval hpbi_preg_split(hval pat, hval subj) {
@@ -3923,7 +3934,7 @@ hval hpbi_preg_split(hval pat, hval subj) {
     Rx *tree; int ng;
     if (!rx_split_pattern(p, &tree, &ng)) {
         harr *one = hp_arr_new();
-        hp_arr_push(one, hp_of_str(x));
+        hp_arr_push(one, hp_of_str(hp_str_copy(x)));
         return hp_of_arr(one);
     }
     harr *parts = hp_arr_new();
@@ -3939,6 +3950,7 @@ hval hpbi_preg_split(hval pat, hval subj) {
         off = me;
     }
     hp_arr_push(parts, hp_of_str(hp_str_new(x->data + off, x->len - off)));
+    rx_free(tree);
     return hp_of_arr(parts);
 }
 
@@ -3955,7 +3967,9 @@ hval hpbi_preg_grep(hval pat, hval arr) {
             if (a->is_map) hp_arr_set(out, a->keys[i], a->vals[i]);
             else hp_arr_push(out, a->vals[i]);
         }
+        if (a->vals[i].tag != HV_STR) hp_str_free(v);
     }
+    rx_free(tree);
     return hp_of_arr(out);
 }
 

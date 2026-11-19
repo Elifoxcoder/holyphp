@@ -1,0 +1,35 @@
+<?php
+/* ownership_regex_replace.hphp — preg_replace returns a fresh string, even
+ * when the pattern is invalid (then it returns a copy of the subject). */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$subj = "ab cd";
+$r = preg_replace("/([a-z]+)/", "<$1>", $subj);
+check("preg_replace with a backref", $r == "<ab> <cd>");
+unsafe { str_free($r); }
+check("preg_replace left the subject intact", $subj == "ab cd");
+
+$r = preg_replace("/zzz/", "x", $subj);
+check("preg_replace without a match copies", $r == $subj);
+unsafe { str_free($r); }
+
+$bad = "/[/";
+$r = preg_replace($bad, "x", $subj);
+check("invalid pattern returns a copy", $r == $subj);
+unsafe { str_free($r); }
+check("invalid pattern left the subject intact", $subj == "ab cd");
+
+$r = preg_replace("/ +/", "_", "a   b");
+check("preg_replace with a quantifier", $r == "a_b");
+unsafe { str_free($r); }
+
+$r = preg_replace("/[0-9]+/", "#", "a12b");
+check("preg_replace replaces digits", $r == "a#b");
+unsafe { str_free($r); }
+
+echo "ownership regex replace ok\n";

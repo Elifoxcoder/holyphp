@@ -1,0 +1,28 @@
+<?php
+/* ownership_regex_invalid.hphp — a bad pattern is reported as false/a copy and
+ * never leaves a half-built tree or a dangling pattern string. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$bad = "/[/";
+$subj = "text";
+check("preg_match invalid pattern", preg_match($bad, $subj) === false);
+check("preg_match_all invalid pattern", preg_match_all($bad, $subj) === false);
+check("preg_grep invalid pattern", preg_grep($bad, [$subj]) === false);
+
+$r = preg_replace($bad, "x", $subj);
+check("preg_replace invalid pattern copies", $r == $subj);
+unsafe { str_free($r); }
+
+$parts = preg_split($bad, $subj);
+check("preg_split invalid pattern returns one part", count($parts) == 1 && $parts[0] == $subj);
+foreach ($parts as $p) { unsafe { str_free($p); } }
+unsafe { arr_free($parts); }
+
+check("the inputs survived", $bad == "/[/" && $subj == "text");
+unsafe { str_free($bad); str_free($subj); }
+echo "ownership regex invalid ok\n";

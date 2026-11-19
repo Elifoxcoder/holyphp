@@ -1,0 +1,32 @@
+<?php
+/* ownership_regex_match.hphp — preg_match fills the out array with fresh
+ * strings and returns a scalar; the pattern/subject are borrowed. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$pat = "/([a-z]+)@([a-z]+)/";
+$subj = "mail ann@example end";
+$n = preg_match($pat, $subj, $m);
+check("preg_match returns 1", $n == 1);
+check("full match", $m[0] == "ann@example");
+check("capture group 1", $m[1] == "ann");
+check("capture group 2", $m[2] == "example");
+foreach ($m as $x) { unsafe { str_free($x); } }
+unsafe { arr_free($m); }
+check("the subject survived", $subj == "mail ann@example end");
+
+$n = preg_match("/zzz/", $subj, $m);
+check("preg_match without a match returns 0", $n == 0);
+foreach ($m as $x) { unsafe { str_free($x); } }
+unsafe { arr_free($m); }
+
+$n = preg_match("/ANN/i", $subj);
+check("preg_match without an out variable", $n == 1);
+check("preg_match with anchors", preg_match("/^mail/", $subj) == 1);
+check("preg_match with a class", preg_match("/[0-9]+/", "abc") == 0);
+
+echo "ownership regex match ok\n";
