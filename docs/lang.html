@@ -37,12 +37,36 @@ $user = ["name" =&gt; "Ada",  // map array (string keys)
   <table>
     <tr><th>Type</th><th>Literals</th><th>Notes</th></tr>
     <tr><td><code>int</code></td><td><code>42</code>, <code>0x2A</code></td><td>64-bit signed</td></tr>
+    <tr><td><code>i128</code></td><td><code>332825110087067562321196029789634457848</code></td><td>128-bit signed; wider literals get this type</td></tr>
     <tr><td><code>float</code></td><td><code>3.14</code>, <code>1e9</code></td><td>64-bit IEEE</td></tr>
     <tr><td><code>bool</code></td><td><code>true</code> / <code>false</code></td><td></td></tr>
     <tr><td><code>string</code></td><td><code>"..."</code> with <code>{$var}</code> interpolation</td><td>immutable, refcounted</td></tr>
     <tr><td><code>array</code></td><td><code>[1, 2]</code>, <code>["k" =&gt; "v"]</code></td><td>copy-on-write value semantics</td></tr>
     <tr><td><code>mixed</code></td><td>anything</td><td>runtime-tagged hval</td></tr>
   </table>
+
+  <p><code>i128</code> is a native 128-bit signed integer. It widens from
+  <code>int</code> and the sized integer spellings implicitly, in assignments,
+  arguments, returns and mixed arithmetic (the result stays <code>i128</code>).
+  Narrowing back to <code>int</code> needs an explicit cast; <code>(i128)</code>
+  itself converts from int, float, string and other integers. Arithmetic,
+  comparisons, the spaceship operator, bit operations and shifts all work;
+  <code>/</code> and <code>%</code> are integer division and modulo (unlike
+  <code>int / int</code>, which yields a float), and dividing by zero throws.
+  Overflow wraps like <code>int</code>.</p>
+<pre><code class="hphp">$big = (i128)1 &lt;&lt; 100;            // 1267650600228229401496703205376
+echo $big * 2;                  // 2535301200456458802993406410752
+echo strval($big);              // full decimal value
+$back = (i128)"-77";            // from a string
+$narrow = (int)$big;            // only an explicit cast narrows</code></pre>
+
+  <p>An <code>i128</code> does not fit into an <code>array</code>, a map, a
+  <code>mixed</code> slot or a closure (those hold a 64-bit runtime value).
+  Storing one there is a compile error rather than a silent truncation:
+  convert with <code>(int)</code> or <code>strval()</code> first.
+  <code>echo</code>, concatenation, templates, <code>strval()</code>,
+  <code>print_r</code>, <code>var_dump</code> and <code>json_encode</code>
+  (as a JSON number) print the full value.</p>
 
   <h2 id="functions">Functions</h2>
   <p>Fully typed signatures with optional parameters and defaults. Untyped functions are

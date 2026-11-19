@@ -9,6 +9,20 @@ behaves differently, what they have to change.
 
 ## Unreleased
 
+- New primitive type `i128`: a signed 128-bit integer backed by gcc
+  `__int128`. It widens from `int`/`i8`..`i64` implicitly (in assignments,
+  arguments, returns and mixed arithmetic, where the result stays `i128`) and
+  narrows back only through an explicit `(int)` cast. All arithmetic,
+  comparisons (`<=>` included), bit operations and shifts work, and
+  `echo`/`.`/templates/`strval()`/`print_r()`/`var_dump()`/`json_encode()`
+  print the full decimal value. Integer literals larger than the int64 range
+  now get type `i128`. Integer division (`/`) and modulo (`%`) on `i128` stay
+  128-bit and throw on zero; overflow wraps like `int`. Because the runtime's
+  dynamic value holds 64 bits, storing an `i128` in an array, a map, a
+  `mixed` slot or a closure is a compile error that asks for `(int)` or
+  `strval()` instead of truncating silently. `docs/lang.html` documents the
+  type and its limits.
+
 - SQLite 3.46.1 is now built into the compiler: the pinned amalgamation is
   vendored under `third_party/sqlite/` (public domain, checksums and build
   options recorded there), compiled once per platform with the B-tree driver,
