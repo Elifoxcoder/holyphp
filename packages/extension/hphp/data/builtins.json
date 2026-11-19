@@ -9630,9 +9630,9 @@
   },
   {
    "name": "bt_count_range",
-   "sig": "bt_count_range(...$args): bool",
+   "sig": "bt_count_range(...$args): int",
    "args": -2,
-   "desc": "Counts entries per key in [lo,hi] with one index walk; writes the counts into a typed int array.",
+   "desc": "Counts entries per key in [lo,hi] with one index walk; writes the counts into a typed int array and returns 0 on success.",
    "unsafe": false
   },
   {
@@ -9728,9 +9728,9 @@
   },
   {
    "name": "bt_read",
-   "sig": "bt_read(...$args): bool",
+   "sig": "bt_read(...$args): int",
    "args": -2,
-   "desc": "Decodes several columns of the current record into a typed int array (offsets, lengths and integers).",
+   "desc": "Decodes several columns of the current record into a typed int array (offsets, lengths and integers) and returns the column count.",
    "unsafe": true
   },
   {
@@ -10621,7 +10621,7 @@
    "name": "sqlite_exec",
    "sig": "sqlite_exec(...$args): bool",
    "args": -2,
-   "desc": "Runs one or more SQL statements and returns the SQLite result code.",
+   "desc": "Runs one or more SQL statements; true when SQLite reports SQLITE_OK.",
    "unsafe": false
   },
   {
@@ -10682,7 +10682,7 @@
   },
   {
    "name": "sqlite_status",
-   "sig": "sqlite_status(...$args): int",
+   "sig": "sqlite_status(...$args): string",
    "args": -2,
    "desc": "Returns a compact JSON string with the connection's SQLite status counters.",
    "unsafe": false
