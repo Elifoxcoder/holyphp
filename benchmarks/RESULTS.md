@@ -11,9 +11,10 @@ tmpfs, opened with `unix-excl` like `benchmarks/challenge/start.sh`, compiler
 built by `scripts/build.sh`. Machine: WSL2 Ubuntu 24.04, gcc 13.3.0, 32 vCPU.
 Host frequency and other worktrees make single runs vary by up to 2x, so
 changes are accepted or rejected with **paired A/B runs**: two bench binaries
-(or two environment settings) alternate in one loop (`scratch/paired.sh`,
-not committed) and the median of 21-25 rounds per side is compared. Absolute
-ns/op below are one such median; 5-10% between tables is not a change.
+(or two environment settings) alternate in one loop
+([`sqlite/paired.sh`](sqlite/paired.sh)) and the median of 21-25 rounds per
+side is compared. Absolute ns/op below are one such median; 5-10% between
+tables is not a change.
 
 Allocation counts come from `benchmarks/sqlite/malloc_count.c` (LD_PRELOAD over
 glibc's allocator) with `BENCH_ITERS=0` subtracted; they are exact for the

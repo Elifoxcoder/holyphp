@@ -37,6 +37,12 @@ attributed per operation. The reported malloc numbers include the language
 runtime's own allocations (for `point` and `feed`, the `hstr` returned by
 `sqlite_column_text`), not only SQLite's.
 
+Comparing two builds needs paired runs, because host frequency and other work
+on the machine move a single series by up to 2x: [`paired.sh`](paired.sh)
+alternates two bench binaries within one loop and reports the median of each
+side. It is how the accepted and rejected changes in
+[`../RESULTS.md`](../RESULTS.md) were measured.
+
 The project compiles SQLite with the challenge's options; see
 [`third_party/sqlite/README.md`](../../third_party/sqlite/README.md) and the
 `SQLITE_DEFS`/`HPHP_SQLITE_CFLAGS` lines in `scripts/build.sh`.
