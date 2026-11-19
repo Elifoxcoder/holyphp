@@ -212,7 +212,15 @@ static void lex_number(Lexer *lx, Token *t) {
         while (isxdigit((unsigned char)cur(lx))) adv(lx);
         set_text(t, lx, start);
         t->kind = T_INT;
-        t->ival = (long long)strtoull(xstrndup(t->text, t->len) + 2, NULL, 16);
+        unsigned __int128 u = 0;
+        for (size_t k = 2; k < t->len; k++) {
+            char c = t->text[k];
+            int d = c <= '9' ? c - '0' : (c | 32) - 'a' + 10;
+            u = u * 16u + (unsigned __int128)d;
+        }
+        t->ival_big = u > (unsigned __int128)0x7FFFFFFFFFFFFFFFULL;
+        t->ival = (long long)u;
+        t->ival128 = (__int128)u;
         return;
     }
     if (cur(lx) == '0' && (peek(lx, 1) == 'b' || peek(lx, 1) == 'B')) {
@@ -220,7 +228,11 @@ static void lex_number(Lexer *lx, Token *t) {
         while (cur(lx) == '0' || cur(lx) == '1') adv(lx);
         set_text(t, lx, start);
         t->kind = T_INT;
-        t->ival = strtoll(xstrndup(t->text, t->len) + 2, NULL, 2);
+        unsigned __int128 u = 0;
+        for (size_t k = 2; k < t->len; k++) u = u * 2u + (unsigned __int128)(t->text[k] - '0');
+        t->ival_big = u > (unsigned __int128)0x7FFFFFFFFFFFFFFFULL;
+        t->ival = (long long)u;
+        t->ival128 = (__int128)u;
         return;
     }
     while (isdigit((unsigned char)cur(lx)) || cur(lx) == '_') adv(lx);
@@ -243,7 +255,17 @@ static void lex_number(Lexer *lx, Token *t) {
     for (size_t k = 0; k < t->len; k++) if (t->text[k] != '_') clean[ci++] = t->text[k];
     clean[ci] = 0;
     if (isf) { t->kind = T_FLOAT; t->fval = strtod(clean, NULL); }
-    else { t->kind = T_INT; t->ival = strtoll(clean, NULL, 10); }
+    else {
+        /* An integer literal wider than int64 becomes an i128 value: the
+         * decimal form is accumulated with 128-bit arithmetic here rather
+         * than through strtoll, which would saturate silently. */
+        unsigned __int128 u = 0;
+        for (size_t k = 0; clean[k]; k++) u = u * 10u + (unsigned __int128)(clean[k] - '0');
+        t->kind = T_INT;
+        t->ival_big = u > (unsigned __int128)0x7FFFFFFFFFFFFFFFULL;
+        t->ival = (long long)u;
+        t->ival128 = (__int128)u;
+    }
     free(clean);
 }
 
@@ -460,7 +482,10 @@ bool lex_next(Lexer *lx, Token *out) {
         else k = T_MINUS;
         break;
     case '*':
-        if (matchc(lx, '*')) k = T_POW;
+        if (matchc(lx, '*')) {
+            if (matchc(lx, '=')) k = T_POWASSIGN;
+            else k = T_POW;
+        }
         else if (matchc(lx, '=')) k = T_STARASSIGN;
         else k = T_STAR;
         break;

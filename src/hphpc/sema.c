@@ -422,8 +422,10 @@ static const Type *unify_numeric(const Type *a, const Type *b) {
         return ty_float;
     }
     if (a->kind == TY_INT && b->kind == TY_INT) return ty_int;
-    /* mixed-size ints: widen to i64 */
+    /* mixed-size ints: widen to the widest operand; i128 wins over all of
+     * them, so `$wide + 1` stays exact instead of dropping to 64 bits */
     if (type_is_integral(a->kind) && type_is_integral(b->kind)) {
+        if (a->kind == TY_I128 || b->kind == TY_I128) return ty_i128;
         if (a->kind == TY_I8 && b->kind == TY_I8) return ty_i8;
         if (a->kind == TY_I16 && b->kind == TY_I16) return ty_i16;
         if (a->kind == TY_I32 && b->kind == TY_I32) return ty_i32;
@@ -433,6 +435,35 @@ static const Type *unify_numeric(const Type *a, const Type *b) {
 }
 
 static bool types_compatible(const Type *want, const Type *got);
+
+/* ---------- i128 is not an hval payload ----------
+ *
+ * hval's union holds 64 bits, so an i128 cannot be stored in an array, a
+ * map, a mixed slot or a closure environment without losing its top half.
+ * The language refuses that silently-lossy conversion and says what to do
+ * instead. Narrowing to a smaller integer is refused too: it is only
+ * allowed through an explicit cast. */
+static void reject_i128_lossy(const Token *tok, const Type *want, const Type *got,
+                              const char *what) {
+    if (!got || got->kind != TY_I128 || !want || want->kind == TY_I128) return;
+    switch (want->kind) {
+    case TY_MIXED: case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET:
+    case TY_TUPLE: case TY_OPTION: case TY_RESULT: case TY_NULLABLE:
+    case TY_UNION: case TY_NULL:
+        sema_error(tok, "%s: i128 does not fit in %s; convert with (int) or strval() first",
+                   what, type_to_string(want));
+        return;
+    case TY_STRING: case TY_BOOL:
+        sema_error(tok, "%s: i128 does not convert to %s implicitly; use an explicit cast or strval()",
+                   what, type_to_string(want));
+        return;
+    default:
+        break;
+    }
+    if (type_is_integral(want->kind))
+        sema_error(tok, "%s: cannot narrow i128 to %s implicitly; use an explicit cast",
+                   what, type_to_string(want));
+}
 
 static void reject_untracked_reference(const Expr *arg, const Type *got,
                                        const Type *param, const char *where) {
@@ -1685,6 +1716,23 @@ static bool class_derives(AstClass *c, const AstClass *base) {
 }
 
 /* ---------------- type resolution ---------------- */
+static bool type_holds_i128(const Type *t) {
+    if (!t) return false;
+    switch (t->kind) {
+    case TY_I128: return true;
+    case TY_ARRAY: case TY_VEC: case TY_SET: case TY_OPTION: case TY_NULLABLE:
+    case TY_OWN: case TY_RC:
+        return type_holds_i128(t->elem);
+    case TY_MAP: return type_holds_i128(t->key) || type_holds_i128(t->val);
+    case TY_RESULT: return type_holds_i128(t->ok) || type_holds_i128(t->err);
+    case TY_UNION:
+        for (size_t i = 0; i < t->nmembers; i++)
+            if (type_holds_i128(t->members[i])) return true;
+        return false;
+    default: return false;
+    }
+}
+
 static const Type *resolve_type(Scope *sc, Type *t, Token tok) {
     (void)sc;
     if (!t) return NULL;
@@ -1734,6 +1782,16 @@ static const Type *resolve_type(Scope *sc, Type *t, Token tok) {
     }
     default: break;
     }
+    switch (t->kind) {
+    case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET:
+    case TY_OPTION: case TY_RESULT: case TY_NULLABLE: case TY_UNION:
+        if (type_holds_i128(t))
+            sema_error(&tok,
+                       "i128 cannot be stored in %s; arrays and dynamic values hold 64-bit integers (convert with (int) or strval() first)",
+                       type_to_string(t));
+        break;
+    default: break;
+    }
     return t;
 }
 
@@ -1769,6 +1827,9 @@ static const Type *check_bin(Scope *sc, Expr *e) {
     }
     /* null coalescing */
     if (e->is_nullcoal) {
+        if ((lt && lt->kind == TY_I128) || (rt && rt->kind == TY_I128))
+            sema_error(&e->tok,
+                       "i128 cannot flow through ??; convert with (int) or strval() first");
         e->type = lt;
         return e->type;
     }
@@ -1798,14 +1859,15 @@ static const Type *check_bin(Scope *sc, Expr *e) {
         return e->type;
     }
     /* shifts << >> — the result is always an integer; numeric strings and
-     * hval operands are converted by the runtime (PHP semantics) */
+     * hval operands are converted by the runtime (PHP semantics). An i128
+     * operand keeps the result 128 bits wide. */
     if (op == T_SHL || op == T_SHR) {
         bool lok = type_is_numeric(lt->kind) || lt->kind == TY_STRING || lt->kind == TY_MIXED;
         bool rok = type_is_numeric(rt->kind) || rt->kind == TY_STRING || rt->kind == TY_MIXED;
         if (!lok || !rok)
             sema_error(&e->u.bin.op, "%s requires numeric operands, got %s and %s",
                        tok_kind_name(op), type_to_string(lt), type_to_string(rt));
-        e->type = ty_int;
+        e->type = (lt->kind == TY_I128 || rt->kind == TY_I128) ? ty_i128 : ty_int;
         return e->type;
     }
     /* bitwise */
@@ -1821,7 +1883,14 @@ static const Type *check_bin(Scope *sc, Expr *e) {
     if (op == T_PLUS || op == T_MINUS || op == T_STAR || op == T_SLASH ||
         op == T_PERCENT || op == T_POW) {
         if (type_is_numeric(lt->kind) && type_is_numeric(rt->kind)) {
-            e->type = op == T_SLASH ? ty_float : unify_numeric(lt, rt);
+            /* i128 / i128 is exact 128-bit integer division, not PHP's
+             * float division: converting to double would throw away the
+             * precision the type exists for. Mixed with a float stays
+             * float. */
+            bool wide_div = op == T_SLASH &&
+                type_is_integral(lt->kind) && type_is_integral(rt->kind) &&
+                (lt->kind == TY_I128 || rt->kind == TY_I128);
+            e->type = (op == T_SLASH && !wide_div) ? ty_float : unify_numeric(lt, rt);
             return e->type;
         }
         /* PHP numeric-string arithmetic: "1" + "2" is 3, "1.5" * 2 is
@@ -1908,6 +1977,7 @@ static const Type *check_method_call(Scope *sc, Expr *e) {
                 Expr *arg = e->u.method.args.items[i];
                 const Type *at = check_expr(sc, arg);
                 reject_untracked_reference(arg, at, NULL, "collection push()");
+                reject_i128_lossy(&arg->tok, ty_mixed, at, "value");
                 if (sema_type_is_linear(at)) {
                     if (!sema_type_is_linear(receiver_base->kind == TY_MAP
                                                 ? receiver_base->val : receiver_base->elem))
@@ -1965,6 +2035,7 @@ static const Type *check_method_call(Scope *sc, Expr *e) {
                         Expr *arg = e->u.method.args.items[i];
                         const Type *at = check_expr(sc, arg);
                         reject_untracked_reference(arg, at, pt, mname);
+                        reject_i128_lossy(&arg->tok, pt ? pt : ty_mixed, at, "argument");
                         if (pt && !value_fits_slot(pt, at, arg))
                             sema_error(&arg->tok, "argument %zu to %s::%s(): expected %s, got %s",
                                        i + 1, c->name, mname, type_to_string(pt), type_to_string(at));
@@ -2003,6 +2074,7 @@ static const Type *check_method_call(Scope *sc, Expr *e) {
                         (arg->kind == EX_VAR || arg->kind == EX_FIELD || arg->kind == EX_INDEX))
                         sema_error(&arg->tok, "cannot pass an ownership value to a dynamically typed method");
                     reject_untracked_reference(arg, at, NULL, "a dynamic method call");
+                    reject_i128_lossy(&arg->tok, ty_mixed, at, "argument");
                 }
                 e->u.method.sf = f;
                 e->u.method.target = NULL;
@@ -2030,6 +2102,7 @@ static const Type *check_method_call(Scope *sc, Expr *e) {
                 arg->is_move_source = true;
             }
             reject_untracked_reference(arg, at, pt, mname);
+            reject_i128_lossy(&arg->tok, pt ? pt : ty_mixed, at, "argument");
             if (pt && !value_fits_slot(pt, at, arg))
                 sema_error(&arg->tok, "argument %zu to %s::%s(): expected %s, got %s",
                            i + 1, c->name, mname, type_to_string(pt), type_to_string(at));
@@ -2263,6 +2336,7 @@ static const Type *check_call(Scope *sc, Expr *e) {
                         arg->is_move_source = true;
                     }
                     reject_untracked_reference(arg, at, pt, name);
+                    reject_i128_lossy(&arg->tok, pt ? pt : ty_mixed, at, "argument");
                     if (pt && pm->type && !value_fits_slot(pt, at, arg))
                         sema_error(&arg->tok, "argument %zu to %s(): expected %s, got %s",
                                    i + 1, name, type_to_string(pt), type_to_string(at));
@@ -2318,6 +2392,7 @@ static const Type *check_call(Scope *sc, Expr *e) {
                 (arg->kind == EX_VAR || arg->kind == EX_FIELD || arg->kind == EX_INDEX))
                 arg->is_move_source = true;
             reject_untracked_reference(arg, at, pt, "an indirect call");
+            reject_i128_lossy(&arg->tok, pt ? pt : ty_mixed, at, "argument");
             if (pt && !value_fits_slot(pt, at, arg))
                 sema_error(&arg->tok, "argument %zu: expected %s, got %s",
                            i + 1, type_to_string(pt), type_to_string(at));
@@ -2336,6 +2411,7 @@ static const Type *check_call(Scope *sc, Expr *e) {
                 (arg->kind == EX_VAR || arg->kind == EX_FIELD || arg->kind == EX_INDEX))
                 sema_error(&arg->tok, "cannot pass an ownership value to a dynamically typed call");
             reject_untracked_reference(arg, at, NULL, "a dynamic call");
+            reject_i128_lossy(&arg->tok, ty_mixed, at, "argument");
         }
         e->type = ty_mixed;
         return e->type;
@@ -2350,7 +2426,7 @@ static const Type *check_call(Scope *sc, Expr *e) {
 static const Type *check_expr(Scope *sc, Expr *e) {
     if (!e) return ty_mixed;
     switch (e->kind) {
-    case EX_INT: e->type = ty_int; return e->type;
+    case EX_INT: e->type = e->u.i.is_wide ? ty_i128 : ty_int; return e->type;
     case EX_FLOAT: e->type = ty_float; return e->type;
     case EX_STR: e->type = ty_string; return e->type;
     case EX_BOOL: e->type = ty_bool; return e->type;
@@ -2477,6 +2553,9 @@ static const Type *check_expr(Scope *sc, Expr *e) {
         for (size_t i = 0; i < e->u.tuple.elems.len; i++) {
             Expr *item = e->u.tuple.elems.items[i];
             const Type *et = check_expr(sc, item);
+            if (et && et->kind == TY_I128)
+                sema_error(&item->tok,
+                           "cannot store i128 in a tuple; convert with (int) or strval() first");
             ((const Type **)t->members)[i] = et;
             if (et && (et->kind == TY_REF || et->kind == TY_MUTREF))
                 sema_error(&e->tok, "references cannot be stored in tuples because this type has no lifetime tracking");
@@ -2498,6 +2577,12 @@ static const Type *check_expr(Scope *sc, Expr *e) {
                 const Type *v2 = check_expr(sc, e->u.map.vals.items[i]);
                 Expr *key_expr = e->u.map.keys.items[i];
                 Expr *value_expr = e->u.map.vals.items[i];
+                if (k2 && k2->kind == TY_I128)
+                    sema_error(&key_expr->tok,
+                               "cannot store i128 in a map key; convert with (int) or strval() first");
+                if (v2 && v2->kind == TY_I128)
+                    sema_error(&value_expr->tok,
+                               "cannot store i128 in a map; convert with (int) or strval() first");
                 if (sema_type_is_linear(k2))
                     sema_error(&key_expr->tok, "ownership values cannot be copied into map keys");
                 if (sema_type_is_linear(v2)) {
@@ -2532,6 +2617,9 @@ static const Type *check_expr(Scope *sc, Expr *e) {
             const Type *et = check_expr(sc, item);
             if (et && (et->kind == TY_REF || et->kind == TY_MUTREF))
                 sema_error(&e->tok, "references cannot be stored in arrays because this type has no lifetime tracking");
+            if (et && et->kind == TY_I128)
+                sema_error(&item->tok,
+                           "cannot store i128 in an array; convert with (int) or strval() first");
             if (sema_type_is_linear(et)) {
                 has_linear_elem = true;
                 if (expr_is_movable_place(item)) item->is_move_source = true;
@@ -2652,6 +2740,7 @@ static const Type *check_expr(Scope *sc, Expr *e) {
                     Expr *arg = e->u.staticcall.args.items[i];
                     const Type *at = check_expr(sc, arg);
                     reject_untracked_reference(arg, at, pt, m->name);
+                    reject_i128_lossy(&arg->tok, pt ? pt : ty_mixed, at, "argument");
                     if (pt && pm->type && !value_fits_slot(pt, at, arg))
                         sema_error(&arg->tok, "argument %zu: expected %s, got %s",
                                    i + 1, type_to_string(pt), type_to_string(at));
@@ -2686,6 +2775,7 @@ static const Type *check_expr(Scope *sc, Expr *e) {
                 Expr *arg = e->u.staticcall.args.items[i];
                 const Type *at = check_expr(sc, arg);
                 reject_untracked_reference(arg, at, pt, fn->name);
+                reject_i128_lossy(&arg->tok, pt ? pt : ty_mixed, at, "argument");
                 if (pt && pm->type && !value_fits_slot(pt, at, arg))
                     sema_error(&arg->tok, "argument %zu: expected %s, got %s",
                                i + 1, type_to_string(pt), type_to_string(at));
@@ -2713,6 +2803,7 @@ static const Type *check_expr(Scope *sc, Expr *e) {
                     (arg->kind == EX_VAR || arg->kind == EX_FIELD || arg->kind == EX_INDEX))
                     arg->is_move_source = true;
                 reject_untracked_reference(arg, at, NULL, "Exception::__construct");
+                reject_i128_lossy(&arg->tok, ty_mixed, at, "argument");
             }
             Type *t = type_new(TY_CLASS);
             t->name = intern("Exception");
@@ -2743,6 +2834,7 @@ static const Type *check_expr(Scope *sc, Expr *e) {
                     (arg->kind == EX_VAR || arg->kind == EX_FIELD || arg->kind == EX_INDEX))
                     arg->is_move_source = true;
                 reject_untracked_reference(arg, at, pt, "a constructor");
+                reject_i128_lossy(&arg->tok, pt ? pt : ty_mixed, at, "argument");
                 if (pt && pm->type && !value_fits_slot(pt, at, arg))
                     sema_error(&arg->tok, "argument %zu to %s(): expected %s, got %s",
                                i + 1, c->name, type_to_string(pt), type_to_string(at));
@@ -2996,6 +3088,21 @@ static const Type *check_expr(Scope *sc, Expr *e) {
             sema_error(&tgt->tok,
                        "cannot store mutable alias %s derived from a shared reference",
                        type_to_string(vt));
+        /* i128 has no 64-bit boxing: refuse the lossy stores (see
+         * reject_i128_lossy). A plain `$a[0] = $wide;` lands here with the
+         * element type or NULL; an element slot is an hval, so check the
+         * container's element type explicitly when sema skipped it. */
+        if (tgt->kind == EX_INDEX && vt && vt->kind == TY_I128) {
+            const Type *ot = tgt->u.index.obj->type;
+            const Type *elem = ot && ot->kind == TY_MAP ? ot->val :
+                               ot && (ot->kind == TY_ARRAY || ot->kind == TY_VEC ||
+                                      ot->kind == TY_SET) ? ot->elem : NULL;
+            if (!elem || elem->kind != TY_I128)
+                sema_error(&tgt->tok,
+                           "cannot store i128 in an array element; convert with (int) or strval() first");
+        } else {
+            reject_i128_lossy(&e->tok, tt, vt, "cannot assign");
+        }
         /* compound assignment: a .= b, a += b ... (??= behaves like =) */
         TokKind op = e->u.assign.op.kind;
         if (op != T_ASSIGN && op != T_QQASSIGN) {
@@ -3194,6 +3301,11 @@ static const Type *check_expr(Scope *sc, Expr *e) {
             pm->sym = v;
             v->is_param = true;
             v->owner_fn = fn;
+            /* closures are called with hvals (hfn_t returns hval, arguments
+             * are boxed), so a 128-bit parameter has no representation */
+            if (pm->resolved && pm->resolved->kind == TY_I128)
+                sema_error(&pm->name_tok,
+                           "a closure cannot take an i128 parameter; convert with (int) or strval() first");
             /* PHP by-ref parameters alias the caller's variable: the callee
              * sees writes, the caller sees the callee's writes. Codegen passes
              * &slot (typed pointer); is_param_ref makes reads/writes emit
@@ -3214,6 +3326,14 @@ static const Type *check_expr(Scope *sc, Expr *e) {
             VarSym *outer = scope_find(sc, pm->name);
             if (!outer) {
                 sema_error(&pm->name_tok, "use(): undefined variable $%s", pm->name);
+                continue;
+            }
+            /* a closure environment holds hvals; an i128 would lose its top
+             * half on the way in (and the captured read would see a string) */
+            if (outer->type && outer->type->kind == TY_I128) {
+                sema_error(&pm->name_tok,
+                           "cannot capture i128 variable $%s in a closure; convert with (int) or strval() first",
+                           pm->name);
                 continue;
             }
             if (outer->is_global_alias || outer->is_program_global) {
@@ -3251,6 +3371,9 @@ static const Type *check_expr(Scope *sc, Expr *e) {
         /* closures without an explicit return type infer it from their
          * first `return expr;` — like PHP's ReturnTypeWillChange, simple */
         if (!fn->ret) fn->ret = type_new(TY_MIXED);
+        else if (fn->ret->kind == TY_I128)
+            sema_error(&fn->name_tok,
+                       "a closure cannot return i128; closures return a dynamic value; convert with (int) or strval() first");
         for (size_t i = 0; i < fn->body.len; i++)
             check_stmt(&fs, fn->body.items[i]);
         fn->captures = g_clo_caps[d];
@@ -3467,6 +3590,12 @@ static void check_stmt(Scope *sc, Stmt *s) {
             if (!gv) gv = program_global_find(name);
             if (!gv) gv = program_global_get(name, tok);
             else if (!program_global_find(name)) ptrvec_push(&g_program_globals, gv);
+            /* file-scope `global` storage is an hval slot */
+            if (gv->type && gv->type->kind == TY_I128) {
+                sema_error(&tok, "cannot share i128 variable $%s through global; convert with (int) or strval() first",
+                           name);
+                break;
+            }
             gv->is_mut = true;
             gv->is_auto = true;
             gv->is_program_global = true;   /* storage becomes file-scope */
@@ -3636,6 +3765,7 @@ static void check_stmt(Scope *sc, Stmt *s) {
             }
             /* an hval-typed value (untyped property, mixed call, map entry)
              * converts at runtime — PHP-style dynamic returns are allowed */
+            reject_i128_lossy(&s->tok, rt, vt, "cannot return");
             bool boxed = vt && (vt->kind == TY_MIXED || vt->kind == TY_OPTION ||
                                 vt->kind == TY_RESULT);
             if (sema_type_is_linear(vt) && !sema_type_is_linear(rt))

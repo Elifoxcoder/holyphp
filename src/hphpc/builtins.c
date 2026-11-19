@@ -1,7 +1,7 @@
 /* builtins.c — PHP-compatible standard library function table. */
 #include "builtins.h"
 
-Type *ty_int, *ty_i8, *ty_i16, *ty_i32, *ty_i64,
+Type *ty_int, *ty_i8, *ty_i16, *ty_i32, *ty_i64, *ty_i128,
     *ty_float, *ty_f32, *ty_f64, *ty_bool, *ty_string, *ty_void, *ty_mixed,
     *ty_null;
 
@@ -28,6 +28,7 @@ void builtins_init(void) {
     ty_int = type_new(TY_INT);
     ty_i8 = type_new(TY_I8); ty_i16 = type_new(TY_I16);
     ty_i32 = type_new(TY_I32); ty_i64 = type_new(TY_I64);
+    ty_i128 = type_new(TY_I128);
     ty_float = type_new(TY_FLOAT); ty_f32 = type_new(TY_F32); ty_f64 = type_new(TY_F64);
     ty_bool = type_new(TY_BOOL);
     ty_string = type_new(TY_STRING);
