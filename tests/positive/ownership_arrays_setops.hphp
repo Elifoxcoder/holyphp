@@ -1,0 +1,51 @@
+<?php
+/* ownership_arrays_setops.hphp — set operations return a new array; the
+ * predicates borrow both sides. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$a = [1, 2, 3, 4];
+$b = [3, 4, 5];
+
+$r = array_diff($a, $b);
+check("array_diff keeps only the left side", count($r) == 2 && $r[0] == 1 && $r[1] == 2);
+unsafe { arr_free($r); }
+
+$r = array_intersect($a, $b);
+check("array_intersect keeps the common values", count($r) == 2 && $r[0] == 3 && $r[1] == 4);
+unsafe { arr_free($r); }
+
+check("in_array finds a value", in_array(3, $a));
+check("in_array misses a value", !in_array(9, $a));
+check("array_key_exists on a list", array_key_exists(0, $a));
+check("array_key_exists misses", !array_key_exists(9, $a));
+check("array_sum", array_sum($a) == 10);
+check("array_product", array_product([2, 3, 4]) == 24);
+
+$r = range(1, 4);
+check("range count", count($r) == 4);
+check("range values", $r[0] == 1 && $r[3] == 4);
+unsafe { arr_free($r); }
+
+$rows = [
+    ["id" => 1, "name" => "ann"],
+    ["id" => 2, "name" => "bob"],
+];
+$r = array_column($rows, "name");
+check("array_column values", count($r) == 2 && $r[0] == "ann" && $r[1] == "bob");
+unsafe { arr_free($r); }
+$r = array_column($rows, "name", "id");
+check("array_column keyed by id", $r[2] == "bob");
+unsafe { arr_free($r); }
+
+$r = array_fill_keys(["x", "y"], 0);
+check("array_fill_keys", $r["x"] == 0 && $r["y"] == 0);
+unsafe { arr_free($r); }
+
+check("the inputs survived", count($a) == 4 && count($b) == 3);
+unsafe { arr_free($a); arr_free($b); }
+echo "ownership arrays setops ok\n";

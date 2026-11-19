@@ -27,6 +27,13 @@ behaves differently, what they have to change.
 - `sqlite_status()` now really returns its JSON text (its declaration said
   `int`), and `bt_read()` / `bt_count_range()` return the integer count /
   status they produce instead of being declared `bool`.
+- Builtin ownership audit, arrays: `shuffle()` now mutates the array and
+  returns `true` like PHP (it used to build a new array that the declared
+  `bool` return threw away), and `array_splice()` removes the requested range
+  from the source array instead of returning a copy and leaving the array
+  unchanged. The array read builtins (`end`, `reset`, `max`, `min`,
+  `array_search`, `array_key_*`) are documented as borrowing their array and
+  elements.
 - Builtin ownership audit, strings: `str_pad()` always returns a new string
   (it used to return its argument when no padding was needed), `strval()`,
   `ucfirst()`/`lcfirst()` on an empty string, `wordwrap(..., 0)` and

@@ -1205,20 +1205,39 @@ hval hpbi_array_unshift(hval a, hval v) {
     RETI((int64_t)a.u.a->len);
 }
 hval hpbi_array_splice(hval a, hval off, hval len) {
-    if (a.tag != HV_ARR) return hp_of_arr(hp_arr_new());
-    harr *removed = hp_arr_slice(a.u.a, hp_val_to_int(off), hp_val_to_int(off) + hp_val_to_int(len));
+    if (a.tag != HV_ARR || !a.u.a) return hp_of_arr(hp_arr_new());
+    harr *x = a.u.a;
+    int64_t n = (int64_t)x->len;
+    int64_t start = hp_val_to_int(off);
+    if (start < 0) start += n;
+    if (start < 0) start = 0;
+    if (start > n) start = n;
+    int64_t cnt = len.tag == HV_NULL ? n - start : hp_val_to_int(len);
+    if (cnt < 0) cnt = n - start + cnt;
+    if (cnt < 0) cnt = 0;
+    if (cnt > n - start) cnt = n - start;
+    harr *removed = hp_arr_slice(x, start, start + cnt);
+    if (cnt > 0) {
+        memmove(x->vals + start, x->vals + start + cnt,
+                (size_t)(n - start - cnt) * sizeof(hval));
+        if (x->is_map && x->keys)
+            memmove(x->keys + start, x->keys + start + cnt,
+                    (size_t)(n - start - cnt) * sizeof(hval));
+        x->len = (size_t)(n - cnt);
+    }
     return hp_of_arr(removed);
 }
 hval hpbi_shuffle(hval a) {
-    if (a.tag != HV_ARR) return a;
-    harr *r = hp_arr_clone(a.u.a);
+    /* PHP: shuffle mutates the array in place and returns true. */
+    if (a.tag != HV_ARR || !a.u.a) RETB(false);
+    harr *r = a.u.a;
     for (size_t i = r->len; i > 1; i--) {
         size_t j = (size_t)(rand() % (int64_t)i);
         hval t = r->vals[i - 1];
         r->vals[i - 1] = r->vals[j];
         r->vals[j] = t;
     }
-    return hp_of_arr(r);
+    RETB(true);
 }
 
 /* ---------- in-place sorts (sort/rsort/ksort/krsort/asort) ---------- */

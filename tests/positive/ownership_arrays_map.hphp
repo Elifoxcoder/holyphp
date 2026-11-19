@@ -1,0 +1,36 @@
+<?php
+/* ownership_arrays_map.hphp — callbacks borrow the elements; array_map,
+ * array_filter and array_reduce return a new array/value. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$nums = [1, 2, 3];
+$double = function($v) { return $v * 2; };
+$even = function($v) { return $v % 2 == 0; };
+$sum = function($acc, $v) { return $acc + $v; };
+
+$r = array_map($double, $nums);
+check("array_map count", count($r) == 3);
+check("array_map values", $r[0] == 2 && $r[1] == 4 && $r[2] == 6);
+unsafe { arr_free($r); }
+check("array_map left the input intact", $nums[0] == 1 && $nums[2] == 3);
+
+$r = array_filter($nums, $even);
+check("array_filter keeps the matching values", count($r) == 1 && $r[0] == 2);
+unsafe { arr_free($r); }
+
+check("array_reduce sums", array_reduce($nums, $sum, 0) == 6);
+check("array_reduce starts from the initial value", array_reduce($nums, $sum, 10) == 16);
+
+$copy = [1, 2, 3];
+$noData = null;
+array_walk($copy, $double, $noData);
+check("array_walk returned without changing the array length", count($copy) == 3);
+unsafe { arr_free($copy); }
+
+unsafe { arr_free($nums); }
+echo "ownership arrays map ok\n";
