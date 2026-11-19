@@ -434,3 +434,31 @@ commit series: `bt_read`/`bt_count_range` were declared `bool` while returning
 integers (UBSan: load of value 2 for `_Bool`), and `sqlite_status` was declared
 `int` while returning JSON text.
 
+---
+
+## 7. Builtin ownership audit (2026-11-19)
+
+`docs/guide/builtin-ownership.md` lists all 547 builtins with the ownership
+contract of the result and the arguments. 65 new `ownership_*` positive tests
+cover nine groups (strings, arrays, math, JSON, file/io, regex, date, net,
+misc); each group has a 20000-round loop whose resident set is checked with
+`tests/rss.ps1` (Windows) or `tests/rss.sh` (Linux). All nine loops stay flat.
+
+The audit fixed, among others: `str_pad()` returning its argument, `strval()`
+and empty `ucfirst()`/`lcfirst()` aliasing their input, `shuffle()` returning a
+new array while declared `bool`, `array_splice()` not splicing, `srand()` being
+overwritten by the first random draw, `lcg_value()` having no implementation,
+`atan2()` being declared one-argument, `basename($p, $suffix)` leaking the
+untrimmed string, `exec()` having no implementation, `file_get_contents()`
+leaking its read buffer, the pretty JSON printer leaking its compact document,
+the regex engine never freeing its pattern tree, and `stream_peer()` leaking
+one string per call. The io_uring module also compiles on Windows again (its
+stats printer referenced Linux-only counters) and the thread module is linked
+for `atomic_*`/`chan_*`/`mutex_*`/`barrier_*`.
+
+Sanitizer result on the final tree: `tests/run.sh --asan` reports 119
+LeakSanitizer logs (the known F1 compiler and F2 language leaks), the known
+`ide_workbench` F4 SEGV/UBSan report, and no new memory error (no
+use-after-free, no double free, no bounds error) in any ownership test.
+
+
