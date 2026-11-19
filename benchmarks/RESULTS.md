@@ -12,7 +12,7 @@ built by `scripts/build.sh`. Machine: WSL2 Ubuntu 24.04, gcc 13.3.0, 32 vCPU.
 Host frequency and other worktrees make single runs vary by up to 2x, so
 changes are accepted or rejected with **paired A/B runs**: two bench binaries
 (or two environment settings) alternate in one loop
-([`sqlite/paired.sh`](sqlite/paired.sh)) and the median of 21-25 rounds per
+([`sqlite/paired.sh`](sqlite/paired.sh)) and the median of 15-25 rounds per
 side is compared. Absolute ns/op below are one such median; 5-10% between
 tables is not a change.
 
