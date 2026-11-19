@@ -24,6 +24,7 @@ struct Codegen {
     Program *prog;
     int depth;
     int tmp_id;
+    int literal_id;
     int label_id;
     AstFn *cur_fn;
     bool in_closure;      /* emitting a closure impl: returns must be hval */
@@ -48,6 +49,7 @@ struct Codegen {
 static void emit_stmt(Codegen *g, Stmt *s);
 static void emit_expr(Codegen *g, Expr *e, Buf *dst);
 static bool expr_is_borrowed_heap(Expr *e);
+static bool expr_is_fresh_owned(Expr *e);
 static const char *managed_tag_for_type(const Type *t);
 static bool type_can_own_heap(const Type *t);
 static void emit_register_owner(Codegen *g, const char *slot, const Type *t,
@@ -586,18 +588,19 @@ static void emit_c_string(const char *s, size_t n, Buf *dst) {
     buf_putc(dst, '"');
 }
 
-static void emit_str_lit(const char *s, Buf *dst) {
+static void emit_str_lit(Codegen *g, const char *s, Buf *dst) {
     size_t n = strlen(s);
-    buf_puts(dst, "hp_str_lit(");
+    int id = g->literal_id++;
+    buf_printf(dst, "({ static _Atomic(hstr*) _hp_lit_%d; hp_str_lit_site(&_hp_lit_%d, ", id, id);
     emit_c_string(s, n, dst);
-    buf_puts(dst, ")");
+    buf_puts(dst, "); })");
 }
 
 /* ---------------- expressions ---------------- */
 static void emit_tpl(Codegen *g, Expr *e, Buf *dst) {
     size_t nexpr = e->u.tpl.exprs.len;
     if (nexpr == 0) {
-        emit_str_lit(e->u.tpl.strs.len ? e->u.tpl.strs.items[0] : "", dst);
+        emit_str_lit(g, e->u.tpl.strs.len ? e->u.tpl.strs.items[0] : "", dst);
         return;
     }
     /* count total parts: non-empty literal chunks + one per interpolation */
@@ -606,6 +609,10 @@ static void emit_tpl(Codegen *g, Expr *e, Buf *dst) {
         if (e->u.tpl.strs.items[i] && *(char *)e->u.tpl.strs.items[i]) nparts++;
     Buf parts;
     buf_init(&parts);
+    Buf setup, drop;
+    buf_init(&setup);
+    buf_init(&drop);
+    bool owns_temp = false;
     buf_printf(&parts, "hp_str_concat_n(%zu, (const hval[]){", nparts);
     size_t si = 0;
     bool first_part = true;
@@ -615,22 +622,44 @@ static void emit_tpl(Codegen *g, Expr *e, Buf *dst) {
         if (s && *s) {
             CSEP();
             buf_puts(&parts, "hp_of_str(");
-            emit_str_lit(s, &parts);
+            emit_str_lit(g, s, &parts);
             buf_puts(&parts, ")");
         }
         CSEP();
-        to_hval(g, e->u.tpl.exprs.items[i], &parts);
+        Expr *value = e->u.tpl.exprs.items[i];
+        if (expr_is_fresh_owned(value)) {
+            int id = g->tmp_id++;
+            Buf emitted;
+            buf_init(&emitted);
+            to_hval(g, value, &emitted);
+            char *code = buf_take(&emitted);
+            buf_printf(&setup, "hval _hp_tpl_%d = (%s); ", id, code);
+            buf_printf(&drop, "hp_val_rc_dec(_hp_tpl_%d); ", id);
+            buf_printf(&parts, "_hp_tpl_%d", id);
+            free(code);
+            owns_temp = true;
+        } else {
+            to_hval(g, value, &parts);
+        }
     }
     const char *tail = si < e->u.tpl.strs.len ? e->u.tpl.strs.items[si] : NULL;
     if (tail && *tail) {
         CSEP();
         buf_puts(&parts, "hp_of_str(");
-        emit_str_lit(tail, &parts);
+        emit_str_lit(g, tail, &parts);
         buf_puts(&parts, ")");
     }
     buf_puts(&parts, "})");
-    buf_write(dst, parts.data ? parts.data : "", parts.len);
+    if (owns_temp) {
+        int id = g->tmp_id++;
+        buf_printf(dst, "({ %s hstr *_hp_tpl_result_%d = (%s); %s _hp_tpl_result_%d; })",
+                   setup.data, id, parts.data, drop.data, id);
+    } else {
+        buf_write(dst, parts.data ? parts.data : "", parts.len);
+    }
     free(parts.data);
+    free(setup.data);
+    free(drop.data);
     #undef CSEP
 }
 
@@ -714,6 +743,28 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
     emit_expr(g, e->u.bin.r, &r);
     const char *ls = buf_take(&l);
     const char *rs = buf_take(&r);
+    /* Operators only borrow their operands. A fresh (+1) operand such as a
+     * user call result or a concatenation would otherwise never be released,
+     * so bind it to a temporary and drop it once the result is computed.
+     * && and || are skipped: binding would evaluate both sides eagerly. */
+    Buf tmp_pre, tmp_post, tmp_body;
+    Buf *tmp_outer = NULL;
+    if (op != T_ANDAND && op != T_OROR &&
+        (expr_is_fresh_owned(e->u.bin.l) || expr_is_fresh_owned(e->u.bin.r))) {
+        buf_init(&tmp_pre); buf_init(&tmp_post); buf_init(&tmp_body);
+        Expr *side[2] = { e->u.bin.l, e->u.bin.r };
+        const char **code[2] = { &ls, &rs };
+        for (int k = 0; k < 2; k++) {
+            if (!expr_is_fresh_owned(side[k])) continue;
+            int id = g->tmp_id++;
+            buf_printf(&tmp_pre, "__auto_type _hp_opnd_%d = (%s); ", id, *code[k]);
+            buf_printf(&tmp_post, "hp_val_rc_dec(hv(_hp_opnd_%d)); ", id);
+            free((void *)*code[k]);
+            *code[k] = fmt("_hp_opnd_%d", id);
+        }
+        tmp_outer = dst;
+        dst = &tmp_body;
+    }
     /* two int literals + a native-safe op => emit the folded C literal */
     if (numeric && !lf && !rf && e->u.bin.l->kind == EX_INT && e->u.bin.r->kind == EX_INT) {
         long long folded;
@@ -895,6 +946,12 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
     }
     free((void *)ls);
     free((void *)rs);
+    if (tmp_outer) {
+        int rid = g->tmp_id++;
+        buf_printf(tmp_outer, "({ %s__auto_type _hp_opres_%d = (%s); %s_hp_opres_%d; })",
+                   buf_take(&tmp_pre), rid, buf_take(&tmp_body), buf_take(&tmp_post), rid);
+        free(tmp_pre.data); free(tmp_body.data); free(tmp_post.data);
+    }
 }
 
 static void emit_builtin_call_body(Codegen *g, const char *name, PtrVec args,
@@ -1213,30 +1270,59 @@ static void emit_builtin_call_body(Codegen *g, const char *name, PtrVec args,
     /* color-aware classical IO builtins use their own C names; the
      * generic hpbi_<name> heuristic below would otherwise call
      * hpbi_print(hpbi_input), which does not exist. */
+    Buf setup, call, drop;
+    buf_init(&setup);
+    buf_init(&call);
+    buf_init(&drop);
+    bool owns_arg = false;
     if (strcmp(name, "print") == 0 || strcmp(name, "println") == 0 ||
         strcmp(name, "input") == 0) {
         const char *cname3 = emit_classical_io_builtin_name(g, name, args);
-        buf_printf(dst, "%s(", cname3);
+        buf_printf(&call, "%s(", cname3);
     } else {
         const char *cname2 = name;   /* emitted C name (aliases below) */
         if (strcmp(name, "date") == 0) cname2 = "date2";
         else if (strcmp(name, "json_encode") == 0) cname2 = "json_encode2";
         else if (strcmp(name, "json_decode") == 0) cname2 = "json_decode2";
         else if (strcmp(name, "json_encode_pretty") == 0) cname2 = "json_encode2";
-        buf_printf(dst, "hpbi_%s(", cname2);
+        buf_printf(&call, "hpbi_%s(", cname2);
     }
     for (size_t i = 0; i < args.len; i++) {
-        if (i) buf_puts(dst, ", ");
-        to_hval(g, args.items[i], dst);
+        if (i) buf_puts(&call, ", ");
+        Expr *arg = args.items[i];
+        if (expr_is_fresh_owned(arg)) {
+            int id = g->tmp_id++;
+            Buf emitted;
+            buf_init(&emitted);
+            to_hval(g, arg, &emitted);
+            char *code = buf_take(&emitted);
+            buf_printf(&setup, "hval _hp_bi_arg_%d = (%s); ", id, code);
+            buf_printf(&drop, "hp_val_rc_dec(_hp_bi_arg_%d); ", id);
+            buf_printf(&call, "_hp_bi_arg_%d", id);
+            free(code);
+            owns_arg = true;
+        } else {
+            to_hval(g, arg, &call);
+        }
     }
     {
         /* print/println/input take an optional trailing colour: a 1-arg call
          * still has to reach the C function as (text, hp_null). */
         int mn = builtin_min_args(name), mx = builtin_max_args(name);
         if (mx >= 0 && (int)args.len < mx && (int)args.len >= mn)
-            for (int i = (int)args.len; i < mx; i++) buf_puts(dst, ", hp_null");
+            for (int i = (int)args.len; i < mx; i++) buf_puts(&call, ", hp_null");
     }
-    buf_puts(dst, ")");
+    buf_puts(&call, ")");
+    if (owns_arg) {
+        int id = g->tmp_id++;
+        buf_printf(dst, "({ %s hval _hp_bi_result_%d = (%s); %s _hp_bi_result_%d; })",
+                   setup.data, id, call.data, drop.data, id);
+    } else {
+        buf_write(dst, call.data ? call.data : "", call.len);
+    }
+    free(setup.data);
+    free(call.data);
+    free(drop.data);
     project_hval(dst, ret);
 }
 
@@ -1249,6 +1335,18 @@ static void emit_cond(Codegen *g, Expr *cond, Buf *dst) {
     bool boxed = !ct || ct->kind == TY_MIXED || ct->kind == TY_OPTION ||
                  ct->kind == TY_RESULT || ct->kind == TY_NULL ||
                  ct->kind == TY_NULLABLE || ct->kind == TY_UNION;
+    if (expr_is_fresh_owned(cond)) {
+        int id = g->tmp_id++;
+        Buf value;
+        buf_init(&value);
+        emit_expr(g, cond, &value);
+        char *value_code = buf_take(&value);
+        buf_printf(dst, "({ __auto_type _hp_cond_%d = (%s); ", id, value_code);
+        free(value_code);
+        buf_printf(dst, "bool _hp_truth_%d = hp_val_to_bool(hv(_hp_cond_%d)); ", id, id);
+        buf_printf(dst, "hp_val_rc_dec(hv(_hp_cond_%d)); _hp_truth_%d; })", id, id);
+        return;
+    }
     if (boxed) {
         Buf c;
         buf_init(&c);
@@ -1676,11 +1774,19 @@ static void emit_array_lit(Codegen *g, Expr *e, Buf *dst) {
 }
 
 static void emit_match_expr(Codegen *g, Expr *e, Buf *dst) {
+    bool fresh_subject = expr_is_fresh_owned(e->u.matchexpr.subject);
+    int subject_id = fresh_subject ? g->tmp_id++ : -1;
     Buf sub;
     buf_init(&sub);
     emit_expr(g, e->u.matchexpr.subject, &sub);
-    const char *subj = buf_take(&sub);
-    buf_puts(dst, "(");
+    char *subject_code = buf_take(&sub);
+    const char *subj = fresh_subject ? fmt("_hp_match_subject_%d", subject_id) : subject_code;
+    Buf match;
+    buf_init(&match);
+    Buf *out = fresh_subject ? &match : dst;
+    if (fresh_subject)
+        buf_printf(dst, "({ __auto_type _hp_match_subject_%d = (%s); ", subject_id, subject_code);
+    buf_puts(out, "(");
     for (size_t i = 0; i < e->u.matchexpr.cases.len; i++) {
         MatchCase *mc = e->u.matchexpr.cases.items[i];
 
@@ -1727,22 +1833,29 @@ static void emit_match_expr(Codegen *g, Expr *e, Buf *dst) {
         buf_init(&body);
         emit_expr(g, mc->body, &body);
         char *cv = buf_take(&cond);
-        buf_puts(dst, cv);
+        buf_puts(out, cv);
         free(cv);
-        buf_puts(dst, " ? (");
+        buf_puts(out, " ? (");
         char *bv = buf_take(&body);
-        buf_puts(dst, bv);
+        buf_puts(out, bv);
         free(bv);
-        buf_puts(dst, ") : ");
+        buf_puts(out, ") : ");
         free(pats.data);
     }
     if (e->u.matchexpr.dflt) {
-        emit_expr(g, e->u.matchexpr.dflt, dst);
+        emit_expr(g, e->u.matchexpr.dflt, out);
     } else {
-        buf_puts(dst, "hp_match_no_default()");
+        buf_puts(out, "hp_match_no_default()");
     }
-    buf_puts(dst, ")");
-    free((void *)subj);
+    buf_puts(out, ")");
+    if (fresh_subject) {
+        int result_id = g->tmp_id++;
+        buf_printf(dst, "__auto_type _hp_match_result_%d = (%s); hp_val_rc_dec(hv(_hp_match_subject_%d)); _hp_match_result_%d; })",
+                   result_id, match.data, subject_id, result_id);
+        free(match.data);
+    }
+    if (fresh_subject) free((void *)subj);
+    free(subject_code);
 }
 
 /* ---------------- closures ---------------- */
@@ -2056,6 +2169,54 @@ static bool expr_is_borrowed_heap(Expr *e) {
     if (!e) return false;
     return e->kind == EX_VAR || e->kind == EX_FIELD || e->kind == EX_INDEX ||
            e->kind == EX_ASSIGN;
+}
+
+/* Does this expression certainly yield a fresh owned (+1) heap value that a
+ * borrowing consumer must release? Deliberately narrow: only producers whose
+ * result is known to be a new owner. Builtin calls are excluded until their
+ * ownership metadata exists (some may alias an argument), and so are callee
+ * values whose type is not a known closure (a string callable may name a
+ * builtin). Reference-typed results are borrows and never qualify. */
+static bool expr_is_fresh_owned(Expr *e) {
+    if (!e || !e->type) return false;
+    const Type *t = e->type;
+    if (t->kind == TY_REF || t->kind == TY_OWN) return false;
+    if (!managed_tag_for_type(t) && !type_is_hval_slot(t)) return false;
+    switch (e->kind) {
+    case EX_TPL:
+        return e->u.tpl.exprs.len > 0;
+    case EX_BIN:
+        return !e->is_slice && !e->is_nullcoal && e->u.bin.op.kind == T_DOT;
+    case EX_NEW:
+        return true;
+    case EX_CALL:
+        if (e->borrow_origin) return false;
+        if (e->builtin) {
+            const char *name = e->u.call.fn && e->u.call.fn->kind == EX_VAR
+                ? e->u.call.fn->u.var.name : NULL;
+            /* These PHP-style helpers can return the input handle itself.
+             * Builtins otherwise follow the default contract: borrowed
+             * inputs, owned heap result. */
+            if (name && (!strcmp(name, "strval") || !strcmp(name, "str") ||
+                         !strcmp(name, "current") || !strcmp(name, "pos") ||
+                         !strcmp(name, "reset") || !strcmp(name, "end") ||
+                         !strcmp(name, "next") || !strcmp(name, "prev")))
+                return false;
+            return true;
+        }
+        if (e->u.call.target) return true;
+        return e->u.call.fn && e->u.call.fn->type && e->u.call.fn->type->kind == TY_FN;
+    case EX_METHOD:
+        if (e->builtin) {
+            const char *name = e->u.method.name;
+            return !e->borrow_origin && !e->has_borrow_receiver && name &&
+                   strcmp(name, "current") && strcmp(name, "key") &&
+                   strcmp(name, "reset") && strcmp(name, "end");
+        }
+        return !e->borrow_origin && !e->has_borrow_receiver && e->u.method.target != NULL;
+    default:
+        return false;
+    }
 }
 
 static const char *managed_tag_for_type(const Type *t) {
@@ -2648,7 +2809,7 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
         free(s);
         break;
     }
-    case EX_STR: emit_str_lit(e->u.str.s, dst); break;
+    case EX_STR: emit_str_lit(g, e->u.str.s, dst); break;
     case EX_BOOL: buf_puts(dst, e->u.boolean.b ? "true" : "false"); break;
     case EX_NULL: buf_puts(dst, "hp_null"); break;
     case EX_TPL: emit_tpl(g, e, dst); break;

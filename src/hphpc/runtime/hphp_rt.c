@@ -45,7 +45,7 @@ void *hp_alloc(size_t n) {
  * callbacks expose only strong edges. */
 struct hp_gc_node {
     void *ptr;
-    atomic_uint *rc;
+    uint32_t *rc;
     hp_gc_node **slot;
     void (*trace)(void *);
     void (*clear)(void *);
@@ -68,6 +68,11 @@ static enum { HP_GC_IDLE, HP_GC_GATHER, HP_GC_SUBTRACT, HP_GC_MARK } hp_gc_mode;
 static bool hp_gc_oom;
 static pthread_mutex_t hp_gc_mu;
 static pthread_once_t hp_gc_mu_once = PTHREAD_ONCE_INIT;
+static bool hp_threads_started;
+
+void hp_runtime_thread_starting(void) {
+    hp_threads_started = true;
+}
 
 static void hp_gc_mu_init(void) {
     pthread_mutexattr_t attr;
@@ -78,26 +83,43 @@ static void hp_gc_mu_init(void) {
 }
 
 static void hp_gc_lock(void) {
+    if (!hp_threads_started) return;
     pthread_once(&hp_gc_mu_once, hp_gc_mu_init);
     pthread_mutex_lock(&hp_gc_mu);
 }
 
-static void hp_gc_unlock(void) { pthread_mutex_unlock(&hp_gc_mu); }
+static void hp_gc_unlock(void) {
+    if (hp_threads_started) pthread_mutex_unlock(&hp_gc_mu);
+}
 
-static uint32_t hp_rc_retain(atomic_uint *rc) {
-    uint32_t old = atomic_load_explicit(rc, memory_order_relaxed);
+static uint32_t hp_rc_retain(uint32_t *rc) {
+    if (!hp_threads_started) {
+        uint32_t old = *rc;
+        if (old != UINT32_MAX) *rc = old + 1;
+        return old;
+    }
+    uint32_t old = __atomic_load_n(rc, __ATOMIC_RELAXED);
     while (old != UINT32_MAX &&
-           !atomic_compare_exchange_weak_explicit(rc, &old, old + 1,
-               memory_order_relaxed, memory_order_relaxed)) { }
+           !__atomic_compare_exchange_n(rc, &old, old + 1, true,
+               __ATOMIC_RELAXED, __ATOMIC_RELAXED)) { }
     return old;
 }
 
-static uint32_t hp_rc_release(atomic_uint *rc) {
-    uint32_t old = atomic_load_explicit(rc, memory_order_relaxed);
+static uint32_t hp_rc_release(uint32_t *rc) {
+    if (!hp_threads_started) {
+        uint32_t old = *rc;
+        if (old != 0 && old != UINT32_MAX) *rc = old - 1;
+        return old;
+    }
+    uint32_t old = __atomic_load_n(rc, __ATOMIC_RELAXED);
     while (old != 0 && old != UINT32_MAX &&
-           !atomic_compare_exchange_weak_explicit(rc, &old, old - 1,
-               memory_order_acq_rel, memory_order_relaxed)) { }
+           !__atomic_compare_exchange_n(rc, &old, old - 1, true,
+               __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) { }
     return old;
+}
+
+static uint32_t hp_rc_count(uint32_t *rc) {
+    return hp_threads_started ? __atomic_load_n(rc, __ATOMIC_RELAXED) : *rc;
 }
 
 static bool hp_gc_work_push(hp_gc_node *node) {
@@ -125,7 +147,7 @@ static void hp_gc_unregister(hp_gc_node **slot) {
     hp_gc_unlock();
 }
 
-void hp_gc_register(void *ptr, atomic_uint *rc, hp_gc_node **slot,
+void hp_gc_register(void *ptr, uint32_t *rc, hp_gc_node **slot,
                     void (*trace)(void *), void (*clear)(void *),
                     void (*destroy)(void *)) {
     hp_gc_lock();
@@ -291,7 +313,7 @@ void hp_gc_collect_now(void *ptr) {
 }
 
 /* Generic strong object handles use the common generated-object header. */
-typedef struct { atomic_uint rc; } hp_rc_header;
+typedef struct { uint32_t rc; } hp_rc_header;
 
 void hp_rc_inc(void *p) {
     if (!p) return;
@@ -485,7 +507,7 @@ hstr *hp_str_concat2(hstr *a, hstr *b) {
     /* Builder optimization: if the left string is uniquely owned, has
      * spare capacity and enough room for the right side, append in place.
      * This makes "$s .= "x";" loops amortized O(n) like PHP/rope builds. */
-    if (a->rc == 1 && a->cap > a->len && len < a->cap) {
+    if (hp_rc_count(&a->rc) == 1 && a->cap > a->len && len < a->cap) {
         memcpy(a->data + a->len, b->data, b->len);
         a->len = len;
         a->data[len] = 0;
@@ -494,7 +516,7 @@ hstr *hp_str_concat2(hstr *a, hstr *b) {
     }
     /* grow geometrically so repeated .= reuses the in-place path */
     size_t cap = len + 1;
-    if (a->rc == 1) {
+    if (hp_rc_count(&a->rc) == 1) {
         cap = len * 2 + 16;
     }
     hstr *s = hp_alloc(sizeof(hstr) + cap);
@@ -1242,7 +1264,7 @@ hval hp_arr_take(harr *a, hval idx) {
         if (idx.u.i < 0 || (uint64_t)idx.u.i >= (uint64_t)a->len)
             hp_throw_str("Array index out of bounds");
     }
-    if (a->rc != 1) {
+    if (hp_rc_count(&a->rc) != 1) {
         hp_throw(hp_of_str(hp_str_lit("cannot move an element from a shared collection")));
         return hp_null;
     }
@@ -1593,7 +1615,7 @@ void hp_arr_free(harr *a) {
  * routes through hp_arr_cow first. */
 harr *hp_arr_cow(harr *a) {
     if (!a) return hp_arr_new();
-    if (a->rc > 1) {
+    if (hp_rc_count(&a->rc) > 1) {
         harr *r = hp_arr_clone(a);
         r->rc = 1;
         hp_val_rc_dec(hp_of_arr(a));
@@ -1796,23 +1818,28 @@ HP_THREAD_QUAL hp_try_frame *hp_cur_try = NULL;
 HP_THREAD_QUAL hval hp_exception = { HV_NULL, { 0 } };
 
 typedef struct hp_cleanup_node {
-    struct hp_cleanup_node *prev;
     void *slot;
     HKind kind;
     unsigned mode; /* 0=hval, 1=pointer, 2=by-reference box */
 } hp_cleanup_node;
 static HP_THREAD_QUAL hp_cleanup_node *hp_cleanups;
+static HP_THREAD_QUAL size_t hp_cleanup_len;
+static HP_THREAD_QUAL size_t hp_cleanup_cap;
 
-void *hp_cleanup_mark(void) { return hp_cleanups; }
+void *hp_cleanup_mark(void) { return (void *)(uintptr_t)hp_cleanup_len; }
 
 static void hp_cleanup_register(void *slot, HKind kind, unsigned mode) {
-    hp_cleanup_node *n = (hp_cleanup_node *)malloc(sizeof(*n));
-    if (!n) { fprintf(stderr, "Fatal error: out of memory\n"); exit(255); }
-    n->prev = hp_cleanups;
+    if (hp_cleanup_len == hp_cleanup_cap) {
+        size_t cap = hp_cleanup_cap ? hp_cleanup_cap * 2 : 128;
+        hp_cleanup_node *nodes = (hp_cleanup_node *)realloc(hp_cleanups, cap * sizeof(*nodes));
+        if (!nodes) { fprintf(stderr, "Fatal error: out of memory\n"); exit(255); }
+        hp_cleanups = nodes;
+        hp_cleanup_cap = cap;
+    }
+    hp_cleanup_node *n = &hp_cleanups[hp_cleanup_len++];
     n->slot = slot;
     n->kind = kind;
     n->mode = mode;
-    hp_cleanups = n;
 }
 
 void hp_cleanup_register_hval(hval *slot) { hp_cleanup_register(slot, HV_NULL, 0); }
@@ -1820,10 +1847,10 @@ void hp_cleanup_register_ptr(void **slot, HKind kind) { hp_cleanup_register(slot
 void hp_cleanup_register_box(hval **slot) { hp_cleanup_register(slot, HV_NULL, 2); }
 
 void hp_cleanup_pop_to(void *mark) {
-    while (hp_cleanups != (hp_cleanup_node *)mark) {
-        hp_cleanup_node *n = hp_cleanups;
-        if (!n) break;
-        hp_cleanups = n->prev;
+    size_t target = (size_t)(uintptr_t)mark;
+    if (target > hp_cleanup_len) target = 0;
+    while (hp_cleanup_len > target) {
+        hp_cleanup_node *n = &hp_cleanups[--hp_cleanup_len];
         if (n->mode == 0) {
             hval *slot = (hval *)n->slot;
             hval value = *slot;
@@ -1847,7 +1874,6 @@ void hp_cleanup_pop_to(void *mark) {
                 hp_val_rc_dec(hvv);
             }
         }
-        free(n);
     }
 }
 
@@ -1987,7 +2013,8 @@ hval hp_closure_call(hclosure *c, int nargs, const hval *args) {
 void hp_val_free(hval v) { hp_val_rc_dec(v); }
 
 void hp_val_rc_inc(hval v) {
-    hp_gc_lock();
+    bool gc_value = v.tag == HV_ARR || v.tag == HV_CLO || v.tag == HV_OBJ;
+    if (gc_value) hp_gc_lock();
     switch (v.tag) {
     case HV_STR: if (v.u.s) hp_rc_retain(&v.u.s->rc); break;
     case HV_ARR: if (v.u.a) hp_rc_retain(&v.u.a->rc); break;
@@ -1995,11 +2022,12 @@ void hp_val_rc_inc(hval v) {
     case HV_OBJ: hp_rc_inc(v.u.p); break;
     default: break;
     }
-    hp_gc_unlock();
+    if (gc_value) hp_gc_unlock();
 }
 
 void hp_val_rc_dec(hval v) {
-    hp_gc_lock();
+    bool gc_value = v.tag == HV_ARR || v.tag == HV_CLO || v.tag == HV_OBJ;
+    if (gc_value) hp_gc_lock();
     switch (v.tag) {
     case HV_STR:
         if (v.u.s && hp_rc_release(&v.u.s->rc) == 1) hp_str_free(v.u.s);
@@ -2023,7 +2051,7 @@ void hp_val_rc_dec(hval v) {
     case HV_OBJ: hp_rc_dec(v.u.p); break;
     default: break;
     }
-    hp_gc_unlock();
+    if (gc_value) hp_gc_unlock();
 }
 
 static void hp_weak_unlink(hp_weak_ref *weak) {

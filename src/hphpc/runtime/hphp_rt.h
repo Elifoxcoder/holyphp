@@ -55,11 +55,20 @@ struct hstr {
     size_t len;         /* byte length (PHP-style byte strings) */
     size_t cap;         /* allocated bytes incl. NUL; >= len+1, 0 for literals */
     atomic_uint hash;   /* 0 = not computed; shared immutable strings may hash concurrently */
-    atomic_uint rc;
+    uint32_t rc;
     char data[];        /* NUL-terminated for C interop */
 };
 
 hstr *hp_str_lit(const char *cstr);
+static inline hstr *hp_str_lit_site(_Atomic(hstr *) *slot, const char *cstr) {
+    hstr *value = atomic_load_explicit(slot, memory_order_acquire);
+    if (value) return value;
+    hstr *created = hp_str_lit(cstr);
+    hstr *expected = NULL;
+    if (atomic_compare_exchange_strong_explicit(slot, &expected, created,
+            memory_order_release, memory_order_acquire)) return created;
+    return expected;
+}
 hstr *hp_str_new(const char *bytes, size_t len);
 hstr *hp_str_copy(hstr *s);
 void hp_str_free(hstr *s);
@@ -150,7 +159,7 @@ HKind hp_tag(hval v);
 /* ---------- arrays / maps (COW) ---------- */
 struct harr {
     size_t len, cap;
-    atomic_uint rc;
+    uint32_t rc;
     bool is_map;
     int64_t next_index;
     hval *vals;
@@ -317,7 +326,7 @@ hval hp_try_run(hp_try_fn body_fn, hp_try_fn catch_fn, void *env);
 typedef hval (*hfn_t)(void);
 struct hclosure {
     hfn_t fn;
-    atomic_uint rc;
+    uint32_t rc;
     size_t envsz;
     void (*drop_env)(void *);
     void (*trace_env)(void *);
@@ -335,16 +344,17 @@ hval hp_call_value(hval fn, int nargs, const hval *args);
 /* ---------- smart pointer support ---------- */
 void hp_rc_inc(void *p);
 void hp_rc_dec(void *p);
-void hp_gc_register(void *ptr, atomic_uint *rc, hp_gc_node **slot,
+void hp_gc_register(void *ptr, uint32_t *rc, hp_gc_node **slot,
                     void (*trace)(void *), void (*clear)(void *),
                     void (*destroy)(void *));
 void hp_gc_visit(hval value);
 void hp_gc_collect_now(void *ptr);
+void hp_runtime_thread_starting(void);
 
 /* ---------- objects ---------- */
 typedef void (*hp_drop_fn)(void *);
 struct hobj {
-    atomic_uint rc;
+    uint32_t rc;
     hp_drop_fn drop; /* invoked exactly once when the strong count reaches 0 */
     void (*trace)(void *);
     hp_gc_node *gc;

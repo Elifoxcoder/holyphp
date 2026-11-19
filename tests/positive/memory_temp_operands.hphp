@@ -1,0 +1,29 @@
+// Fresh values used only as operands (comparisons, concatenation,
+// arithmetic) must be released after the operation. Under
+// `tests/run.sh --asan` LeakSanitizer fails this test if one leaks.
+class TempBox {
+    pub string $text = "";
+    public function label(): string { return "box " . $this->text; }
+}
+
+function make_text(int $i): string { return "text " . $i; }
+function make_list(int $i): array { return [$i, $i + 1]; }
+
+$hits = 0;
+for ($i = 0; $i < 20000; $i++) {
+    if (make_text($i) == "text " . $i) { $hits++; }
+    if (strlen(make_text($i)) > 0) { $hits++; }
+    if (strlen(make_text($i)) != strlen("text " . $i)) { throw "borrowed builtin arg"; }
+    if ("x" . make_text($i) != "x" . make_text($i)) { throw "concat mismatch"; }
+    $box = new TempBox();
+    $box->text = "t" . $i;
+    if ($box->label() . "!" == "") { throw "empty label"; }
+    if ("prefix {$i}" == "never") { throw "template compare"; }
+    if (count(make_list($i)) != 2) { throw "list size"; }
+    if (implode(",", make_list($i)) != $i . "," . ($i + 1)) { throw "implode temp"; }
+    if (str_repeat("x", 2) != "xx") { throw "repeat temp"; }
+    if (sprintf("%d", $i) != "" . $i) { throw "sprintf temp"; }
+    if (match (make_text($i)) { "never" => 0, _ => 1 } != 1) { throw "match subject temp"; }
+}
+if ($hits != 40000) { throw "comparison lost hits"; }
+echo "memory temp operands ok";

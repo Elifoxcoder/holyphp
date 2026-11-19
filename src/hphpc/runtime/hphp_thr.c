@@ -173,6 +173,7 @@ hval hpbi_thr_spawn(hval clo, hval args) {
     rec->clo = clo.u.c;
     int64_t id = rec->id;
     boot->self_id = id;
+    hp_runtime_thread_starting();
     if (pthread_create(&rec->pt, NULL, thr_trampoline, boot) != 0) {
         g_thr_len--;
         pthread_mutex_unlock(&g_thr_mu);
@@ -799,6 +800,7 @@ hval hpbi_thr_parallel_map(hval clo, hval items, hval workersv) {
         j->ch = ch;
         j->idx = i;
         if (i < workers) {
+            hp_runtime_thread_starting();
             if (pthread_create(&pts[launched], NULL, pmap_worker, j) == 0)
                 launched++;
             else { hp_val_rc_dec(j->item); free(j); continue; }
