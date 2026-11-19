@@ -27,6 +27,16 @@ behaves differently, what they have to change.
 - `sqlite_status()` now really returns its JSON text (its declaration said
   `int`), and `bt_read()` / `bt_count_range()` return the integer count /
   status they produce instead of being declared `bool`.
+- Every builtin that hands out a raw pointer, an opaque handle it later frees,
+  or skips a bounds/type/initialisation check now carries the `unsafe` flag and
+  says so on its documentation page: `str_free`, `arr_free`, `object_free`,
+  `iarr_release`, `iarr_new_uninit`, `sb_discard`, `scope_end`,
+  `bt_multi_payloads`, `bt_multi_release`, `bt_page_release`,
+  `bt_payload_pin` and `bt_tail` joined the raw-memory group (42 flagged
+  builtins in total). Safe code that calls one of them must wrap it in
+  `unsafe { }`; the challenge benchmark already did so for the B-tree ones.
+  `scripts/check-repo.sh` now fails when a `*_ptr`/`*_fast` builtin is not
+  flagged or a flagged builtin's description does not mention `unsafe`.
 
 - Ordinary `new Class()` expressions now have the normal copyable class type; explicit `own Class` slots can still take a fresh instance.
 - By-reference calls to mutating builtins are checked as one write, and separate scalar by-reference arguments no longer conflict merely because their storage is boxed.

@@ -31,8 +31,8 @@ if (!check("iarr_set/get", iarr_get($a, 2) == 77)) { $fail = $fail + 1; }
 unsafe {
     iarr_set_fast($a, 3, 5);
     if (!check("iarr fast path", iarr_get_fast($a, 3) == 5)) { $fail = $fail + 1; }
+    iarr_release($a);
 }
-iarr_release($a);
 
 /* raw memory through the accessors (pointer arithmetic is inside C) */
 unsafe {
@@ -67,13 +67,13 @@ if (!check("json_num_field", json_num_field("{\"exp\":1234}", "exp") == 1234)) {
 scope_begin();
 $kept = str_persist("kept");
 if (!check("scope round trip", $kept == "kept")) { $fail = $fail + 1; }
-scope_end();
+unsafe { scope_end(); }
 
 $x = [1, 2, 3];
 arr_clear($x);
 if (!check("arr_clear", count($x) == 0)) { $fail = $fail + 1; }
 $y = [1];
-arr_free($y);
+unsafe { arr_free($y); }
 if (!check("arr_free", true)) { $fail = $fail + 1; }
 
 if ($fail == 0) { echo "challenge runtime OK\n"; }

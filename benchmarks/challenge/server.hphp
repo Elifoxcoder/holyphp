@@ -51,12 +51,12 @@ class Json {
     public function release_value($v): void {
         if (!is_array($v)) { return; }
         foreach ($v as $child) { $this->release_value($child); }
-        arr_free($v);
+        unsafe { arr_free($v); }
     }
 
     public function dispose(): void {
         $this->release_value($this->root);
-        object_free($this);
+        unsafe { object_free($this); }
     }
 
     public function ws(): void {
@@ -1051,7 +1051,7 @@ class Server {
             stream_recv_release($fd);
         } else {
             $buf = $old . $chunk;
-            str_free($old);
+            unsafe { str_free($old); }
             if ($this->sparseBufs) { unset($this->bufs[$fd]); }
             else { $this->bufs[$fd] = ""; }
             $this->parse($fd, $buf);
@@ -2132,12 +2132,12 @@ class Server {
 
     public function on_create(int $fd, string $auth, string $body): void {
         $a = $this->authenticate($auth);
-        if ($a[0] == 1) { arr_free($a); $this->send_json($fd, 401, '{"error":"missing bearer token"}'); return; }
-        if ($a[0] == 2) { arr_free($a); $this->send_json($fd, 401, '{"error":"invalid or expired token"}'); return; }
-        if ($a[0] == 3) { arr_free($a); $this->send_json($fd, 401, '{"error":"invalid token payload"}'); return; }
+        if ($a[0] == 1) { unsafe { arr_free($a); } $this->send_json($fd, 401, '{"error":"missing bearer token"}'); return; }
+        if ($a[0] == 2) { unsafe { arr_free($a); } $this->send_json($fd, 401, '{"error":"invalid or expired token"}'); return; }
+        if ($a[0] == 3) { unsafe { arr_free($a); } $this->send_json($fd, 401, '{"error":"invalid token payload"}'); return; }
         $uid = $a[1];
         $uname = $a[2];
-        arr_free($a);
+        unsafe { arr_free($a); }
 
         $j = new Json($body);
         if (!$j->parse()) {
@@ -2176,11 +2176,11 @@ class Server {
 
     public function on_like(int $fd, string $auth, string $ids): void {
         $a = $this->authenticate($auth);
-        if ($a[0] == 1) { arr_free($a); $this->send_json($fd, 401, '{"error":"missing bearer token"}'); return; }
-        if ($a[0] == 2) { arr_free($a); $this->send_json($fd, 401, '{"error":"invalid or expired token"}'); return; }
-        if ($a[0] == 3) { arr_free($a); $this->send_json($fd, 401, '{"error":"invalid token payload"}'); return; }
+        if ($a[0] == 1) { unsafe { arr_free($a); } $this->send_json($fd, 401, '{"error":"missing bearer token"}'); return; }
+        if ($a[0] == 2) { unsafe { arr_free($a); } $this->send_json($fd, 401, '{"error":"invalid or expired token"}'); return; }
+        if ($a[0] == 3) { unsafe { arr_free($a); } $this->send_json($fd, 401, '{"error":"invalid token payload"}'); return; }
         $uid = $a[1];
-        arr_free($a);
+        unsafe { arr_free($a); }
 
         $id = $this->parse_id($ids);
         if ($id <= 0) {
@@ -2519,7 +2519,7 @@ class Server {
             if ($r["conn"] != 0 && iarr_get($this->socks, $r["fd"]) == $r["conn"]) {
                 $this->write_response($r["fd"], $r["code"], $r["body"]);
             }
-            arr_free($r);
+            unsafe { arr_free($r); }
         }
         arr_clear($this->pending);
         $this->persistedPending = 0;

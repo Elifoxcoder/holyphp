@@ -513,7 +513,7 @@ void builtins_init(void) {
      * builtins carry the unsafe flag; enforcement comes later. */
     add("accept_emfile",              B_MISC,  ty_bool, false, false);
     add("arr_clear",                  B_MISC,  ty_bool, false, false);
-    add("arr_free",                   B_MISC,  ty_bool, false, false);
+    add("arr_free",                   B_MISC,  ty_bool, true, false);
     add("bt_close",                   B_MISC,  ty_bool, false, false);
     add("bt_col_int",                 B_MISC,  ty_int, false, false);
     add("bt_col_int_at",              B_MISC,  ty_int, false, false);
@@ -525,12 +525,12 @@ void builtins_init(void) {
     add("bt_first",                   B_MISC,  ty_int, false, false);
     add("bt_last",                    B_MISC,  ty_int, false, false);
     add("bt_multi_keys",              B_MISC,  ty_int, false, false);
-    add("bt_multi_payloads",          B_MISC,  ty_bool, false, false);
-    add("bt_multi_release",           B_MISC,  ty_bool, false, false);
+    add("bt_multi_payloads",          B_MISC,  ty_bool, true, false);
+    add("bt_multi_release",           B_MISC,  ty_bool, true, false);
     add("bt_multi_seek",              B_MISC,  ty_int, true, false);
     add("bt_next",                    B_MISC,  ty_int, false, false);
     add("bt_open",                    B_MISC,  ty_int, true, false);
-    add("bt_page_release",            B_MISC,  ty_bool, false, false);
+    add("bt_page_release",            B_MISC,  ty_bool, true, false);
     add("bt_payload_pin",             B_MISC,  ty_int, true, false);
     add("bt_payload_ptr",             B_MISC,  ty_int, true, false);
     add("bt_payload_size",            B_MISC,  ty_int, false, false);
@@ -539,7 +539,7 @@ void builtins_init(void) {
     add("bt_root",                    B_MISC,  ty_int, true, false);
     add("bt_rowid",                   B_MISC,  ty_int, false, false);
     add("bt_seek",                    B_MISC,  ty_int, false, false);
-    add("bt_tail",                    B_MISC,  ty_int, false, false);
+    add("bt_tail",                    B_MISC,  ty_int, true, false);
     add("epoll_add",                  B_MISC,  ty_int, false, false);
     add("epoll_del",                  B_MISC,  ty_int, false, false);
     add("epoll_mod",                  B_MISC,  ty_int, false, false);
@@ -552,8 +552,8 @@ void builtins_init(void) {
     add("iarr_get_fast",              B_MISC,  ty_int, true, false);
     add("iarr_len",                   B_MISC,  ty_int, false, false);
     add("iarr_new",                   B_MISC,  ty_int, false, false);
-    add("iarr_new_uninit",            B_MISC,  ty_int, false, false);
-    add("iarr_release",               B_MISC,  ty_bool, false, false);
+    add("iarr_new_uninit",            B_MISC,  ty_int, true, false);
+    add("iarr_release",               B_MISC,  ty_bool, true, false);
     add("iarr_set",                   B_MISC,  ty_bool, false, false);
     add("iarr_set_fast",              B_MISC,  ty_bool, true, false);
     add("int_digits",                 B_MISC,  ty_int, false, false);
@@ -565,12 +565,12 @@ void builtins_init(void) {
     add("live_allocs",                B_MISC,  ty_mixed, false, false);
     add("live_bytes",                 B_MISC,  ty_mixed, false, false);
     add("nofile_limit",               B_MISC,  ty_int, false, false);
-    add("object_free",                B_MISC,  ty_bool, false, false);
+    add("object_free",                B_MISC,  ty_bool, true, false);
     add("runtime_diag_write",         B_MISC,  ty_bool, false, false);
     add("runtime_stats",              B_MISC,  ty_string, false, false);
     add("sb_bytes",                   B_MISC,  ty_bool, true, false);
     add("sb_data_ptr",                B_MISC,  ty_int, true, false);
-    add("sb_discard",                 B_MISC,  ty_bool, false, false);
+    add("sb_discard",                 B_MISC,  ty_bool, true, false);
     add("sb_int",                     B_MISC,  ty_bool, false, false);
     add("sb_json",                    B_MISC,  ty_int, false, false);
     add("sb_json_str",                B_MISC,  ty_int, false, false);
@@ -581,7 +581,7 @@ void builtins_init(void) {
     add("sb_reserve",                 B_MISC,  ty_bool, false, false);
     add("scalar_binop",               B_MISC,  ty_mixed, false, false);
     add("scope_begin",                B_MISC,  ty_bool, false, false);
-    add("scope_end",                  B_MISC,  ty_bool, false, false);
+    add("scope_end",                  B_MISC,  ty_bool, true, false);
     add("sqlite_bg_checkpoint_active", B_MISC,  ty_mixed, false, false);
     add("sqlite_bg_checkpoint_hold",  B_MISC,  ty_mixed, false, false);
     add("sqlite_bg_checkpoint_start", B_MISC,  ty_mixed, false, false);
@@ -608,7 +608,7 @@ void builtins_init(void) {
     add("sqlite_step",                B_MISC,  ty_int, false, false);
     add("str_at_eq",                  B_MISC,  ty_bool, false, false);
     add("str_find_range",             B_MISC,  ty_int, false, false);
-    add("str_free",                   B_MISC,  ty_bool, false, false);
+    add("str_free",                   B_MISC,  ty_bool, true, false);
     add("str_from_bytes",             B_MISC,  ty_string, true, false);
     add("str_int_range",              B_MISC,  ty_int, false, false);
     add("str_persist",                B_MISC,  ty_string, false, false);

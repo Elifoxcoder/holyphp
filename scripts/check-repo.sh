@@ -11,6 +11,8 @@
 #   2. vps host     no server address outside scripts/vps.env
 #   3. builtin docs every builtin in src/hphpc/builtins.c has a description in
 #                   scripts/builtin-docs.js and an entry in scripts/builtin-examples.js
+#   3b. unsafe      every *_ptr/*_fast builtin carries the unsafe flag, and every
+#                   unsafe builtin's description says so
 #   4. changelog    CHANGELOG.md has a section for the current/released version
 #   5. hygiene      no untracked files in the repo root or in tests/ (scratch
 #                   work goes to scratch/, which is ignored by these checks)
@@ -76,6 +78,34 @@ if command -v node >/dev/null 2>&1; then
   else bad "builtin documentation incomplete:"; echo "$missing" | fold -w 100 | sed 's/^/        /'; fi
 else
   bad "node not found: cannot check builtin docs"
+fi
+
+# 3b. unsafe flags: raw-pointer / check-skipping builtins must be marked, and
+# the docs of a marked builtin must tell the reader that it is unsafe.
+if command -v node >/dev/null 2>&1; then
+  unsafe_out=$(node -e '
+    const fs = require("fs");
+    const src = fs.readFileSync("src/hphpc/builtins.c", "utf8");
+    const re = /add\(\s*"([^"]+)"\s*,\s*(B_[A-Z0-9_]+)\s*,\s*[^,]+,\s*(true|false)/g;
+    const docs = require("./scripts/builtin-docs.js");
+    const unsafe = new Set();
+    let m, n = 0;
+    while ((m = re.exec(src))) {
+      n++;
+      if (m[3] === "true") unsafe.add(m[1]);
+      if (/_(ptr|fast)$/.test(m[1]) && m[3] !== "true") console.log("not marked unsafe: " + m[1]);
+    }
+    if (n < 50) console.log("REGEX: only " + n + " builtins scanned");
+    for (const name of unsafe) {
+      if (!/unsafe/i.test(docs[name] || "")) console.log("description does not say unsafe: " + name);
+    }
+    console.error("UNSAFE_COUNT " + unsafe.size);
+  ' 2>/tmp/hphp_check_unsafe)
+  unsafe_count=$(sed -n 's/^UNSAFE_COUNT //p' /tmp/hphp_check_unsafe 2>/dev/null)
+  if [[ -z "$unsafe_out" ]]; then ok "unsafe builtins are flagged and documented (${unsafe_count:-0})"
+  else bad "unsafe builtin bookkeeping incomplete:"; echo "$unsafe_out" | fold -w 100 | sed 's/^/        /'; fi
+else
+  bad "node not found: cannot check unsafe flags"
 fi
 
 # 4. changelog
