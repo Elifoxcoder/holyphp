@@ -4342,11 +4342,15 @@ hval hpbi_http_build_query(hval d) {
         hstr *v = hp_val_to_str(a->vals[i]);
         hstr *ke = hp_val_to_str(hpbi_urlencode(hp_of_str(k)));
         hstr *ve = hp_val_to_str(hpbi_urlencode(hp_of_str(v)));
+        if (a->keys[i].tag != HV_STR) hp_str_free(k);
+        if (a->vals[i].tag != HV_STR) hp_str_free(v);
         buf_write(&b, ke->data, ke->len);
         buf_putc(&b, '=');
         buf_write(&b, ve->data, ve->len);
+        hp_str_free(ke);
+        hp_str_free(ve);
     }
-    RETS(hp_str_new(b.data, b.len));
+    RETS(hp_str_take_buf(&b));
 }
 /* ===================== mysql: wire-protocol client (mysql_native_password) =====================
  * mysql_connect(host, port, user, pass, db) -> handle | false
@@ -4708,7 +4712,7 @@ hval hpbi_mysql_escape(hval s) {
         default:  buf_putc(&b, ch);
         }
     }
-    RETS(hp_str_new(b.data, b.len));
+    RETS(hp_str_take_buf(&b));
 }
 
 hval hpbi_json_decode2(hval v, hval assoc) {
@@ -4770,7 +4774,7 @@ hval hpbi_json_encode2(hval v, hval flags) {
             }
         }
         free(s);
-        RETS(hp_str_new(b.data, b.len));
+        RETS(hp_str_take_buf(&b));
     }
     return hpbi_json_encode(v);
 }

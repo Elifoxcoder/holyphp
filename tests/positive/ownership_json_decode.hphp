@@ -1,0 +1,48 @@
+<?php
+/* ownership_json_decode.hphp — json_decode returns a fresh tree. Every
+ * element and key belongs to the caller; release_tree() walks it. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+function release_tree($v): void {
+    if (is_array($v)) {
+        foreach ($v as $k => $x) {
+            release_tree($x);
+            if (is_string($k)) { unsafe { str_free($k); } }
+        }
+        unsafe { arr_free($v); }
+    } else if (is_string($v)) {
+        unsafe { str_free($v); }
+    }
+}
+
+$json = '{"a":1,"b":[true,null,"s"],"c":{"d":2}}';
+$v = json_decode($json);
+check("decode returns an array", is_array($v));
+check("decode top-level keys", count($v) == 3);
+check("decode nested list", count($v["b"]) == 3 && $v["b"][0] === true && $v["b"][1] === null);
+check("decode nested string", $v["b"][2] == "s");
+check("decode nested object", $v["c"]["d"] == 2);
+release_tree($v);
+check("decode left the source intact", $json == '{"a":1,"b":[true,null,"s"],"c":{"d":2}}');
+
+$v = json_decode("[1,2,3]");
+check("decode list length", count($v) == 3 && $v[0] == 1 && $v[2] == 3);
+release_tree($v);
+
+$v = json_decode('"text"');
+check("decode scalar string", $v == "text");
+release_tree($v);
+
+$v = json_decode("42");
+check("decode scalar int", $v == 42);
+
+$v = json_decode('{"e":[],"f":{}}');
+check("decode empty containers", count($v["e"]) == 0 && count($v["f"]) == 0);
+release_tree($v);
+
+echo "ownership json decode ok\n";

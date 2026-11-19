@@ -27,6 +27,11 @@ behaves differently, what they have to change.
 - `sqlite_status()` now really returns its JSON text (its declaration said
   `int`), and `bt_read()` / `bt_count_range()` return the integer count /
   status they produce instead of being declared `bool`.
+- Builtin ownership audit, JSON: the pretty printer returns a string whose
+  intermediate buffer is released (it leaked the whole compact document per
+  call), and the fast field readers are documented as borrowing the JSON text
+  and returning a fresh value. `json_encode()`/`json_decode()` results belong
+  to the caller.
 - Builtin ownership audit, math: `srand()`/`mt_srand()` now really reset the
   sequence (the one-time time seed used to overwrite the first user seed),
   `lcg_value()` works (the builtin had no implementation, so any program using

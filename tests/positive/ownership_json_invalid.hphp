@@ -1,0 +1,24 @@
+<?php
+/* ownership_json_invalid.hphp — invalid JSON yields null (or an empty
+ * structure), never a half-built tree the caller has to release blindly. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$bad = "not json";
+$empty = "";
+$v = json_decode($bad);
+check("invalid text decodes to null", $v === null);
+$v = json_decode($empty);
+check("empty text decodes to null", $v === null);
+$v = json_decode("1234");
+check("a bare number decodes", $v == 1234);
+$v = json_decode('"abc"');
+check("a bare string decodes", $v == "abc");
+unsafe { str_free($v); }
+check("the invalid inputs survived", $bad == "not json" && $empty == "");
+
+echo "ownership json invalid ok\n";
