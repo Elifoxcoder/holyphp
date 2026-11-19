@@ -27,6 +27,9 @@ behaves differently, what they have to change.
 - `sqlite_status()` now really returns its JSON text (its declaration said
   `int`), and `bt_read()` / `bt_count_range()` return the integer count /
   status they produce instead of being declared `bool`.
+- Builtin ownership audit, date: `date()` returns a fresh string whose
+  intermediate buffer is released; `strtotime()`, `mktime()`, `checkdate()`
+  and the clock builtins borrow their arguments and allocate nothing.
 - Builtin ownership audit, regex: every `preg_*` call now frees its parsed
   pattern tree and (for `preg_match_all`) the per-match row, `preg_replace()`
   releases its output buffer, and `preg_split()` returns a copy of the subject
