@@ -13,11 +13,12 @@ the positive `tests/positive/ownership_*.hphp` groups exercise the contracts
 | **Returns** | `new string`, `new array`, `scalar`, `new handle`, `new value`: the caller owns the result and may release it (`str_free`, `arr_free`, `object_free`, `iarr_release`, ...). `borrowed element`: the value stays owned by the argument array; do not release it. `same string (borrowed)`: the call returns its argument. `raw pointer (unsafe)`: the value is only usable in `unsafe { }`. |
 | **Arguments** | `borrows`: the call reads the value and leaves it untouched. `borrows and mutates`: the call rewrites the value in place (the caller keeps ownership). `takes`: the call releases or consumes the value/handle; using it afterwards is a use-after-free. |
 
-All `*_ptr` and `*_fast` builtins, the raw memory accessors and every
-builtin that hands out a pointer or releases a value are marked `unsafe` in
-the builtin table; `scripts/check-repo.sh` enforces the flag and the wording
-on their documentation page. `tests/positive/ownership_arrays_move.hphp` and
-the string copy tests show the other side: a released result leaves the
+All `*_ptr` and `*_fast` builtins, the raw memory accessors, and the manual
+release/take builtins (`str_free`, `arr_free`, `object_free`, `iarr_release`,
+`sb_discard`, `sb_take`, the B-tree release calls, `scope_end`) are marked
+`unsafe` in the builtin table; `scripts/check-repo.sh` enforces the flag and
+the wording on their documentation page. `tests/positive/ownership_arrays_move.hphp`
+and the string copy tests show the other side: a released result leaves the
 borrowed input alive.
 
 Two limitations of this core (STATUS.md F1/F2, questions for the memory-core
