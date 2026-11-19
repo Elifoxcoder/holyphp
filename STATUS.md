@@ -425,3 +425,12 @@ POSIX-only (the `sqlite_bg_checkpoint_*` calls report `false` on Windows,
 everything else works), and direct io_uring mode is Linux-only (the runtime
 falls back to the classic real-fd path on Windows and when `HPHP_DIRECT=0`).
 
+Sanitizer check: `build/hphp_asan` must be rebuilt after a compiler change
+(`tests/run.sh --asan` reuses an existing binary, and an old one links the
+system SQLite, which has no B-tree internals). With a fresh build,
+`bt_cursor` passes under ASan + UBSan with no report other than the known
+F1/F2 leaks. That run found the declaration mismatch fixed in the same
+commit series: `bt_read`/`bt_count_range` were declared `bool` while returning
+integers (UBSan: load of value 2 for `_Bool`), and `sqlite_status` was declared
+`int` while returning JSON text.
+

@@ -24,6 +24,9 @@ behaves differently, what they have to change.
   (io_uring) and classic mode on a small committed copy of the seed database.
   Both modes pass, so the SQLite and io_uring runtime modules are checked
   against a real application from a clean checkout.
+- `sqlite_status()` now really returns its JSON text (its declaration said
+  `int`), and `bt_read()` / `bt_count_range()` return the integer count /
+  status they produce instead of being declared `bool`.
 
 - Ordinary `new Class()` expressions now have the normal copyable class type; explicit `own Class` slots can still take a fresh instance.
 - By-reference calls to mutating builtins are checked as one write, and separate scalar by-reference arguments no longer conflict merely because their storage is boxed.
