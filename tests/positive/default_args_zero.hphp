@@ -1,0 +1,28 @@
+// default_args_zero.hphp — calling a function, method or constructor with
+// no arguments at all must still pass the declared defaults.
+// Regression: the call emitted a leading ", " before the first default when
+// the caller passed nothing, so the generated C was `f(, 7)`.
+function check(bool $cond, string $what): void {
+    if (!$cond) {
+        echo "FAIL " . $what . "\n";
+        exit(1);
+    }
+}
+
+function greet(string $who = "world", int $times = 2): string {
+    return str_repeat($who, $times);
+}
+check(greet() == "worldworld", "function defaults");
+check(greet("ha") == "haha", "second default");
+
+class Counter {
+    pub int $n;
+    pub function __construct(int $start = 5) { $this->n = $start; }
+    pub function step(int $by = 1): int { return $this->n + $by; }
+}
+$c = new Counter();
+check($c->n == 5, "constructor default");
+check($c->step() == 6, "method default");
+check($c->step(10) == 15, "method argument");
+
+echo "ok\n";

@@ -1321,12 +1321,17 @@ static void emit_param_default(Codegen *g, Param *pm, Buf *dst) {
     else buf_puts(dst, "hp_null");
 }
 
-/* append default arguments for params the caller did not pass */
-static void emit_missing_defaults(Codegen *g, AstFn *fn, size_t nargs, Buf *dst) {
+/* append default arguments for params the caller did not pass.
+ * has_prefix says the call already printed an argument (a method receiver,
+ * a constructor's class name), so even the first default needs a comma. */
+static void emit_missing_defaults(Codegen *g, AstFn *fn, size_t nargs,
+                                  bool has_prefix, Buf *dst) {
+    bool first = nargs == 0 && !has_prefix;
     for (size_t i = nargs; i < fn->params.len; i++) {
         Param *pm = fn->params.items[i];
         if (!pm->dflt) break; /* sema already rejected this */
-        buf_puts(dst, ", ");
+        if (!first) buf_puts(dst, ", ");
+        first = false;
         emit_param_default(g, pm, dst);
     }
 }
@@ -1449,7 +1454,7 @@ static void emit_call(Codegen *g, Expr *e, Buf *dst) {
                 emit_arg(g, arg, pm ? pm->resolved : NULL, dst);
             }
         }
-        emit_missing_defaults(g, fn, e->u.call.args.len, dst);
+        emit_missing_defaults(g, fn, e->u.call.args.len, false, dst);
         buf_puts(dst, ")");
         return;
     }
@@ -1507,7 +1512,7 @@ static void emit_method(Codegen *g, Expr *e, Buf *dst) {
                 else
                     emit_arg(g, e->u.method.args.items[i], pm ? pm->resolved : NULL, dst);
             }
-            emit_missing_defaults(g, m, e->u.method.args.len, dst);
+            emit_missing_defaults(g, m, e->u.method.args.len, true, dst);
             buf_puts(dst, ")");
             free((void *)objcode);
             return;
@@ -1539,7 +1544,7 @@ static void emit_method(Codegen *g, Expr *e, Buf *dst) {
             else
                 emit_arg(g, e->u.method.args.items[i], pm ? pm->resolved : NULL, dst);
         }
-        emit_missing_defaults(g, m, e->u.method.args.len, dst);
+        emit_missing_defaults(g, m, e->u.method.args.len, true, dst);
         buf_puts(dst, ")");
         free((void *)objcode);
         return;
@@ -1584,7 +1589,7 @@ static void emit_static(Codegen *g, Expr *e, Buf *dst) {
             else
                 emit_arg(g, e->u.staticcall.args.items[i], pm ? pm->resolved : NULL, dst);
         }
-        if (m) emit_missing_defaults(g, m, e->u.staticcall.args.len, dst);
+        if (m) emit_missing_defaults(g, m, e->u.staticcall.args.len, false, dst);
         buf_puts(dst, ")");
         return;
     }
@@ -2652,7 +2657,7 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
             else
                 emit_expr(g, e->u.newexpr.args.items[i], dst);
         }
-        if (ctor) emit_missing_defaults(g, ctor, e->u.newexpr.args.len, dst);
+        if (ctor) emit_missing_defaults(g, ctor, e->u.newexpr.args.len, true, dst);
         buf_puts(dst, ")");
         break;
     }
