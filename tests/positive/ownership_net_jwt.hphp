@@ -1,0 +1,38 @@
+<?php
+/* ownership_net_jwt.hphp — JWT builtins return a fresh string (the payload or
+ * an empty string) and never consume the token or the secret. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$token = "a.b.c";
+$secret = "key";
+$now = 0;
+
+$r = jwt_verify($token, $secret, $now);
+check("invalid token yields an empty payload", $r == "");
+unsafe { str_free($r); }
+check("jwt_verify left the token intact", $token == "a.b.c" && $secret == "key");
+
+$empty = "";
+$r = jwt_verify($empty, $secret, $now);
+check("empty token yields an empty payload", $r == "");
+unsafe { str_free($r); }
+
+$prepared = jwt_verifier_new($secret);
+check("verifier_new returns a string", is_string($prepared) && strlen($prepared) > 0);
+$r = jwt_verify_prepared($token, $prepared, $now);
+check("prepared verifier rejects the bad token", $r == "");
+unsafe { str_free($r); }
+unsafe { str_free($prepared); }
+
+$badPrepared = "short";
+$r = jwt_verify_prepared($token, $badPrepared, $now);
+check("malformed verifier is rejected", $r == "");
+unsafe { str_free($r); }
+
+unsafe { str_free($token); str_free($secret); str_free($empty); str_free($badPrepared); }
+echo "ownership net jwt ok\n";

@@ -4117,9 +4117,16 @@ static void hp_stats_emit(void) {
         hp_stats_num(hp_st[f[i].idx]);
     }
     hp_stats_put(" readq=", 7);
-    hp_stats_num(hp_ur_readq_enqueues);
-    hp_stats_put(" bounded_recv=", 14);
-    hp_stats_num(hp_ur_readq_completions);
+    {
+        uint64_t enq = 0, done = 0;
+#ifdef HP_UR_CAN
+        enq = hp_ur_readq_enqueues;
+        done = hp_ur_readq_completions;
+#endif
+        hp_stats_num(enq);
+        hp_stats_put(" bounded_recv=", 14);
+        hp_stats_num(done);
+    }
     hp_stats_put("\n", 1);
 }
 #if !defined(_WIN32)
@@ -4614,7 +4621,9 @@ hval hpbi_stream_peer(hval s) {
                     NI_NUMERICHOST | NI_NUMERICSERV) != 0)
         return hp_of_str(hp_str_lit(""));
     hstr *a = hp_str_concat2(hp_str_lit(host), hp_str_lit(":"));
-    return hp_of_str(hp_str_concat2(a, hp_str_lit(port)));
+    hstr *r = hp_str_concat2(a, hp_str_lit(port));
+    hp_str_free(a);
+    return hp_of_str(r);
 }
 
 hval hpbi_stream_close(hval s) {

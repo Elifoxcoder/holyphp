@@ -1,0 +1,40 @@
+<?php
+/* ownership_net_parse_url.hphp — parse_url returns a fresh map; every key and
+ * string value belongs to the caller. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+function release_map($m): void {
+    foreach ($m as $k => $v) {
+        if (is_string($v)) { unsafe { str_free($v); } }
+        if (is_string($k)) { unsafe { str_free($k); } }
+    }
+    unsafe { arr_free($m); }
+}
+
+$url = "https://user@example.com:8443/path?q=1#frag";
+$m = parse_url($url);
+check("scheme", $m["scheme"] == "https");
+check("host", $m["host"] == "example.com");
+check("port", $m["port"] == 8443);
+check("path", $m["path"] == "/path");
+check("query", $m["query"] == "q=1");
+check("fragment", $m["fragment"] == "frag");
+check("userinfo", $m["user"] == "user");
+release_map($m);
+check("parse_url left the URL intact", $url == "https://user@example.com:8443/path?q=1#frag");
+
+$m = parse_url("example.com/only");
+check("default port for http", $m["port"] == 80);
+check("host without a scheme", $m["host"] == "example.com");
+release_map($m);
+
+$m = parse_url("https://example.com");
+check("default port for https", $m["port"] == 443);
+release_map($m);
+
+echo "ownership net parse url ok\n";

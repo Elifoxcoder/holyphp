@@ -27,6 +27,12 @@ behaves differently, what they have to change.
 - `sqlite_status()` now really returns its JSON text (its declaration said
   `int`), and `bt_read()` / `bt_count_range()` return the integer count /
   status they produce instead of being declared `bool`.
+- Builtin ownership audit, net: `parse_url()`/`http_build_query()` and the
+  socket helpers return fresh values (the query builder and `stream_peer()`
+  released their intermediate strings; `stream_peer()` leaked one per call),
+  and the io_uring module now compiles on Windows: its stats printer
+  referenced counters that only exist in the Linux ring build, so any program
+  using a `stream_*`/`uring_*` builtin failed to link there.
 - Builtin ownership audit, date: `date()` returns a fresh string whose
   intermediate buffer is released; `strtotime()`, `mktime()`, `checkdate()`
   and the clock builtins borrow their arguments and allocate nothing.
