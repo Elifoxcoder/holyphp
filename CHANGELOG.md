@@ -27,6 +27,16 @@ behaves differently, what they have to change.
 - `sqlite_status()` now really returns its JSON text (its declaration said
   `int`), and `bt_read()` / `bt_count_range()` return the integer count /
   status they produce instead of being declared `bool`.
+- Builtin ownership audit, strings: `str_pad()` always returns a new string
+  (it used to return its argument when no padding was needed), `strval()`,
+  `ucfirst()`/`lcfirst()` on an empty string, `wordwrap(..., 0)` and
+  `preg_replace()` with an invalid pattern now return copies instead of the
+  caller's value. `str_replace()`, `nl2br()`, `htmlentities()`,
+  `html_entity_decode()`, `strip_tags()`, `bin2hex()`, `hex2bin()`,
+  `urlencode()`, `urldecode()`, `sprintf()`, `implode()` and `wordwrap()`
+  build their result once and release the temporary buffer, so a 20000-round
+  string loop no longer grows. `tests/rss.ps1` / `tests/rss.sh` check that.
+
 - Every builtin that hands out a raw pointer, an opaque handle it later frees,
   or skips a bounds/type/initialisation check now carries the `unsafe` flag and
   says so on its documentation page: `str_free`, `arr_free`, `object_free`,

@@ -23,6 +23,17 @@ static void *hp_addr_arg(hval v) {
     return (void *)(intptr_t)hp_val_to_int(v);
 }
 
+/* Finish a byte buffer as a runtime string: copy the bytes into an hstr and
+ * hand the buffer's heap block back. Every `Buf` builtin must use this (or
+ * free the block itself); `hp_str_lit(buf_take(&b))` would leak the block. */
+static hstr *hp_str_take_buf(Buf *b) {
+    size_t n = b->len;
+    char *p = hbuf_take(b);
+    hstr *r = hp_str_new(p && n ? p : "", n);
+    free(p);
+    return r;
+}
+
 #ifndef HPHP_VERSION
 #define HPHP_VERSION "1.0.2"
 #endif
@@ -139,14 +150,14 @@ hval hpbi_strtoupper(hval s) { RETS(hp_str_toupper(hp_val_to_str(s))); }
 hval hpbi_strtolower(hval s) { RETS(hp_str_tolower(hp_val_to_str(s))); }
 hval hpbi_ucfirst(hval s) {
     hstr *x = hp_val_to_str(s);
-    if (!x->len) RETS(x);
+    if (!x->len) RETS(hp_str_copy(x));
     hstr *r = hp_str_copy(x);
     r->data[0] = (char)toupper((unsigned char)r->data[0]);
     RETS(r);
 }
 hval hpbi_lcfirst(hval s) {
     hstr *x = hp_val_to_str(s);
-    if (!x->len) RETS(x);
+    if (!x->len) RETS(hp_str_copy(x));
     hstr *r = hp_str_copy(x);
     r->data[0] = (char)tolower((unsigned char)r->data[0]);
     RETS(r);
@@ -181,14 +192,52 @@ hval hpbi_str_repeat(hval s, hval n) {
 hval hpbi_str_pad(hval s, hval n, hval pad) {
     hstr *x = hp_val_to_str(s);
     int64_t want = hp_val_to_int(n);
-    if ((int64_t)x->len >= want) RETS(x);
+    if ((int64_t)x->len >= want) RETS(hp_str_copy(x));   /* always a new value */
     hstr *p = hp_val_to_str(pad);
     if (!p->len) p = hp_str_lit(" ");
-    hstr *fill = hp_str_repeat(p, (want - (int64_t)x->len + p->len - 1) / p->len);
-    RETS(hp_str_concat2(x, hp_str_slice(fill, 0, want - (int64_t)x->len)));
+    size_t fill = (size_t)(want - (int64_t)x->len);
+    Buf b;
+    buf_init(&b);
+    buf_write(&b, x->data, x->len);
+    while (b.len < (size_t)want) {
+        size_t take = fill < p->len ? fill : p->len;
+        buf_write(&b, p->data, take);
+        fill -= take;
+    }
+    RETS(hp_str_take_buf(&b));
+}
+/* Replace every occurrence of `search` in `subject` with `replace`, building
+ * the result once. Unlike hp_str_replace() in hphp_rt.c this frees every
+ * intermediate buffer, so a loop stays flat. */
+static hstr *hp_replace_t(hstr *subject, hstr *search, hstr *replace) {
+    if (!subject) return hp_str_lit("");
+    if (!search || search->len == 0) return hp_str_copy(subject);
+    if (!replace) replace = hp_str_lit("");
+    Buf b;
+    buf_init(&b);
+    size_t i = 0;
+    while (i < subject->len) {
+        if (i + search->len <= subject->len &&
+            memcmp(subject->data + i, search->data, search->len) == 0) {
+            buf_write(&b, replace->data, replace->len);
+            i += search->len;
+        } else {
+            buf_putc(&b, subject->data[i++]);
+        }
+    }
+    return hp_str_take_buf(&b);
 }
 hval hpbi_str_replace(hval search, hval replace, hval subject) {
-    RETS(hp_str_replace(hp_val_to_str(subject), hp_val_to_str(search), hp_val_to_str(replace)));
+    RETS(hp_replace_t(hp_val_to_str(subject), hp_val_to_str(search),
+                      hp_val_to_str(replace)));
+}
+/* Same, with C-string pattern/replacement (used by the entity helpers). */
+static hstr *hp_replace_c(hstr *subject, const char *search, const char *replace) {
+    hstr *s = hp_str_lit(search), *r = hp_str_lit(replace);
+    hstr *out = hp_replace_t(subject, s, r);
+    hp_str_free(s);
+    hp_str_free(r);
+    return out;
 }
 hval hpbi_substr(hval s, hval start, hval len) {
     hstr *x = hp_val_to_str(s);
@@ -245,8 +294,13 @@ hval hpbi_strncasecmp(hval a, hval b, hval n) {
     size_t k = (size_t)hp_val_to_int(n);
     if (k > x->len) k = x->len;
     if (k > y->len) k = y->len;
-    hstr *xs = hp_str_new(x->data, k), *ys = hp_str_new(y->data, k);
-    RETI(hp_str_casecmp_n(xs, ys));
+    int r = 0;
+    for (size_t i = 0; i < k; i++) {
+        int ca = tolower((unsigned char)x->data[i]);
+        int cb = tolower((unsigned char)y->data[i]);
+        if (ca != cb) { r = ca < cb ? -1 : 1; break; }
+    }
+    RETI(r);
 }
 hval hpbi_explode(hval sep, hval s) {
     hstr *x = hp_val_to_str(s), *d = hp_val_to_str(sep);
@@ -281,12 +335,14 @@ hval hpbi_explode(hval sep, hval s) {
 hval hpbi_split(hval sep, hval s) { return hpbi_explode(sep, s); }
 static hval hp_implode(hval glue, harr *a) {
     hstr *g = hp_val_to_str(glue);
-    hstr *out = hp_str_lit("");
+    Buf b;
+    buf_init(&b);
     for (size_t i = 0; i < a->len; i++) {
-        if (i) out = hp_str_concat2(out, g);
-        out = hp_str_concat2(out, hp_val_to_str(a->vals[i]));
+        if (i) buf_write(&b, g->data, g->len);
+        hstr *part = hp_val_to_str(a->vals[i]);
+        buf_write(&b, part->data, part->len);
     }
-    RETS(out);
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_implode(hval glue, hval arr) {
     if (arr.tag == HV_ARR) return hp_implode(glue, arr.u.a);
@@ -294,7 +350,7 @@ hval hpbi_implode(hval glue, hval arr) {
 }
 hval hpbi_join(hval glue, hval arr) { return hpbi_implode(glue, arr); }
 hval hpbi_nl2br(hval s) {
-    RETS(hp_str_replace(hp_val_to_str(s), hp_str_lit("\n"), hp_str_lit("<br />\n")));
+    RETS(hp_replace_c(hp_val_to_str(s), "\n", "<br />\n"));
 }
 /* PHP unset($arr[$k]): remove by key from an array held in a variable.
  * The codegen passes the variable's harr* directly. */
@@ -385,6 +441,7 @@ static void hbuf_json_r(hval v, Buf *b) {
                 hval k = a->keys[i];
                 hstr *ks = hp_val_to_str(k);
                 hbuf_printf(b, "\"%.*s\":", (int)ks->len, ks->data);
+                if (k.tag != HV_STR) hp_str_free(ks);
                 hbuf_json_r(a->vals[i], b);
             }
             hbuf_puts(b, "}");
@@ -459,7 +516,7 @@ static hstr *jp_string(JsonP *j) {
         } else buf_putc(&b, c);
     }
     if (j->pos < j->len) j->pos++;  /* closing quote */
-    return hp_str_new(buf_take(&b), b.len);
+    return hp_str_take_buf(&b);
 }
 
 static hval jp_value(JsonP *j) {
@@ -731,7 +788,7 @@ hval hpbi_urlencode(hval s) {
         else if (c == ' ') buf_putc(&b, '+');
         else buf_printf(&b, "%%%02X", c);
     }
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_urldecode(hval s) {
     hstr *x = hp_val_to_str(s);
@@ -745,15 +802,22 @@ hval hpbi_urldecode(hval s) {
             i += 2;
         } else buf_putc(&b, x->data[i]);
     }
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_htmlentities(hval s) {
     hstr *x = hp_val_to_str(s);
-    hstr *r = hp_str_replace(x, hp_str_lit("&"), hp_str_lit("&amp;"));
-    r = hp_str_replace(r, hp_str_lit("<"), hp_str_lit("&lt;"));
-    r = hp_str_replace(r, hp_str_lit(">"), hp_str_lit("&gt;"));
-    r = hp_str_replace(r, hp_str_lit("\""), hp_str_lit("&quot;"));
-    RETS(r);
+    Buf b;
+    buf_init(&b);
+    for (size_t i = 0; i < x->len; i++) {
+        switch (x->data[i]) {
+        case '&':  buf_puts(&b, "&amp;"); break;
+        case '<':  buf_puts(&b, "&lt;"); break;
+        case '>':  buf_puts(&b, "&gt;"); break;
+        case '"':  buf_puts(&b, "&quot;"); break;
+        default:   buf_putc(&b, x->data[i]); break;
+        }
+    }
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_htmlspecialchars(hval s) { return hpbi_htmlentities(s); }
 hval hpbi_sprintf(hval fmt, hval args) {
@@ -828,7 +892,7 @@ hval hpbi_sprintf(hval fmt, hval args) {
             break;
         }
     }
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_printf(hval fmt, hval args) {
     hval r = hpbi_sprintf(fmt, args);
@@ -849,7 +913,7 @@ hval hpbi_bin2hex(hval s) {
     Buf b;
     buf_init(&b);
     for (size_t i = 0; i < x->len; i++) buf_printf(&b, "%02x", (unsigned char)x->data[i]);
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_hex2bin(hval s) {
     hstr *x = hp_val_to_str(s);
@@ -859,7 +923,7 @@ hval hpbi_hex2bin(hval s) {
         char hex[3] = { x->data[i], x->data[i + 1], 0 };
         buf_putc(&b, (char)strtol(hex, NULL, 16));
     }
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_str_split(hval s, hval n) {
     hstr *x = hp_val_to_str(s);
@@ -884,7 +948,7 @@ hval hpbi_ucwords(hval s) {
 hval hpbi_wordwrap(hval s, hval w) {
     hstr *x = hp_val_to_str(s);
     size_t width = (size_t)hp_val_to_int(w);
-    if (width == 0) RETS(x);
+    if (width == 0) RETS(hp_str_copy(x));
     Buf b = {0}, word = {0};
     size_t line = 0;
     for (size_t i = 0; i <= x->len; i++) {
@@ -905,8 +969,7 @@ hval hpbi_wordwrap(hval s, hval w) {
         }
         if (c == '\n') { hbuf_putc(&b, '\n'); line = 0; }
     }
-    size_t n = b.len;
-    hstr *out = hp_str_new(hbuf_take(&b), n);
+    hstr *out = hp_str_take_buf(&b);
     RETS(out);
 }
 hval hpbi_similar_text(hval a, hval b) {
@@ -1314,7 +1377,7 @@ hval hpbi_is_numeric(hval v) { RETB(hp_num_like(v)); }
 hval hpbi_intval(hval v) { RETI(hp_val_to_int(v)); }
 hval hpbi_floatval(hval v) { RETF(hp_val_to_float(v)); }
 hval hpbi_doubleval(hval v) { RETF(hp_val_to_float(v)); }
-hval hpbi_strval(hval v) { RETS(hp_val_to_str(v)); }
+hval hpbi_strval(hval v) { RETS(hp_str_copy(hp_val_to_str(v))); }
 hval hpbi_boolval(hval v) { RETB(hp_val_to_bool(v)); }
 hval hpbi_gettype(hval v) { RETS(hp_str_lit(hp_kind_name(v.tag))); }
 
@@ -1357,8 +1420,9 @@ hval hpbi_var_dump(hval v) {
     buf_init(&b);
     hp_dump_r(v, &b, 0);
     buf_puts(&b, "\n");
-    hstr *s = hp_str_lit(buf_take(&b));
+    hstr *s = hp_str_take_buf(&b);
     fwrite(s->data, 1, s->len, stdout);
+    hp_str_free(s);
     RETI(0);
 }
 static void hp_print_r_r(hval v, Buf *b, int depth) {
@@ -1396,7 +1460,7 @@ hval hpbi_print_r(hval v) {
     Buf b;
     buf_init(&b);
     hp_print_r_r(v, &b, 0);
-    hstr *s = hp_str_lit(buf_take(&b));
+    hstr *s = hp_str_take_buf(&b);
     fwrite(s->data, 1, s->len, stdout);
     RETS(s);
 }
@@ -1404,7 +1468,7 @@ hval hpbi_var_export(hval v) {
     Buf b;
     buf_init(&b);
     hp_print_r_r(v, &b, 0);
-    hstr *s = hp_str_lit(buf_take(&b));
+    hstr *s = hp_str_take_buf(&b);
     fwrite(s->data, 1, s->len, stdout);
     RETS(s);
 }
@@ -1651,7 +1715,7 @@ hval hpbi_date2(hval fmt, hval ts) {
         if (c == 'U') { buf_printf(&b, "%lld", (long long)now); continue; }
         buf_putc(&b, c);
     }
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_time(void) { RETI((int64_t)time(NULL)); }
 hval hpbi_usleep(hval us) {
@@ -2978,15 +3042,18 @@ hval hpbi_strip_tags(hval s, hval allowed) {
         else if (c == '>') intag = false;
         else if (!intag) buf_putc(&b, c);
     }
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_html_entity_decode(hval s) {
-    hstr *x = hp_val_to_str(s);
-    hstr *r = hp_str_replace(x, hp_str_lit("&amp;"), hp_str_lit("&"));
-    r = hp_str_replace(r, hp_str_lit("&lt;"), hp_str_lit("<"));
-    r = hp_str_replace(r, hp_str_lit("&gt;"), hp_str_lit(">"));
-    r = hp_str_replace(r, hp_str_lit("&quot;"), hp_str_lit("\""));
-    r = hp_str_replace(r, hp_str_lit("&#39;"), hp_str_lit("'"));
+    hstr *r = hp_replace_c(hp_val_to_str(s), "&amp;", "&");
+    hstr *n = hp_replace_c(r, "&lt;", "<");
+    hp_str_free(r); r = n;
+    n = hp_replace_c(r, "&gt;", ">");
+    hp_str_free(r); r = n;
+    n = hp_replace_c(r, "&quot;", "\"");
+    hp_str_free(r); r = n;
+    n = hp_replace_c(r, "&#39;", "'");
+    hp_str_free(r); r = n;
     RETS(r);
 }
 
@@ -3783,7 +3850,7 @@ hval hpbi_preg_replace(hval pat, hval rep, hval subj) {
     hstr *r = hp_val_to_str(rep);
     hstr *x = hp_val_to_str(subj);
     Rx *tree; int ng;
-    if (!rx_split_pattern(p, &tree, &ng)) RETS(x);
+    if (!rx_split_pattern(p, &tree, &ng)) RETS(hp_str_copy(x));
     Buf out;
     buf_init(&out);
     size_t off = 0;

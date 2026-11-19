@@ -1,0 +1,82 @@
+<?php
+/* ownership_strings_copy.hphp — string builtins that return a copy really do
+ * return an independent heap value. The result is released while the input is
+ * still alive; under ASan a shared pointer would be a use-after-free. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    return false;
+}
+
+$src = "  Hello World  ";
+$plain = "Hello";
+$empty = "";
+$dot = ".";
+
+$r = strtoupper($plain);
+check("strtoupper value", $r == "HELLO");
+unsafe { str_free($r); }
+check("strtoupper left the input intact", $plain == "Hello");
+
+$r = strtolower("Hello");
+check("strtolower value", $r == "hello");
+unsafe { str_free($r); }
+
+$r = ucfirst("hello");
+check("ucfirst value", $r == "Hello");
+unsafe { str_free($r); }
+$r = ucfirst($empty);
+check("ucfirst empty is a copy", $r == "");
+unsafe { str_free($r); }
+
+$r = lcfirst("Hello");
+check("lcfirst value", $r == "hello");
+unsafe { str_free($r); }
+$r = lcfirst($empty);
+check("lcfirst empty is a copy", $r == "");
+unsafe { str_free($r); }
+
+$r = trim($src);
+check("trim value", $r == "Hello World");
+unsafe { str_free($r); }
+check("trim left the input intact", $src == "  Hello World  ");
+$r = ltrim($src);
+check("ltrim value", $r == "Hello World  ");
+unsafe { str_free($r); }
+$r = rtrim($src);
+check("rtrim value", $r == "  Hello World");
+unsafe { str_free($r); }
+$r = chop($src);
+check("chop is rtrim", $r == "  Hello World");
+unsafe { str_free($r); }
+
+$r = strrev($plain);
+check("strrev value", $r == "olleH");
+unsafe { str_free($r); }
+check("strrev left the input intact", $plain == "Hello");
+
+$r = str_pad($plain, 8, $dot);
+check("str_pad grows", $r == "Hello...");
+unsafe { str_free($r); }
+$r = str_pad($plain, 3, $dot);
+check("str_pad shorter input returns a copy", $r == "Hello");
+unsafe { str_free($r); }
+check("str_pad left the input intact", $plain == "Hello");
+
+$r = str_repeat($plain, 2);
+check("str_repeat value", $r == "HelloHello");
+unsafe { str_free($r); }
+check("str_repeat left the input intact", $plain == "Hello");
+
+$num = 42;
+$r = strval($num);
+check("strval value", $r == "42");
+unsafe { str_free($r); }
+$word = "kept";
+$r = strval($word);
+check("strval on a string returns a copy", $r == "kept");
+unsafe { str_free($r); }
+check("strval left the input intact", $word == "kept");
+
+if ($fail == 0) { echo "ownership strings copy ok\n"; } else { exit(1); }

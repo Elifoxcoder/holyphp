@@ -1,0 +1,47 @@
+class MemoryRcNode {
+    pub string $text = "";
+    pub $next = null;
+}
+
+/* This core has no reference counting yet, so the test releases every value
+ * it creates explicitly (str_free / arr_free / object_free, all unsafe). What
+ * it proves is the ownership contract of the builtins used here: each of them
+ * returns a value the caller owns, and releasing it leaves no growth behind.
+ *
+ * String literals used inside a loop are hoisted: a literal is a fresh heap
+ * object per evaluation in this core and is not reclaimed automatically yet
+ * (STATUS.md F2). The loop itself runs 20000 times. */
+
+function churn_strings(int $n, string $x): void {
+    for ($i = 0; $i < $n; $i++) {
+        $value = str_repeat($x, 2048);
+        unsafe { str_free($value); }
+    }
+}
+
+function churn_arrays(int $n): void {
+    $value = [];
+    for ($i = 0; $i < $n; $i++) {
+        $value[] = $i;
+        $value[] = $i + 1;
+        if (count($value) >= 64) { arr_clear($value); }
+    }
+    unsafe { arr_free($value); }
+}
+
+function churn_objects(int $n, string $x): void {
+    for ($i = 0; $i < $n; $i++) {
+        $value = new MemoryRcNode();
+        $value->text = str_repeat($x, 2048);
+        $value->next = $i;
+        unsafe { str_free($value->text); object_free($value); }
+    }
+}
+
+$one = "x";
+for ($round = 0; $round < 5; $round++) {
+    churn_strings(20000, $one);
+    churn_arrays(20000);
+    churn_objects(20000, $one);
+}
+echo "memory rc loops ok\n";

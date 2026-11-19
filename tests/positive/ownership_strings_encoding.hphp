@@ -1,0 +1,58 @@
+<?php
+/* ownership_strings_encoding.hphp — encoders return fresh strings; decoding
+ * accepts a borrowed input. Round-trips prove both directions agree. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$text = "Hello, World!";
+$space = " ";
+$bin = "abc";
+
+$b64 = base64_encode($text);
+check("base64_encode value", $b64 == "SGVsbG8sIFdvcmxkIQ==");
+$r = base64_decode($b64);
+check("base64 round trip", $r == $text);
+unsafe { str_free($r); }
+unsafe { str_free($b64); }
+check("base64 left the input intact", $text == "Hello, World!");
+
+$hex = bin2hex($bin);
+check("bin2hex value", $hex == "616263");
+$r = hex2bin($hex);
+check("hex2bin round trip", $r == $bin);
+unsafe { str_free($r); }
+unsafe { str_free($hex); }
+
+$enc = urlencode("a b+c");
+check("urlencode value", $enc == "a+b%2Bc");
+$r = urldecode($enc);
+check("urldecode round trip", $r == "a b+c");
+unsafe { str_free($r); }
+unsafe { str_free($enc); }
+
+$r = urlencode($space);
+check("urlencode encodes a space", $r == "+");
+unsafe { str_free($r); }
+
+check("decbin", decbin(10) == "1010");
+check("decoct", decoct(8) == "10");
+check("dechex", dechex(255) == "ff");
+check("bindec", bindec("1010") == 10);
+check("octdec", octdec("10") == 8);
+check("hexdec", hexdec("ff") == 255);
+
+check("crc32 is stable", crc32("abc") == crc32("abc"));
+check("crc32 differs", crc32("abc") != crc32("abd"));
+
+$r = md5("abc");
+check("md5 value", $r == "900150983cd24fb0d6963f7d28e17f72");
+unsafe { str_free($r); }
+$r = sha1("abc");
+check("sha1 value", $r == "a9993e364706816aba3e25717850c26c9cd0d89d");
+unsafe { str_free($r); }
+
+if ($fail == 0) { echo "ownership strings encoding ok\n"; } else { exit(1); }

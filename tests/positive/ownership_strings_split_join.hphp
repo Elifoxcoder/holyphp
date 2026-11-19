@@ -1,0 +1,65 @@
+<?php
+/* ownership_strings_split_join.hphp — splitting builtins return an array of
+ * freshly allocated strings, joining builtins return one fresh string. Every
+ * element is released explicitly, then the array itself. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$csv = "a,b,c";
+$comma = ",";
+$empty = "";
+$glue = "-";
+$text = "abcd";
+
+$parts = explode($comma, $csv);
+check("explode count", count($parts) == 3);
+check("explode values", $parts[0] == "a" && $parts[1] == "b" && $parts[2] == "c");
+foreach ($parts as $p) { unsafe { str_free($p); } }
+unsafe { arr_free($parts); }
+check("explode left the input intact", $csv == "a,b,c");
+
+$parts = explode($comma, $empty);
+check("explode empty input", count($parts) == 1 && $parts[0] == "");
+foreach ($parts as $p) { unsafe { str_free($p); } }
+unsafe { arr_free($parts); }
+
+$parts = explode($empty, "ab");
+check("explode empty separator splits characters", count($parts) == 2 && $parts[0] == "a" && $parts[1] == "b");
+foreach ($parts as $p) { unsafe { str_free($p); } }
+unsafe { arr_free($parts); }
+
+$parts = split($comma, $csv);
+check("split alias", count($parts) == 3 && $parts[2] == "c");
+foreach ($parts as $p) { unsafe { str_free($p); } }
+unsafe { arr_free($parts); }
+
+$parts = str_split($text, 2);
+check("str_split count", count($parts) == 2);
+check("str_split values", $parts[0] == "ab" && $parts[1] == "cd");
+foreach ($parts as $p) { unsafe { str_free($p); } }
+unsafe { arr_free($parts); }
+
+$parts = str_split($text, 0);
+check("str_split zero size uses one byte", count($parts) == 4);
+foreach ($parts as $p) { unsafe { str_free($p); } }
+unsafe { arr_free($parts); }
+
+$list = ["a", "b", "c"];
+$r = implode($glue, $list);
+check("implode value", $r == "a-b-c");
+unsafe { str_free($r); }
+check("implode left the array intact", count($list) == 3 && $list[0] == "a");
+
+$r = join($glue, $list);
+check("join alias", $r == "a-b-c");
+unsafe { str_free($r); }
+
+$r = implode($glue, ["x", "y"]);
+check("implode of a literal array", $r == "x-y");
+unsafe { str_free($r); }
+
+if ($fail == 0) { echo "ownership strings split join ok\n"; } else { exit(1); }
