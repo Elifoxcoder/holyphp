@@ -27,6 +27,11 @@ behaves differently, what they have to change.
 - `sqlite_status()` now really returns its JSON text (its declaration said
   `int`), and `bt_read()` / `bt_count_range()` return the integer count /
   status they produce instead of being declared `bool`.
+- New guide page `docs/guide/builtin-ownership.md`: a table of all 547
+  builtins with the ownership contract of the result and the arguments
+  (new value, borrowed, moved out, taken), plus the summary of the unsafe
+  flags. The `ownership_*` test groups and the RSS loop checks live in
+  `tests/` and are described in `tests/README.md`.
 - Builtin ownership audit, misc: the string-builder and typed-int-array
   handles are documented as caller-owned (`sb_take`/`sb_discard`,
   `iarr_release`), `random_bytes()` returns a fresh binary string, and
