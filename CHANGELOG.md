@@ -9,6 +9,22 @@ behaves differently, what they have to change.
 
 ## Unreleased
 
+- SQLite 3.46.1 is now built into the compiler: the pinned amalgamation is
+  vendored under `third_party/sqlite/` (public domain, checksums and build
+  options recorded there), compiled once per platform with the B-tree driver,
+  and linked only into programs that call `sqlite_*` or `bt_*`. Both builtin
+  families therefore work from a clean checkout on Linux and Windows with no
+  system SQLite and no network access; `HPHP_SQLITE_LIB` still substitutes
+  another archive. See `docs/lib-sqlite.html`.
+- New `tests/positive/bt_cursor.hphp` exercises the B-tree cursor builtins
+  (seek, record decoding, index counts, batched tail) against a 36 KiB
+  committed fixture database.
+- New `bash benchmarks/challenge/run.sh` builds the twelve-dollar challenge
+  server with this compiler and runs its 42 acceptance checks in direct
+  (io_uring) and classic mode on a small committed copy of the seed database.
+  Both modes pass, so the SQLite and io_uring runtime modules are checked
+  against a real application from a clean checkout.
+
 - Ordinary `new Class()` expressions now have the normal copyable class type; explicit `own Class` slots can still take a fresh instance.
 - By-reference calls to mutating builtins are checked as one write, and separate scalar by-reference arguments no longer conflict merely because their storage is boxed.
 - Closure escape diagnostics now distinguish values actually passed to a retaining callback from unrelated heap values, while keeping conservative borrow checks for unknown callbacks.

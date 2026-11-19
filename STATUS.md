@@ -1,6 +1,6 @@
 # Status
 
-_Last updated: 2026-10-17._
+_Last updated: 2026-11-19._
 
 Two questions this file answers: what state the repository is in, and how far
 HolyIDE is from being an editor you could use for real work.
@@ -374,3 +374,54 @@ Open, in files this work may not edit:
 
 OOM and `slow-unit` artifacts in the runtime log are the known leaks (F2) and
 inputs that take longer than usual, not memory errors.
+
+---
+
+## 6. Vendored SQLite and the challenge benchmark (2026-11-19)
+
+SQLite is no longer an operator-provided dependency. `third_party/sqlite/`
+holds the 3.46.1 amalgamation (`sqlite3.c`, `sqlite3.h`, `sqlite3ext.h`) with
+its provenance, compile options and published hashes in its README:
+
+```
+archive  sqlite-amalgamation-3460100.zip  SHA3-256 af6aae8d…d1e288
+sqlite3.c                                 SHA3-256 186a1baa…0a7dad
+```
+
+The zip hash matches sqlite.org's download page for the 2024-08-13 release;
+the file hash matches the release log. `scripts/build.sh` concatenates
+`sqlite3.c` with `src/hp_btree.c` (the B-tree builtins use SQLite's private
+structures, so a system library cannot provide them), compiles it once per
+platform with the challenge's options into
+`build/sqlite/<platform>/libsqlite3.a`, and embeds the archive and
+`sqlite3.h` in the compiler as a generated `sqlite_embed.h`. At program link
+time only a program that calls `sqlite_*` or `bt_*` gets the archive; on Linux
+the result is a static link with no `libsqlite3.so` in `NEEDED`. Setting
+`HPHP_SQLITE_LIB` still overrides the embedded archive.
+
+Verification on this branch:
+
+| Check | Windows | Linux (WSL, ELF compiler) |
+|---|---|---|
+| `scripts/build.sh` | build ok, 3.9 MB compiler | build ok, 4.0 MB compiler |
+| `tests/positive/bt_cursor.hphp` | PASS (60 checks) | PASS |
+| plain `examples/hello.hphp` | PASS, no SQLite | PASS, `NEEDED` only libm/libc |
+| full `tests/run.sh` | 56 passed, 1 failed (VS Code LSP test, pre-existing), 0 skipped | 54 passed, 2 failed (`ide_workbench`, docs `pkg_02`/`mathx`, both pre-existing), 1 skipped (no node) |
+
+The challenge suite now lives in the repository:
+`bash benchmarks/challenge/run.sh [both|direct|classic]` builds
+`benchmarks/challenge/server.hphp`, starts it on a fresh copy of
+`benchmarks/challenge/fixture/feed.db` (36 KiB: the 22 posts the golden files
+read, their 23 authors and 98 likes, cut from the deterministic seed by
+`fixture/make-fixture.py`), and runs the bundle's 42 checks. Result:
+**42/42 in direct mode and 42/42 in classic mode**. The server source is
+adapted to this compiler only mechanically (unsafe blocks around raw-pointer
+builtins, `u8_at`/`i64_at` instead of `*p`, definite initialisation); no
+query, algorithm or response changed, and the original golden files still
+match.
+
+Known limits of the port: the background WAL checkpoint worker is
+POSIX-only (the `sqlite_bg_checkpoint_*` calls report `false` on Windows,
+everything else works), and direct io_uring mode is Linux-only (the runtime
+falls back to the classic real-fd path on Windows and when `HPHP_DIRECT=0`).
+
