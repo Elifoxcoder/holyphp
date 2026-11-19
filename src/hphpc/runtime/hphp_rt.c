@@ -327,6 +327,67 @@ int64_t hp_str_to_int(hstr *s) {
     return (int64_t)strtoll(s->data, NULL, 10);
 }
 
+/* ---------- i128 ---------- */
+hstr *hp_i128_to_str(hp_i128 v) {
+    char buf[48];
+    char *p = buf + sizeof buf;
+    hp_u128 u;
+    bool neg = v < 0;
+    /* -(v + 1) + 1 is safe even for the minimum value, whose negation is
+     * not representable */
+    u = neg ? (hp_u128)(-(v + 1)) + 1u : (hp_u128)v;
+    do {
+        *--p = (char)('0' + (int)(u % 10u));
+        u /= 10u;
+    } while (u);
+    if (neg) *--p = '-';
+    return hp_str_new(p, (size_t)(buf + sizeof buf - p));
+}
+
+hp_i128 hp_str_to_i128(hstr *s) {
+    if (!s) return 0;
+    const char *p = s->data;
+    size_t n = s->len, i = 0;
+    bool neg = false;
+    hp_u128 u = 0;
+    while (i < n && isspace((unsigned char)p[i])) i++;
+    if (i < n && (p[i] == '+' || p[i] == '-')) {
+        neg = p[i] == '-';
+        i++;
+    }
+    for (; i < n && isdigit((unsigned char)p[i]); i++)
+        u = u * 10u + (hp_u128)(p[i] - '0');
+    return neg ? -(hp_i128)u : (hp_i128)u;
+}
+
+hval hp_of_i128_str(hp_i128 v) {
+    return hp_of_str(hp_i128_to_str(v));
+}
+
+hp_i128 hp_i128_pow(hp_i128 a, hp_i128 b) {
+    if (b < 0) return 0;   /* integer pow truncates a negative exponent to 0 */
+    hp_i128 r = 1, base = a;
+    while (b) {
+        if (b & 1) r *= base;
+        base *= base;
+        b >>= 1;
+    }
+    return r;
+}
+
+hval hp_i128_var_dump(hp_i128 v) {
+    hstr *s = hp_i128_to_str(v);
+    printf("int(%.*s)\n", (int)s->len, s->data);
+    hp_str_free(s);
+    return hp_of_int(0);
+}
+
+hstr *hp_i128_print_r(hp_i128 v) {
+    hstr *s = hp_i128_to_str(v);
+    fwrite(s->data, 1, s->len, stdout);
+    return s;
+}
+
 double hp_str_to_double(hstr *s) {
     if (!s) return 0;
     return strtod(s->data, NULL);
