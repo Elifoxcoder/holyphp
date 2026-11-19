@@ -22,16 +22,19 @@ measured loop and include the runtime's own `hstr` allocations.
 
 ### Baseline — `safe/sqlite-speed` @ 4437718, 2026-11-19
 
-`-O2`, the challenge's original compile options.
+`-O2`, the challenge's original compile options, and SQLite's default 20-page
+bulk page cache. Measured in the same paired loop as the final build below
+(median of 15 rounds per side, page-cache setting equalised), so the two
+columns are comparable.
 
 | Workload | ns/op | malloc/op | malloc bytes/op |
 |---|---:|---:|---:|
-| point (PK read) | 915 | 1.00 | 163 |
-| range (20-row index scan) | 2 338 | 0.00 | 0 |
-| feed (20-row JSON aggregate) | 35 049 | 28.00 | 21 377 |
-| insert (indexed, 100/commit) | 3 067 | 0.05 | 224 |
-| bt (20 cursor rows) | 550 | 0.00 | 0 |
-| prepare (point statement) | 2 515 | 0.00 | 0 |
+| point (PK read) | 983 | 1.00 | 163 |
+| range (20-row index scan) | 2 452 | 0.00 | 0 |
+| feed (20-row JSON aggregate) | 35 260 | 28.00 | 21 377 |
+| insert (indexed, 100/commit) | 3 301 | 0.05 | 224 |
+| bt (20 cursor rows) | 546 | 0.00 | 0 |
+| prepare (point statement) | 2 480 | 0.00 | 0 |
 
 The `feed` row is where SQLite allocates: the JSON aggregate and its correlated
 lookups build twenty-odd temporary buffers per request, all larger than a
@@ -46,29 +49,44 @@ benchmark mirrors the challenge's locking mode.
 
 ### Kept: compile SQLite with `-O3` and without unused features
 
-Two changes, each measured paired against the previous step, all 21-25 rounds:
+Two changes, each measured paired against the previous step, all 15 rounds,
+with the page-cache setting equalised (`HPHP_SQLITE_PAGECACHE=20`, SQLite's
+default, for both binaries):
 
-| Step | point | feed | insert | range | bt |
-|---|---:|---:|---:|---:|---:|
-| `-O2` → `-O3` | 931 → **893** | 39 018 → **37 490** | 3 293 → **3 207** | 2 409 → 2 393 | 549 → 545 |
-| `-O3` → `-O3` + trims | 895 → **857** | 38 125 → **36 825** | 3 174 → 3 171 | 2 271 → **2 237** | 541 → 539 |
+| Step | point | range | feed | insert | bt | prepare |
+|---|---:|---:|---:|---:|---:|---:|
+| `-O2` → `-O3` | 945 → **935** | 2 518 → **2 462** | 36 553 → **35 498** | 3 426 → **3 293** | 547 → 550 | 2 523 → 2 546 |
+| `-O3` → `-O3` + trims | 943 → **923** | 2 424 → **2 398** | 35 879 → **34 484** | 3 469 → **3 272** | 550 → 551 | 2 554 → **2 418** |
 
 The trims are `SQLITE_OMIT_DEPRECATED`, `SQLITE_OMIT_DECLTYPE` and
 `SQLITE_OMIT_COMPILEOPTION_DIAGS`; none of the removed APIs is exposed by the
 HolyPHP binding. The size effect is small (archive 1 710 854 → 1 702 824
-bytes), so the few percent are most likely code layout in the VDBE dispatch
-loop - still reproducible in both orders.
+bytes), so part of the few percent is probably code layout in the VDBE
+dispatch loop - still reproducible in both orders.
 
-Final absolute run (`-O3` + trims, 50 000 ops, 15 rounds):
+Directly comparing the two builds (the configuration a user gets) in one
+paired loop, 15 rounds, page cache equalised:
+
+| Workload | baseline | final | change |
+|---|---:|---:|---:|
+| point | 983 | 902 | −8% |
+| range | 2 452 | 2 336 | −5% |
+| feed | 35 260 | 33 160 | −6% |
+| insert | 3 301 | 3 133 | −5% |
+| bt | 546 | 544 | −0.4% |
+| prepare | 2 480 | 2 384 | −4% |
+
+The final build, same paired loop as the baseline above (ns/op with the
+malloc counts from the exact counter runs):
 
 | Workload | ns/op | malloc/op | malloc bytes/op |
 |---|---:|---:|---:|
-| point | 872 | 1.00 | 163 |
-| range | 2 253 | 0.00 | 0 |
-| feed | 32 361 | 28.00 | 21 377 |
-| insert | 3 082 | 0.05 | 215 |
-| bt | 543 | 0.00 | 0 |
-| prepare | 2 353 | 0.00 | 0 |
+| point | 902 | 1.00 | 163 |
+| range | 2 336 | 0.00 | 0 |
+| feed | 33 160 | 28.00 | 21 377 |
+| insert | 3 133 | 0.05 | 215 |
+| bt | 544 | 0.00 | 0 |
+| prepare | 2 384 | 0.00 | 0 |
 
 Malloc counts are unchanged: the remaining allocations are the JSON aggregate's
 string buffers and the runtime's `hstr`, not SQLite bookkeeping.
@@ -77,7 +95,7 @@ string buffers and the runtime's `hstr`, not SQLite bookkeeping.
 
 | Change | Measurement | Why rejected |
 |---|---|---|
-| Lookaside 1200 × 400 instead of the default 1200 × 40 | feed: 28 → 28 malloc/op, 39.9 → 39.3 µs (noise) | +480 KiB per connection for nothing; the default already covers every small object. Turning lookaside *off* does hurt (28 → 119 malloc/op), so the default is worth keeping. |
+| Lookaside 1200 × 400 instead of the default 1200 × 40 | feed: 28 → 28 malloc/op, ns unchanged (absolute numbers were taken before the benchmark moved to `unix-excl`, so they are higher; the count is what matters) | +480 KiB per connection for nothing; the default already covers every small object. Turning lookaside *off* does hurt (28 → 119 malloc/op), so the default is worth keeping. |
 | Page cache bulk of 512 pages instead of SQLite's 20 | paired, 21 rounds: point 936 → 953, range 2 362 → 2 409, feed 34 515 → 35 336; insert 3 195 → 3 181 | reads got slower, inserts did not get faster; 2 MiB per connection up front. Malloc bytes/op on insert drop (224 → 159), but not enough to pay for the memory. |
 | `SQLITE_PREPARE_PERSISTENT` for `sqlite_prepare` | prepare: 2 552 → 2 136 ns (faster) but 0 → 23 malloc/op; point/feed unchanged | helps only the one-time prepare, adds heap churn; the hot path is unchanged. |
 | `SQLITE_CONFIG_HEAP` (MEMSYS5) with a 64 MiB fixed heap | paired, 15 rounds: point 916 → 922, range 2 399 → 2 472, feed 38 285 → 38 448, insert neutral | no speed win, and a fixed heap smaller than page cache + working set fails with `SQLITE_NOMEM`; a default would break larger databases. |

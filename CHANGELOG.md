@@ -27,7 +27,7 @@ behaves differently, what they have to change.
 - The vendored SQLite is compiled with `-O3` and without APIs HolyPHP does not
   expose (`SQLITE_OMIT_DEPRECATED`, `SQLITE_OMIT_DECLTYPE`,
   `SQLITE_OMIT_COMPILEOPTION_DIAGS`). Prepared-statement reads and inserts are
-  4-7% faster in the new `benchmarks/sqlite/` micro benchmark; see
+  4-8% faster in the new `benchmarks/sqlite/` micro benchmark; see
   `benchmarks/RESULTS.md`. A change to the SQLite flags now rebuilds the
   archive even when the sources are unchanged.
 

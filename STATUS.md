@@ -439,7 +439,7 @@ the point-read time. Numbers and the paired A/B method are in
 Kept: the vendored SQLite is compiled with `-O3`, and its unused-feature list
 gained `SQLITE_OMIT_DEPRECATED`, `SQLITE_OMIT_DECLTYPE` and
 `SQLITE_OMIT_COMPILEOPTION_DIAGS` (none of those APIs is reachable from
-HolyPHP). Paired runs give about 4% on point reads, 4% on inserts and 1-4% on
+HolyPHP). Paired runs give about 4-8% on point reads, range scans, inserts and
 the JSON feed; the B-tree cursor path is unchanged. `scripts/build.sh` now
 stamps the flags used for the archive so a flag change rebuilds it.
 
@@ -456,4 +456,12 @@ allocations per request are the JSON aggregate's string buffers, and the
 `point`/`feed` counts also include the `hstr` that `sqlite_column_text` must
 return. Reducing those needs the memory-model work (regions / reference
 counting), not another SQLite knob.
+
+Verification on this branch with the new archive: `bash tests/run.sh` gives the
+same 54 passed and the same two pre-existing failures (`ide_workbench`, docs
+snippet `pkg_02` importing `mathx`); `bash benchmarks/challenge/run.sh both`
+passes 42/42 in direct and classic mode; `scripts/check-repo.sh` is clean.
+`tests/run.sh --asan` was run in WSL: 54 tests with findings, 1 passed, the
+same picture as section 4, and no stack frame in `hphp_sqlite.c`,
+`hp_btree.c` or `sqlite3.c`.
 
