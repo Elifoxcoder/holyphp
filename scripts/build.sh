@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # build.sh — build the hphp toolchain binary.
 #
-# 1. regenerates the embedded runtime header (scripts/genembed.c)
-# 2. compiles compiler objects with gcc -c (rock solid)
-# 3. links with ld directly — the gcc driver's collect2 intermittently fails
+# 1. builds the vendored SQLite once (with src/hp_btree.c appended) into a
+#    static library; genembed then embeds it and sqlite3.h into the compiler
+# 2. regenerates the embedded runtime header (scripts/genembed.c)
+# 3. compiles compiler objects with gcc -c (rock solid)
+# 4. links with ld directly — the gcc driver's collect2 intermittently fails
 #    on this machine (on-access AV scanners); manual ld always succeeds.
 set -u
 cd "$(dirname "$0")/.."
@@ -15,7 +17,63 @@ CC=${CC:-gcc}
 CFLAGS=${HPHP_CFLAGS:-"-O2 -std=c11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable"}
 OUT=${HPHP_OUT:-hphp.exe}
 
-# 1. embed the runtime sources into the compiler binary
+# 1. build the vendored SQLite static library once per platform/toolchain.
+#    The amalgamation is pinned in third_party/sqlite (see its README) and the
+#    B-tree driver is appended to it: it uses SQLite's private Btree API.
+#    HPHP_SQLITE_H / HPHP_SQLITE_C / HPHP_SQLITE_BTREE / HPHP_SQLITE_CFLAGS are
+#    only there for experiments; the default is the vendored tree.
+#    The library is embedded into the compiler, so a program links it without
+#    a system sqlite3 and without network access.
+SQLITE_H=${HPHP_SQLITE_H:-third_party/sqlite/sqlite3.h}
+SQLITE_C=${HPHP_SQLITE_C:-third_party/sqlite/sqlite3.c}
+SQLITE_BTREE=${HPHP_SQLITE_BTREE:-src/hp_btree.c}
+# Per-OS directory: Windows and WSL share this checkout, and their .o files
+# are not interchangeable.
+SQLITE_PLAT=$(uname -s | tr -c 'A-Za-z0-9._-' '_')
+SQLITE_DIR="build/sqlite/$SQLITE_PLAT-$(uname -m)"
+SQLITE_LIB="$SQLITE_DIR/libsqlite3.a"
+# The options the challenge build used: no unused SQLite features, thread-safe
+# (the background checkpoint worker uses its own connection), and the fast
+# allocator/time calls. SQLITE_USE_ALLOCA needs the stack limit SQLite expects.
+SQLITE_DEFS=(
+  SQLITE_THREADSAFE=2
+  SQLITE_DEFAULT_MEMSTATUS=0
+  SQLITE_OMIT_PROGRESS_CALLBACK
+  SQLITE_OMIT_SHARED_CACHE
+  SQLITE_OMIT_LOAD_EXTENSION
+  SQLITE_OMIT_AUTOINIT
+  SQLITE_OMIT_UTF16
+  SQLITE_OMIT_TRACE
+  SQLITE_OMIT_COMPLETE
+  SQLITE_OMIT_GET_TABLE
+  SQLITE_OMIT_TCL_VARIABLE
+  SQLITE_USE_ALLOCA
+  HAVE_FDATASYNC=1
+  HAVE_USLEEP=1
+)
+if [[ ! -f "$SQLITE_H" || ! -f "$SQLITE_C" || ! -f "$SQLITE_BTREE" ]]; then
+  echo "sqlite: vendored sources missing ($SQLITE_C, $SQLITE_H, $SQLITE_BTREE)"
+  exit 1
+fi
+if [[ ! -f "$SQLITE_LIB" || "$SQLITE_C" -nt "$SQLITE_LIB" ||
+      "$SQLITE_H" -nt "$SQLITE_LIB" || "$SQLITE_BTREE" -nt "$SQLITE_LIB" ]]; then
+  mkdir -p "$SQLITE_DIR" || { echo "sqlite: cannot create $SQLITE_DIR"; exit 1; }
+  cat "$SQLITE_C" "$SQLITE_BTREE" > "$SQLITE_DIR/sqlite3_all.c" || exit 1
+  sqlite_flags=()
+  for def in "${SQLITE_DEFS[@]}"; do sqlite_flags+=("-D$def"); done
+  # -O2 and no LTO: the same archive is used for every program, and it must
+  # link with the plain gcc driver. -fno-strict-aliasing is required by SQLite.
+  $CC ${HPHP_SQLITE_CFLAGS:--O2} -std=c11 -fno-strict-aliasing \
+      -I"$(dirname "$SQLITE_H")" "${sqlite_flags[@]}" \
+      -c "$SQLITE_DIR/sqlite3_all.c" -o "$SQLITE_DIR/sqlite3.o" \
+    || { echo "sqlite: compile failed"; exit 1; }
+  rm -f "$SQLITE_LIB"
+  ${AR:-ar} rcs "$SQLITE_LIB" "$SQLITE_DIR/sqlite3.o" \
+    || { echo "sqlite: ar failed"; exit 1; }
+  echo "sqlite: built $(basename "$SQLITE_LIB") ($(stat -c%s "$SQLITE_LIB") bytes)"
+fi
+
+# 2. embed the runtime sources into the compiler binary
 # (name differs per platform: gcc on MinGW auto-appends .exe, Linux does not;
 #  failure is fatal — a stale embed silently breaks the produced binary)
 GE=build/genembed
@@ -28,7 +86,10 @@ mkdir -p src/hphpc
 # compiler, so imports such as "html" work without files on disk.
 libs=(packages/lib/*/*.hphp)
 [ -e "${libs[0]}" ] || libs=()
-"$GE" src/hphpc/runtime_embed.h src/hphpc/runtime "${libs[@]}" || { echo "embed failed"; exit 1; }
+"$GE" src/hphpc/runtime_embed.h src/hphpc/runtime "${libs[@]}" \
+      --sqlite-h "$SQLITE_H" --sqlite-lib "$SQLITE_LIB" \
+      --sqlite-embed src/hphpc/sqlite_embed.h \
+  || { echo "embed failed"; exit 1; }
 
 if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == *NT* || -n "${OS:-}" && "${OS:-}" == Windows_NT ]]; then
   # ---- MinGW/Windows: link the PE image directly with ld ----

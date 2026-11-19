@@ -12,6 +12,8 @@ hphp_out.*
 hp_demo*
 *.gen.c
 build_log.txt
+# generated: the vendored SQLite archive built for this host (differs per OS)
+/src/hphpc/sqlite_embed.h
 
 # cargo build output (the Rust baseline lives in scratch/)
 target/
