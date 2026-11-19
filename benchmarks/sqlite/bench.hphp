@@ -77,8 +77,20 @@ $warm_bt = 200;
 $warm_prepare = 200;
 
 $db = 0;
+/* The challenge opens with the unix-excl VFS (start.sh sets
+ * HPHP_SQLITE_VFS=unix-excl): the process owns the database lock, so SQLite
+ * does not take a file lock per read transaction. Mirror that; on a platform
+ * without the VFS, fall back to the default. BENCH_VFS overrides it. */
+$vfs = getenv("BENCH_VFS");
+if ($vfs === false || $vfs == "") { $vfs = "unix-excl"; }
+if ($vfs == "default") { $vfs = ""; }
 unsafe {
-    $db = sqlite_open($db_path);
+    if ($vfs != "") {
+        $db = sqlite_open_vfs($db_path, $vfs);
+    }
+    if ($db == 0) {
+        $db = sqlite_open($db_path);
+    }
 }
 if ($db == 0) {
     echo "bench: cannot open " . $db_path . "\n";

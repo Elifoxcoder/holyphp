@@ -23,9 +23,11 @@ Each workload is timed around its own loop (`hrtime(true)`, ns resolution):
 | `prepare` | `sqlite_prepare` + `sqlite_finalize` of the point query |
 
 `run.sh` runs every workload in a fresh process on a fresh database copy (on
-tmpfs when available, so disk I/O is not the variable), reports the smallest
-of `--repeat` timed runs, and then counts allocations with
-[`malloc_count.c`](malloc_count.c), an `LD_PRELOAD` shim over glibc's
+tmpfs when available, so disk I/O is not the variable), opens it with the
+challenge's `unix-excl` VFS (no per-transaction file locking;
+`BENCH_VFS=default` uses SQLite's default, `BENCH_VFS=` names another VFS),
+reports the smallest of `--repeat` timed runs, and then counts allocations
+with [`malloc_count.c`](malloc_count.c), an `LD_PRELOAD` shim over glibc's
 `__libc_malloc` family. The counting run with `BENCH_ITERS=0` includes the same
 setup and warm-up; subtracting it leaves the marginal malloc calls and bytes
 per measured operation.
