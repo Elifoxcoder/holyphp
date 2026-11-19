@@ -3123,6 +3123,9 @@ static const Type *check_expr(Scope *sc, Expr *e) {
             } else {
                 sema_error(&e->u.assign.op, "invalid operand types for compound assignment");
             }
+            if (op != T_DOTASSIGN && vt && vt->kind == TY_I128 &&
+                tt && tt->kind != TY_I128)
+                reject_i128_lossy(&e->tok, tt, vt, "compound assignment");
         }
         /* An empty array literal fits any array slot: `$xs = [];` is how a
          * typed list is cleared, and there are no elements to contradict the
@@ -3465,6 +3468,21 @@ static const Type *check_expr(Scope *sc, Expr *e) {
             sema_error(&e->tok, "cast to raw pointer '%s' requires an unsafe block", type_to_string(to));
         if (to->kind == TY_PTR && !type_is_pointerish(from->kind) && from->kind != TY_INT)
             sema_error(&e->tok, "cannot cast %s to raw pointer", type_to_string(from));
+        /* i128 only converts to scalars (and to another i128); anything else
+         * would have to go through an hval, which has 64 bits */
+        if (from && from->kind == TY_I128) {
+            switch (to->kind) {
+            case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64:
+            case TY_I128: case TY_FLOAT: case TY_F32: case TY_F64:
+            case TY_BOOL: case TY_STRING:
+                break;
+            default:
+                sema_error(&e->tok,
+                           "cannot cast i128 to %s; convert with (int) or strval() first",
+                           type_to_string(to));
+                break;
+            }
+        }
         e->type = to;
         return e->type;
     }
