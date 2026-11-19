@@ -1,0 +1,35 @@
+<?php
+/* ownership_math_serialize.hphp — debug/serialization builtins return a new
+ * string (they also print, like PHP). Releasing the result leaves the input
+ * untouched. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$data = [1, 2];
+$r = serialize($data);
+check("serialize returned text", strlen($r) > 0);
+unsafe { str_free($r); }
+check("serialize left the array intact", count($data) == 2);
+
+$r = print_r($data);
+check("print_r returned text", str_contains($r, "Array"));
+unsafe { str_free($r); }
+
+$r = var_export($data);
+check("var_export returned text", strlen($r) > 0);
+unsafe { str_free($r); }
+
+var_dump($data);
+
+$copy = [3, 4];
+$r = serialize($copy);
+$again = serialize($copy);
+check("serialize is deterministic", $r == $again);
+unsafe { str_free($r); str_free($again); }
+
+unsafe { arr_free($data); arr_free($copy); }
+echo "ownership math serialize ok\n";

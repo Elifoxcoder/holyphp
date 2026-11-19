@@ -27,6 +27,13 @@ behaves differently, what they have to change.
 - `sqlite_status()` now really returns its JSON text (its declaration said
   `int`), and `bt_read()` / `bt_count_range()` return the integer count /
   status they produce instead of being declared `bool`.
+- Builtin ownership audit, math: `srand()`/`mt_srand()` now really reset the
+  sequence (the one-time time seed used to overwrite the first user seed),
+  `lcg_value()` works (the builtin had no implementation, so any program using
+  it failed to link), and `atan2()` accepts its documented two arguments
+  instead of being declared as a one-argument builtin. Math builtins borrow
+  their numbers and allocate nothing.
+
 - Builtin ownership audit, arrays: `shuffle()` now mutates the array and
   returns `true` like PHP (it used to build a new array that the declared
   `bool` return threw away), and `array_splice()` removes the requested range

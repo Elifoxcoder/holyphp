@@ -1754,9 +1754,9 @@ hval hpbi_sleep(hval s) {
 #endif
     RETI(0);
 }
+static bool hp_seeded = false;
 static void hp_seed_once(void) {
-    static bool seeded = false;
-    if (!seeded) { srand((unsigned)time(NULL)); seeded = true; }
+    if (!hp_seeded) { srand((unsigned)time(NULL)); hp_seeded = true; }
 }
 hval hpbi_rand(hval mn, hval mx) {
     hp_seed_once();
@@ -1764,6 +1764,10 @@ hval hpbi_rand(hval mn, hval mx) {
         RETI(hp_val_to_int(mn) + (int64_t)rand() %
              (hp_val_to_int(mx) - hp_val_to_int(mn) + 1));
     RETI((int64_t)rand());
+}
+hval hpbi_lcg_value(void) {
+    hp_seed_once();
+    return hp_of_float((double)rand() / ((double)RAND_MAX + 1.0));
 }
 hval hpbi_mt_rand(hval mn, hval mx) {
     hp_seed_once();
@@ -1773,8 +1777,8 @@ hval hpbi_mt_rand(hval mn, hval mx) {
                  (double)(hp_val_to_int(mx) - hp_val_to_int(mn)));
     RETF((double)rand() / (double)RAND_MAX);
 }
-hval hpbi_srand(hval seed) { srand((unsigned)hp_val_to_int(seed)); return hp_null; }
-hval hpbi_mt_srand(hval seed) { srand((unsigned)hp_val_to_int(seed)); return hp_null; }
+hval hpbi_srand(hval seed) { srand((unsigned)hp_val_to_int(seed)); hp_seeded = true; return hp_null; }
+hval hpbi_mt_srand(hval seed) { srand((unsigned)hp_val_to_int(seed)); hp_seeded = true; return hp_null; }
 hval hpbi_random_int(hval mn, hval mx) { return hpbi_rand(mn, mx); }
 hval hpbi_fgetc(hval stream) {
     int c = fgetc(stdin);

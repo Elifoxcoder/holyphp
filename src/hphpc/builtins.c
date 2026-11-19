@@ -202,7 +202,7 @@ void builtins_init(void) {
     add("cos",           B_ABS,     ty_float,  false, false);
     add("tan",           B_ABS,     ty_float,  false, false);
     add("atan",          B_ABS,     ty_float,  false, false);
-    add("atan2",         B_ABS,     ty_float,  false, false);
+    add("atan2",         B_MISC,    ty_float,  false, false);
     add("asin",          B_ABS,     ty_float,  false, false);
     add("acos",          B_ABS,     ty_float,  false, false);
     add("log",           B_ABS,     ty_float,  false, false);

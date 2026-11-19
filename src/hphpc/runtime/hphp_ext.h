@@ -75,6 +75,7 @@ hval hpbi_jwt_verify(hval tok, hval secret, hval now);
 hval hpbi_jwt_verify_prepared(hval tok, hval prepared, hval now);
 hval hpbi_live_allocs(void);
 hval hpbi_live_bytes(void);
+hval hpbi_lcg_value(void);
 hval hpbi_nofile_limit(void);
 hval hpbi_object_free(hval obj);
 hval hpbi_runtime_diag_write(hval message);
