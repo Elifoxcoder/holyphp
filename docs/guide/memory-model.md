@@ -1,10 +1,10 @@
-﻿# HolyPHP memory model
+# HolyPHP memory model
 
 This document specifies the ownership contract for phase 1 and the later region
 optimization. HolyPHP already checks a subset of borrows. Generated ownership
-cleanup and runtime reclamation are implemented for the paths listed below;
-cycle collection, weak properties, and builtin ownership metadata remain later
-work.
+cleanup and runtime reclamation are implemented for the paths listed below.
+Automatic cycle collection covers object/closure graphs, and weak properties
+are supported; builtin ownership metadata remains later work.
 
 ## Values and owners
 
@@ -63,16 +63,15 @@ Plain HolyPHP code needs none of these annotations.
 
 Reference counting alone cannot reclaim strong cycles. The default object
 policy therefore includes a cycle collector; there is no global opt-out.
-Objects participate in a runtime graph, with strong object fields counted as
-edges and weak properties excluded. At safe points (allocation pressure and
-periodically after a batch of object releases), the collector identifies
-candidate objects, computes their internal incoming strong edges, and treats
-objects with external owners as roots. Unreachable candidates are marked as a
-group, their fields are dropped once, weak handles are cleared, then storage is
-freed. The common acyclic path costs only retain/release operations; a cycle
-pass costs O(V+E) over the candidate subgraph and is amortized. Collection must
-not run while an object graph is being mutated or while a borrowed reference is
-exposed to native code.
+Objects, arrays, and closures participate in a runtime graph. Generated class
+and closure trace callbacks expose strong fields and captures; arrays are
+traced by the runtime. At safe points the collector subtracts internal
+incoming edges from trial counts,
+marks nodes with external owners as roots, then frees unmarked groups after
+invalidating weak handles. Small heaps are scanned on release; larger heaps are
+scanned after batches of reference releases. A pass is O(V+E) over registered
+nodes and edges. Collection must not run while an object graph is being mutated
+or while a borrowed reference is exposed to native code.
 
 `public weak Node $parent;` stores a weak handle. Reading it returns `Node?`;
 if the target has died it returns `null`. Assigning a target does not keep it
@@ -151,9 +150,30 @@ nonlocal exits, drops closure captures, and handles exception cleanup. Array
 writes, including nested indexed writes, detach shared arrays. A churn test
 checks that RSS stabilizes for strings, arrays, objects, and capturing closures.
 
-The current generated object header has a class-specific drop callback, but
-does not yet trace strong object edges. Consequently strong object cycles can
-remain allocated; weak-property syntax and invalidation are not implemented.
+Generated class and closure callbacks trace strong references. The collector
+reclaims cycles and invalidates weak properties before freeing object storage.
+The RSS regression includes self-referential objects and object/closure cycles.
 Builtin ownership metadata also remains for task 1.4, so builtins that retain,
 consume, or alias heap arguments still require a separate audit. WSL is
 unavailable in the current environment, so sanitizer verification has not run.
+
+Array-list and string indexing now checks bounds in the runtime and throws a
+catchable error on an invalid read. Map lookups remain nullable for missing
+keys. The compiler currently emits a check for each such read; loop range
+proofs and check elimination are not implemented.
+
+The parser and semantic checker support the per-file
+`declare(enforce_memory_safety=1);` directive. It rejects unsafe blocks and
+builtin calls whose `builtins.c` entry has its unsafe flag set. Safe code
+continues to compile normally. The directive does not imply that all of the
+remaining guarantees in the safety plan have been implemented.
+
+Thread checking is currently partial: literal closures passed directly to
+`thr_spawn` or `thr_parallel_map` reject by-reference and non-Sync captures.
+Indirectly passed callbacks are rejected because their captures cannot yet be
+verified. Only immutable scalar/string capture types are currently accepted;
+class names do not establish `Sync`, and class captures are rejected until a
+verifiable Sync contract exists. The checker does not yet enforce channel
+ownership transfer, and the bundled `Thread`/`Pool` wrappers fail the current
+callback restrictions. The thread runtime shares raw heap handles across
+threads, so the threading guarantee is not yet enforced.

@@ -201,7 +201,9 @@ function colorName(Farbe $f): string {
     <tr><td>Mutable borrow</td><td><code>&amp;mut $x</code></td><td>exactly one at a time</td></tr>
     <tr><td>Owned box</td><td><code>own&lt;T&gt;</code></td><td>exclusive ownership, moves</td></tr>
     <tr><td>Shared pointer</td><td><code>Rc&lt;T&gt;</code></td><td>shared ownership syntax backed by the reference-counting runtime</td></tr>
+    <tr><td>Weak property</td><td><code>public weak Node $parent;</code></td><td>non-owning nullable reference; reads as <code>Node?</code></td></tr>
     <tr><td>Raw pointer</td><td><code>*T</code> / <code>&amp;$x</code> under <code>unsafe</code></td><td>only inside <code>unsafe {}</code></td></tr>
+    <tr><td>Memory safety mode</td><td><code>declare(enforce_memory_safety=1);</code></td><td>rejects unsafe blocks and calls to builtins marked unsafe</td></tr>
   </table>
 <pre><code class="hphp">// borrow checker at compile time:
 function laenge(string $text): int {     // takes an immutable borrow
@@ -221,11 +223,20 @@ echo laenge($w);        // owner keeps $w
   <div class="note warn"><b>unsafe:</b> raw pointer operations need an unsafe block. The
   compiler cannot guarantee memory safety for code that uses raw pointers or escapes the
   supported borrow rules.</div>
+  <p>Use <code>declare(enforce_memory_safety=1);</code> at the start of a file to make
+  unsafe blocks and calls to builtins marked unsafe compile errors. This mode applies to
+  functions declared in that file.</p>
   <p><b>Runtime memory:</b> generated owners retain and release strings, arrays, closures,
-  and class instances. Arrays detach on mutation when shared. Object cycles and weak
-  properties are part of the target model, but cycle collection is not yet implemented;
-  programs that create strong object cycles can retain those graphs. See the
-  <a href="guide/memory-model.md">memory model guide</a> for ownership rules and limits.</p>
+  and class instances. Arrays detach on mutation when shared. Strong cycles across objects,
+  arrays, and closures are collected automatically. A <code>weak</code> property does not
+  keep its target alive; it reads as a nullable value and becomes <code>null</code> after
+  collection. See the <a href="guide/memory-model.md">memory model guide</a> for ownership
+  rules and remaining limits.</p>
+  <p><b>Indexing:</b> array-list and string reads check their bounds at runtime. An
+  out-of-range read raises a catchable error ("Array index out of bounds" or
+  "String index out of bounds"). Map lookups for absent keys continue to return
+  <code>null</code>. Bounds checks currently run on each read; the compiler does not
+  yet remove checks for proven-safe loops.</p>
 
   <h2 id="imports">Imports &amp; the stdlib</h2>
   <p>Libraries ship inside the compiler binary — <code>import</code> finds them with no files
