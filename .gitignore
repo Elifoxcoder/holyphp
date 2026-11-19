@@ -34,6 +34,9 @@ registry/server.log
 tests/fuzz/artifacts/
 tests/fuzz/logs/
 
+# challenge benchmark: the server binary built by run.sh
+benchmarks/challenge/bin/
+
 # editor / OS
 .freebuff/
 Thumbs.db
