@@ -24,6 +24,12 @@ behaves differently, what they have to change.
   (io_uring) and classic mode on a small committed copy of the seed database.
   Both modes pass, so the SQLite and io_uring runtime modules are checked
   against a real application from a clean checkout.
+- The vendored SQLite is compiled with `-O3` and without APIs HolyPHP does not
+  expose (`SQLITE_OMIT_DEPRECATED`, `SQLITE_OMIT_DECLTYPE`,
+  `SQLITE_OMIT_COMPILEOPTION_DIAGS`). Prepared-statement reads and inserts are
+  4-7% faster in the new `benchmarks/sqlite/` micro benchmark; see
+  `benchmarks/RESULTS.md`. A change to the SQLite flags now rebuilds the
+  archive even when the sources are unchanged.
 
 - Ordinary `new Class()` expressions now have the normal copyable class type; explicit `own Class` slots can still take a fresh instance.
 - By-reference calls to mutating builtins are checked as one write, and separate scalar by-reference arguments no longer conflict merely because their storage is boxed.

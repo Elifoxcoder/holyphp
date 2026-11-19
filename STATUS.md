@@ -425,3 +425,35 @@ POSIX-only (the `sqlite_bg_checkpoint_*` calls report `false` on Windows,
 everything else works), and direct io_uring mode is Linux-only (the runtime
 falls back to the classic real-fd path on Windows and when `HPHP_DIRECT=0`).
 
+### SQLite speed work (task 4.4, 2026-11-19)
+
+`benchmarks/sqlite/` measures the module's own hot path — point read by primary
+key, 20-row index range, the challenge's JSON feed query, a small indexed
+insert, a 20-row B-tree cursor walk and a bare `sqlite_prepare` — and counts
+allocations per operation with an `LD_PRELOAD` malloc counter. It opens the
+database with `unix-excl` like `challenge/start.sh`; with SQLite's default VFS
+every read transaction pays three `fcntl` locks and a `fstat`, which doubles
+the point-read time. Numbers and the paired A/B method are in
+`benchmarks/RESULTS.md`.
+
+Kept: the vendored SQLite is compiled with `-O3`, and its unused-feature list
+gained `SQLITE_OMIT_DEPRECATED`, `SQLITE_OMIT_DECLTYPE` and
+`SQLITE_OMIT_COMPILEOPTION_DIAGS` (none of those APIs is reachable from
+HolyPHP). Paired runs give about 4% on point reads, 4% on inserts and 1-4% on
+the JSON feed; the B-tree cursor path is unchanged. `scripts/build.sh` now
+stamps the flags used for the archive so a flag change rebuilds it.
+
+Rejected after measurement, each with the numbers in `benchmarks/RESULTS.md`:
+a 480 KiB lookaside (no malloc removed; the 48 KiB default already covers every
+small object, while disabling lookaside costs 28 → 119 malloc/op), a 512-page
+bulk page-cache allocation (reads 2% slower, inserts unchanged), persistent
+prepared statements (only the one-time prepare changes), a fixed MEMSYS5 heap
+(no speed win, `SQLITE_NOMEM` risk), and "statement journal off" (the challenge
+statements create no statement journal at all).
+
+The remaining per-request allocations are not SQLite bookkeeping: the feed's 28
+allocations per request are the JSON aggregate's string buffers, and the
+`point`/`feed` counts also include the `hstr` that `sqlite_column_text` must
+return. Reducing those needs the memory-model work (regions / reference
+counting), not another SQLite knob.
+

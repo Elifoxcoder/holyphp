@@ -48,6 +48,9 @@ SQLITE_DEFS=(
   SQLITE_OMIT_GET_TABLE
   SQLITE_OMIT_TCL_VARIABLE
   SQLITE_USE_ALLOCA
+  SQLITE_OMIT_DEPRECATED
+  SQLITE_OMIT_DECLTYPE
+  SQLITE_OMIT_COMPILEOPTION_DIAGS
   HAVE_FDATASYNC=1
   HAVE_USLEEP=1
 )
@@ -55,21 +58,30 @@ if [[ ! -f "$SQLITE_H" || ! -f "$SQLITE_C" || ! -f "$SQLITE_BTREE" ]]; then
   echo "sqlite: vendored sources missing ($SQLITE_C, $SQLITE_H, $SQLITE_BTREE)"
   exit 1
 fi
+# Remember the flags that produced the archive: a change to SQLITE_DEFS or
+# HPHP_SQLITE_CFLAGS must rebuild it, even though the sources did not change.
+SQLITE_FLAGS_LINE="$CC ${HPHP_SQLITE_CFLAGS:--O3} ${SQLITE_DEFS[*]}"
+SQLITE_FLAGS_STAMP="$SQLITE_DIR/flags.txt"
 if [[ ! -f "$SQLITE_LIB" || "$SQLITE_C" -nt "$SQLITE_LIB" ||
-      "$SQLITE_H" -nt "$SQLITE_LIB" || "$SQLITE_BTREE" -nt "$SQLITE_LIB" ]]; then
+      "$SQLITE_H" -nt "$SQLITE_LIB" || "$SQLITE_BTREE" -nt "$SQLITE_LIB" ||
+      ! -f "$SQLITE_FLAGS_STAMP" ||
+      "$(cat "$SQLITE_FLAGS_STAMP" 2>/dev/null)" != "$SQLITE_FLAGS_LINE" ]]; then
   mkdir -p "$SQLITE_DIR" || { echo "sqlite: cannot create $SQLITE_DIR"; exit 1; }
   cat "$SQLITE_C" "$SQLITE_BTREE" > "$SQLITE_DIR/sqlite3_all.c" || exit 1
   sqlite_flags=()
   for def in "${SQLITE_DEFS[@]}"; do sqlite_flags+=("-D$def"); done
-  # -O2 and no LTO: the same archive is used for every program, and it must
-  # link with the plain gcc driver. -fno-strict-aliasing is required by SQLite.
-  $CC ${HPHP_SQLITE_CFLAGS:--O2} -std=c11 -fno-strict-aliasing \
+  # -O3 and no LTO: the same archive is used for every program, and it must
+  # link with the plain gcc driver. -O3 measured 4% on point reads and inserts
+  # against -O2 (benchmarks/RESULTS.md); -fno-strict-aliasing is required by
+  # SQLite.
+  $CC ${HPHP_SQLITE_CFLAGS:--O3} -std=c11 -fno-strict-aliasing \
       -I"$(dirname "$SQLITE_H")" "${sqlite_flags[@]}" \
       -c "$SQLITE_DIR/sqlite3_all.c" -o "$SQLITE_DIR/sqlite3.o" \
     || { echo "sqlite: compile failed"; exit 1; }
   rm -f "$SQLITE_LIB"
   ${AR:-ar} rcs "$SQLITE_LIB" "$SQLITE_DIR/sqlite3.o" \
     || { echo "sqlite: ar failed"; exit 1; }
+  printf '%s\n' "$SQLITE_FLAGS_LINE" > "$SQLITE_FLAGS_STAMP" || exit 1
   echo "sqlite: built $(basename "$SQLITE_LIB") ($(stat -c%s "$SQLITE_LIB") bytes)"
 fi
 
