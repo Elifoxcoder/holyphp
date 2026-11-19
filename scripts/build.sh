@@ -71,9 +71,9 @@ if [[ ! -f "$SQLITE_LIB" || "$SQLITE_C" -nt "$SQLITE_LIB" ||
   sqlite_flags=()
   for def in "${SQLITE_DEFS[@]}"; do sqlite_flags+=("-D$def"); done
   # -O3 and no LTO: the same archive is used for every program, and it must
-  # link with the plain gcc driver. -O3 measured 4% on point reads and inserts
-  # against -O2 (benchmarks/RESULTS.md); -fno-strict-aliasing is required by
-  # SQLite.
+  # link with the plain gcc driver. With the three feature omits above this
+  # measured 4-8% on reads and inserts against -O2 (benchmarks/RESULTS.md);
+  # -fno-strict-aliasing is required by SQLite.
   $CC ${HPHP_SQLITE_CFLAGS:--O3} -std=c11 -fno-strict-aliasing \
       -I"$(dirname "$SQLITE_H")" "${sqlite_flags[@]}" \
       -c "$SQLITE_DIR/sqlite3_all.c" -o "$SQLITE_DIR/sqlite3.o" \
