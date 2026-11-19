@@ -81,14 +81,21 @@ REV=${GIT_REV:-$(git rev-parse --short HEAD 2>/dev/null || echo no-git)}
 printf 'sqlite-bench: %s, iters=%s, repeat=%s, compiler=%s\n' \
     "$REV" "$ITERS" "$REPEAT" "$("$HPHP" version 2>/dev/null | tr -d '\n')"
 for mode in $WORKLOADS; do
-    best=""
+    vals=()
     for _ in $(seq 1 "$REPEAT"); do
         fresh_db
         line=$(BENCH_DB="$WORK/bench.db" BENCH_ITERS="$ITERS" BENCH_ONLY="$mode" \
             "$OUT/bench" 2>/dev/null | sed -n 's/^BENCH [a-z]* iters=[0-9]* ns_per_op=\([0-9][0-9]*\).*/\1/p')
         [ -n "$line" ] || { echo "run.sh: no BENCH line for $mode"; exit 1; }
-        if [ -z "$best" ] || [ "$line" -lt "$best" ]; then best=$line; fi
+        vals+=("$line")
     done
+    sorted=$(printf '%s\n' "${vals[@]}" | sort -n)
+    best=$(printf '%s\n' "$sorted" | head -1)
+    # median keeps one boosted run from defining the result; the minimum is
+    # printed next to it when BENCH_MIN=1
+    median=$(printf '%s\n' "$sorted" | sed -n "$(( (REPEAT + 1) / 2 ))p")
+    extra=""
+    [ "${BENCH_MIN:-0}" = 1 ] && extra=" ns_min=$best"
 
     fresh_db
     setup=$(BENCH_DB="$WORK/bench.db" BENCH_ITERS=0 BENCH_ONLY="$mode" MALLOC_TAG=setup \
@@ -108,6 +115,6 @@ for mode in $WORKLOADS; do
     m1=$(( $1 + $2 + $3 )); b1=$5
     read -r mops bops < <(awk -v m0="$m0" -v m1="$m1" -v b0="$b0" -v b1="$b1" -v n="$ITERS" \
         'BEGIN { printf "%.2f %.1f\n", (m1-m0)/n, (b1-b0)/n }')
-    printf 'RESULT %-8s ns_per_op=%-8s malloc_per_op=%-7s malloc_bytes_per_op=%s\n' \
-        "$mode" "$best" "$mops" "$bops"
+    printf 'RESULT %-8s ns_per_op=%-8s malloc_per_op=%-7s malloc_bytes_per_op=%s%s\n' \
+        "$mode" "$median" "$mops" "$bops" "$extra"
 done
