@@ -1,0 +1,6 @@
+class MutablePayload {
+    pub int $value = 1;
+}
+$channel = chan_new(1);
+$payload = new MutablePayload();
+chan_send($channel, $payload);

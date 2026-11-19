@@ -1,0 +1,6 @@
+$values = ["9223372036854775807", "11111111111111111"];
+$sum = array_sum($values);
+if (!is_float($sum)) {
+    throw "array_sum overflow must promote to float";
+}
+echo "array sum overflow ok";

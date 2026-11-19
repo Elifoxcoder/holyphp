@@ -25,6 +25,7 @@
 #include <ctype.h>
 #include <time.h>
 #include <stdatomic.h>
+#include <pthread.h>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -44,7 +45,7 @@ void *hp_alloc(size_t n) {
  * callbacks expose only strong edges. */
 struct hp_gc_node {
     void *ptr;
-    uint32_t *rc;
+    atomic_uint *rc;
     hp_gc_node **slot;
     void (*trace)(void *);
     void (*clear)(void *);
@@ -59,12 +60,45 @@ static hp_gc_node *hp_gc_nodes;
 static size_t hp_gc_node_count;
 static size_t hp_gc_release_count;
 static bool hp_gc_collecting;
-static unsigned hp_gc_drop_depth;
+static HP_THREAD_QUAL unsigned hp_gc_drop_depth;
 static uint64_t hp_gc_epoch;
 static hp_gc_node **hp_gc_work;
 static size_t hp_gc_work_len, hp_gc_work_cap;
 static enum { HP_GC_IDLE, HP_GC_GATHER, HP_GC_SUBTRACT, HP_GC_MARK } hp_gc_mode;
 static bool hp_gc_oom;
+static pthread_mutex_t hp_gc_mu;
+static pthread_once_t hp_gc_mu_once = PTHREAD_ONCE_INIT;
+
+static void hp_gc_mu_init(void) {
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&hp_gc_mu, &attr);
+    pthread_mutexattr_destroy(&attr);
+}
+
+static void hp_gc_lock(void) {
+    pthread_once(&hp_gc_mu_once, hp_gc_mu_init);
+    pthread_mutex_lock(&hp_gc_mu);
+}
+
+static void hp_gc_unlock(void) { pthread_mutex_unlock(&hp_gc_mu); }
+
+static uint32_t hp_rc_retain(atomic_uint *rc) {
+    uint32_t old = atomic_load_explicit(rc, memory_order_relaxed);
+    while (old != UINT32_MAX &&
+           !atomic_compare_exchange_weak_explicit(rc, &old, old + 1,
+               memory_order_relaxed, memory_order_relaxed)) { }
+    return old;
+}
+
+static uint32_t hp_rc_release(atomic_uint *rc) {
+    uint32_t old = atomic_load_explicit(rc, memory_order_relaxed);
+    while (old != 0 && old != UINT32_MAX &&
+           !atomic_compare_exchange_weak_explicit(rc, &old, old - 1,
+               memory_order_acq_rel, memory_order_relaxed)) { }
+    return old;
+}
 
 static bool hp_gc_work_push(hp_gc_node *node) {
     if (hp_gc_work_len == hp_gc_work_cap) {
@@ -79,7 +113,8 @@ static bool hp_gc_work_push(hp_gc_node *node) {
 }
 
 static void hp_gc_unregister(hp_gc_node **slot) {
-    if (!slot || !*slot) return;
+    hp_gc_lock();
+    if (!slot || !*slot) { hp_gc_unlock(); return; }
     hp_gc_node *node = *slot;
     if (node->prev) node->prev->next = node->next;
     else if (hp_gc_nodes == node) hp_gc_nodes = node->next;
@@ -87,14 +122,19 @@ static void hp_gc_unregister(hp_gc_node **slot) {
     if (hp_gc_node_count) hp_gc_node_count--;
     *slot = NULL;
     free(node);
+    hp_gc_unlock();
 }
 
-void hp_gc_register(void *ptr, uint32_t *rc, hp_gc_node **slot,
+void hp_gc_register(void *ptr, atomic_uint *rc, hp_gc_node **slot,
                     void (*trace)(void *), void (*clear)(void *),
                     void (*destroy)(void *)) {
-    if (!ptr || !rc || !slot || *slot || hp_gc_collecting) return;
+    hp_gc_lock();
+    if (!ptr || !rc || !slot || *slot || hp_gc_collecting) {
+        hp_gc_unlock();
+        return;
+    }
     hp_gc_node *node = (hp_gc_node *)calloc(1, sizeof(*node));
-    if (!node) return; /* RC still works; only cycles may leak under OOM. */
+    if (!node) { hp_gc_unlock(); return; } /* RC still works; cycles may leak under OOM. */
     node->ptr = ptr;
     node->rc = rc;
     node->slot = slot;
@@ -106,6 +146,7 @@ void hp_gc_register(void *ptr, uint32_t *rc, hp_gc_node **slot,
     hp_gc_nodes = node;
     *slot = node;
     hp_gc_node_count++;
+    hp_gc_unlock();
 }
 
 void hp_gc_visit(hval value) {
@@ -162,10 +203,14 @@ static void hp_gc_clear_closure(void *raw) {
 }
 
 static void hp_gc_collect_candidate(hp_gc_node *root, bool force) {
-    if (!root || hp_gc_collecting || hp_gc_drop_depth || hp_gc_node_count == 0) return;
+    hp_gc_lock();
+    if (!root || hp_gc_collecting || hp_gc_drop_depth || hp_gc_node_count == 0) {
+        hp_gc_unlock();
+        return;
+    }
     /* Follow only the graph reachable from the released candidate. This
      * avoids rescanning unrelated live DOM/object graphs on every cycle pass. */
-    if (!force && ++hp_gc_release_count % 128 != 0) return;
+    if (!force && ++hp_gc_release_count % 128 != 0) { hp_gc_unlock(); return; }
     hp_gc_collecting = true;
     if (++hp_gc_epoch == 0) {
         for (hp_gc_node *it = hp_gc_nodes; it; it = it->next) it->epoch = 0;
@@ -175,7 +220,7 @@ static void hp_gc_collect_candidate(hp_gc_node *root, bool force) {
     hp_gc_oom = false;
     hp_gc_mode = HP_GC_GATHER;
     if (root->slot && *root->slot == root) {
-        if (root->ptr == NULL) { hp_gc_mode = HP_GC_IDLE; hp_gc_collecting = false; return; }
+        if (root->ptr == NULL) { hp_gc_mode = HP_GC_IDLE; hp_gc_collecting = false; hp_gc_unlock(); return; }
         /* The root payload is not uniform; seed the traversal from its trace
          * callback so the candidate itself is included without a fake hval. */
         root->epoch = hp_gc_epoch;
@@ -185,6 +230,7 @@ static void hp_gc_collect_candidate(hp_gc_node *root, bool force) {
     if (hp_gc_oom) {
         hp_gc_mode = HP_GC_IDLE;
         hp_gc_collecting = false;
+        hp_gc_unlock();
         return;
     }
     for (size_t i = 0; i < hp_gc_work_len; i++) {
@@ -235,6 +281,7 @@ static void hp_gc_collect_candidate(hp_gc_node *root, bool force) {
         free(dead);
     }
     hp_gc_collecting = false;
+    hp_gc_unlock();
 }
 
 void hp_gc_collect_now(void *ptr) {
@@ -244,19 +291,23 @@ void hp_gc_collect_now(void *ptr) {
 }
 
 /* Generic strong object handles use the common generated-object header. */
-typedef struct { uint32_t rc; } hp_rc_header;
+typedef struct { atomic_uint rc; } hp_rc_header;
 
 void hp_rc_inc(void *p) {
     if (!p) return;
+    hp_gc_lock();
     hp_rc_header *h = (hp_rc_header *)p;
-    if (h->rc != UINT32_MAX) h->rc++;
+    hp_rc_retain(&h->rc);
+    hp_gc_unlock();
 }
 
 void hp_rc_dec(void *p) {
     if (!p) return;
+    hp_gc_lock();
     hobj *h = (hobj *)p;
-    if (h->rc == 0 || h->rc == UINT32_MAX) return;
-    if (--h->rc == 0) {
+    uint32_t old = hp_rc_release(&h->rc);
+    if (old == 0 || old == UINT32_MAX) { hp_gc_unlock(); return; }
+    if (old == 1) {
         hp_gc_unregister(&h->gc);
         hp_gc_drop_depth++;
         hp_weak_invalidate(h);
@@ -266,6 +317,7 @@ void hp_rc_dec(void *p) {
     } else {
         hp_gc_collect_candidate(h->gc, false);
     }
+    hp_gc_unlock();
 }
 
 void hp_echo(hval v) {
@@ -366,14 +418,18 @@ void hp_str_free(hstr *s) { free(s); }
 
 uint32_t hp_str_hash(hstr *s) {
     if (!s) return 0;
-    if (s->hash) return s->hash;
+    uint32_t cached = atomic_load_explicit(&s->hash, memory_order_relaxed);
+    if (cached) return cached;
     uint32_t h = 2166136261u;
     for (size_t i = 0; i < s->len; i++) {
         h ^= (unsigned char)s->data[i];
         h *= 16777619u;
     }
-    s->hash = h ? h : 1;
-    return s->hash;
+    if (!h) h = 1;
+    unsigned expected = 0;
+    atomic_compare_exchange_strong_explicit(&s->hash, &expected, h,
+        memory_order_relaxed, memory_order_relaxed);
+    return atomic_load_explicit(&s->hash, memory_order_relaxed);
 }
 
 int hp_argc_global = 0;
@@ -1153,6 +1209,14 @@ hval hp_arr_get(harr *a, hval idx) {
     return a->vals[i];
 }
 
+hval hp_arr_get_unchecked(harr *a, int64_t idx) {
+    /* This entry point is only emitted for the compiler's canonical
+     * `for ($i = 0; $i < count($a); $i++)` proof with a stable array. */
+    /* Maps can have holes or string keys, so retain normal lookup semantics. */
+    if (a->is_map) return hp_arr_get(a, hp_of_int(idx));
+    return a->vals[idx];
+}
+
 void *hp_move_ptr(void *slot) {
     void *value = NULL;
     if (!slot) return NULL;
@@ -1481,7 +1545,11 @@ hval hp_arr_sum(harr *a) {
     for (size_t i = 0; i < a->len; i++) {
         if (a->vals[i].tag == HV_FLOAT) anyf = true;
         sum += hp_val_to_float(a->vals[i]);
-        isum += hp_val_to_int(a->vals[i]);
+        int64_t n = hp_val_to_int(a->vals[i]);
+        if (!anyf && ((n > 0 && isum > INT64_MAX - n) ||
+                      (n < 0 && isum < INT64_MIN - n)))
+            anyf = true;
+        if (!anyf) isum += n;
     }
     return anyf ? hp_of_float(sum) : hp_of_int(isum);
 }
@@ -1526,9 +1594,9 @@ void hp_arr_free(harr *a) {
 harr *hp_arr_cow(harr *a) {
     if (!a) return hp_arr_new();
     if (a->rc > 1) {
-        if (a->rc != UINT32_MAX) a->rc--;
         harr *r = hp_arr_clone(a);
         r->rc = 1;
+        hp_val_rc_dec(hp_of_arr(a));
         return r;
     }
     return a;
@@ -1919,36 +1987,43 @@ hval hp_closure_call(hclosure *c, int nargs, const hval *args) {
 void hp_val_free(hval v) { hp_val_rc_dec(v); }
 
 void hp_val_rc_inc(hval v) {
+    hp_gc_lock();
     switch (v.tag) {
-    case HV_STR: if (v.u.s && v.u.s->rc != UINT32_MAX) v.u.s->rc++; break;
-    case HV_ARR: if (v.u.a && v.u.a->rc != UINT32_MAX) v.u.a->rc++; break;
-    case HV_CLO: if (v.u.c && v.u.c->rc != UINT32_MAX) v.u.c->rc++; break;
+    case HV_STR: if (v.u.s) hp_rc_retain(&v.u.s->rc); break;
+    case HV_ARR: if (v.u.a) hp_rc_retain(&v.u.a->rc); break;
+    case HV_CLO: if (v.u.c) hp_rc_retain(&v.u.c->rc); break;
     case HV_OBJ: hp_rc_inc(v.u.p); break;
     default: break;
     }
+    hp_gc_unlock();
 }
 
 void hp_val_rc_dec(hval v) {
+    hp_gc_lock();
     switch (v.tag) {
     case HV_STR:
-        if (v.u.s && v.u.s->rc != UINT32_MAX && v.u.s->rc && --v.u.s->rc == 0)
-            hp_str_free(v.u.s);
+        if (v.u.s && hp_rc_release(&v.u.s->rc) == 1) hp_str_free(v.u.s);
         break;
     case HV_ARR:
-        if (v.u.a && v.u.a->rc != UINT32_MAX && v.u.a->rc) {
-            if (--v.u.a->rc == 0) hp_arr_free(v.u.a);
-            else hp_gc_collect_candidate(v.u.a->gc, false);
+        if (v.u.a) {
+            uint32_t old = hp_rc_release(&v.u.a->rc);
+            if (old == 1) hp_arr_free(v.u.a);
+            else if (old != 0 && old != UINT32_MAX)
+                hp_gc_collect_candidate(v.u.a->gc, false);
         }
         break;
     case HV_CLO:
-        if (v.u.c && v.u.c->rc != UINT32_MAX && v.u.c->rc) {
-            if (--v.u.c->rc == 0) hpclosure_free(v.u.c);
-            else hp_gc_collect_candidate(v.u.c->gc, false);
+        if (v.u.c) {
+            uint32_t old = hp_rc_release(&v.u.c->rc);
+            if (old == 1) hpclosure_free(v.u.c);
+            else if (old != 0 && old != UINT32_MAX)
+                hp_gc_collect_candidate(v.u.c->gc, false);
         }
         break;
     case HV_OBJ: hp_rc_dec(v.u.p); break;
     default: break;
     }
+    hp_gc_unlock();
 }
 
 static void hp_weak_unlink(hp_weak_ref *weak) {

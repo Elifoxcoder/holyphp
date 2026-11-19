@@ -981,8 +981,11 @@ static void collect_expr(BorrowCfg *cfg, BorrowNode *n, Expr *e,
             AstFn *fn = e->u.closure.fn;
             for (size_t i = 0; i < fn->captures.len; i++) {
                 const VarSym *capture = fn->captures.items[i];
+                bool thread_move = false;
+                for (size_t j = 0; j < fn->thread_moves.len; j++)
+                    if (fn->thread_moves.items[j] == capture) { thread_move = true; break; }
                 if (!capture || capture->captured_byref ||
-                    !sema_type_is_linear(capture->type)) continue;
+                    (!sema_type_is_linear(capture->type) && !thread_move)) continue;
                 use_var(n, capture);
                 flow_event(cfg, n, capture, NULL, &e->tok, FLOW_USE);
                 flow_event(cfg, n, capture, NULL, &e->tok, FLOW_MOVE);
@@ -1499,6 +1502,10 @@ static bool place_paths_overlap(const Expr *a, const Expr *b) {
 
 static bool places_overlap(const MovePlace *a, const MovePlace *b) {
     if (!a || !b || !borrow_origins_may_alias(a->root, b->root)) return false;
+    /* A NULL path denotes an explicit transfer of the whole variable (used
+     * when a closure capture has no source Expr node), so it conflicts with
+     * every later access through that root. */
+    if (!a->place || !b->place) return true;
     /* Moving an element removes that slot from the collection; it does not
      * consume the collection handle itself. Keep root reads (len, push, etc.)
      * available while conservatively treating other indexed places as
@@ -1538,7 +1545,14 @@ static void describe_place(const VarSym *root, const Expr *place, char *out, siz
 }
 
 static bool place_equal(const MovePlace *a, const BorrowFlowEvent *b) {
-    return a && b && same_var_slot(a->root, b->var) &&
+    if (!a || !b || !same_var_slot(a->root, b->var)) return false;
+    /* Closure capture moves have no source Expr node: the capture list stores
+     * its VarSym directly. Treat that root-place event as the corresponding
+     * variable expression for later use-after-move diagnostics. */
+    if (!a->place)
+        return !b->place || (b->place->kind == EX_VAR &&
+                             same_var_slot(root_var(b->place), a->root));
+    return
         place_prefix(a->root, a->place, b->place) &&
         place_prefix(a->root, b->place, a->place);
 }

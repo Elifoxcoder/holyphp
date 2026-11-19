@@ -1,0 +1,10 @@
+$channel = chan_new(0);
+$answer = 40;
+$worker = function() use ($channel, $answer) {
+    chan_send($channel, $answer + 2);
+};
+$tid = thr_spawn($worker);
+$result = chan_recv($channel);
+thr_join($tid);
+if ($result != 42) { throw "known indirect worker failed"; }
+echo "known indirect worker ok";

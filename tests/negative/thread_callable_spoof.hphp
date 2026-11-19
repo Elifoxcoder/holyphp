@@ -1,0 +1,4 @@
+class CallbackHolder { pub thread_callable $worker; }
+function install_unknown_worker(CallbackHolder $holder, mixed $worker) {
+    $holder->worker = $worker;
+}

@@ -1,0 +1,6 @@
+$values = [1, 2, 3];
+$tid = thr_spawn(function() use ($values) {
+    $x = $values[0];
+});
+$after = $values[0];
+thr_join($tid);

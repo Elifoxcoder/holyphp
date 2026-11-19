@@ -532,12 +532,15 @@ static Type *parse_type_base(Parser *p) {
     for (int i = 0; prims[i].n; i++) {
         if (strcmp(prims[i].n, n) == 0) return type_new(prims[i].k);
     }
-    /* `callable` as a type name: any closure (signature not pinned) */
-    if (strcmp(n, "callable") == 0 && !ts_check(p->ts, T_LPAREN)) {
+    /* `thread_callable` is an erased-signature callback whose captures are
+     * verified at each assignment/call boundary before a worker uses it. */
+    if ((strcmp(n, "callable") == 0 || strcmp(n, "thread_callable") == 0) &&
+        !ts_check(p->ts, T_LPAREN)) {
         Type *ft = type_new(TY_FN);
         ft->fn.nparams = 0;
         ft->fn.variadic = true;   /* sema: any arity, unchecked args */
         ft->fn.ret = type_new(TY_MIXED);
+        ft->thread_safe_callback = strcmp(n, "thread_callable") == 0;
         return ft;
     }
     /* function type: fn(T1, T2) -> R — `callable(...)` spells the same */

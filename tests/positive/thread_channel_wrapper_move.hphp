@@ -1,0 +1,9 @@
+import "thread";
+$channel = new Channel(1);
+$payload = [21, 21];
+$channel->send($payload);
+$received = $channel->recv();
+if ($received[0] + $received[1] != 42) {
+    throw "Channel wrapper move failed";
+}
+echo "Channel wrapper move ok";

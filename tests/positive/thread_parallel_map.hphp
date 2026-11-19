@@ -1,0 +1,11 @@
+$prefix = "item-";
+$state = [10];
+$items = [1, 2, 3, 4, 5, 6];
+$result = thr_parallel_map(function($item) use ($prefix, $state) {
+    $state[0] = $state[0] + $item;
+    return $prefix . $state[0];
+}, $items, 3);
+if (count($result) != 6 || $result[0] != "item-11" || $result[5] != "item-16") {
+    throw "parallel map returned invalid results";
+}
+echo "parallel map ok";

@@ -10,9 +10,12 @@ foreach ($r as $v) { echo $v . " "; }
 echo "
 ";
 $ch = new Channel(0);
-thr_spawn(function() use ($ch) { thr_sleep_ms(50); $ch->send("via-class"); });
+$ch_id = $ch->id;
+$thread = new Thread(function() use ($ch_id) { thr_sleep_ms(50); chan_send($ch_id, "via-class"); });
+$thread->start([]);
 echo "recv: " . $ch->recv() . "
 ";
+$thread->join();
 $at = new Atomic(10);
 echo "atomic: " . $at->add(5) . "->" . $at->get() . "
 ";

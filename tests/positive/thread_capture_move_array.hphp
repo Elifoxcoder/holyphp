@@ -1,0 +1,11 @@
+$channel = chan_new(0);
+$values = [40, 41, 42];
+$tid = thr_spawn(function() use ($channel, $values) {
+    chan_send($channel, $values);
+});
+$answer = chan_recv($channel);
+thr_join($tid);
+if ($answer[1] != 41) {
+    throw "moved container capture failed";
+}
+echo "thread moved capture ok";

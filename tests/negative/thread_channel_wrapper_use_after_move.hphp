@@ -1,0 +1,5 @@
+import "thread";
+$channel = new Channel(1);
+$payload = [21, 21];
+$channel->send($payload);
+echo count($payload);

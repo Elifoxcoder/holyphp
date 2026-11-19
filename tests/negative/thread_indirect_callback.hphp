@@ -1,2 +1,4 @@
-$worker = function() {};
-thr_spawn($worker);
+function launch_worker($worker) {
+    /* A mixed callback has no statically known closure capture set. */
+    thr_spawn($worker);
+}

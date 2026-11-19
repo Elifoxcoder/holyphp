@@ -7,6 +7,7 @@
 #define HPHP_RT_H
 
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -53,8 +54,8 @@ typedef struct hp_weak_ref hp_weak_ref;
 struct hstr {
     size_t len;         /* byte length (PHP-style byte strings) */
     size_t cap;         /* allocated bytes incl. NUL; >= len+1, 0 for literals */
-    uint32_t hash;      /* 0 = not computed */
-    uint32_t rc;
+    atomic_uint hash;   /* 0 = not computed; shared immutable strings may hash concurrently */
+    atomic_uint rc;
     char data[];        /* NUL-terminated for C interop */
 };
 
@@ -149,7 +150,7 @@ HKind hp_tag(hval v);
 /* ---------- arrays / maps (COW) ---------- */
 struct harr {
     size_t len, cap;
-    uint32_t rc;
+    atomic_uint rc;
     bool is_map;
     int64_t next_index;
     hval *vals;
@@ -183,6 +184,7 @@ hval hp_arr_pop(harr *a);
 hval hp_arr_shift(harr *a);
 void hp_arr_unshift(harr *a, hval v);
 hval hp_arr_get(harr *a, hval idx);
+hval hp_arr_get_unchecked(harr *a, int64_t idx); /* compiler-proven in-range access */
 hval hp_arr_take(harr *a, hval idx); /* remove and transfer one uniquely-owned element */
 hval hp_arr_get_v(hval container, hval idx); /* PHP-style: index any value */
 hval hp_arr_set_v(hval container, hval idx, hval v); /* set on hval container */
@@ -315,7 +317,7 @@ hval hp_try_run(hp_try_fn body_fn, hp_try_fn catch_fn, void *env);
 typedef hval (*hfn_t)(void);
 struct hclosure {
     hfn_t fn;
-    uint32_t rc;
+    atomic_uint rc;
     size_t envsz;
     void (*drop_env)(void *);
     void (*trace_env)(void *);
@@ -333,7 +335,7 @@ hval hp_call_value(hval fn, int nargs, const hval *args);
 /* ---------- smart pointer support ---------- */
 void hp_rc_inc(void *p);
 void hp_rc_dec(void *p);
-void hp_gc_register(void *ptr, uint32_t *rc, hp_gc_node **slot,
+void hp_gc_register(void *ptr, atomic_uint *rc, hp_gc_node **slot,
                     void (*trace)(void *), void (*clear)(void *),
                     void (*destroy)(void *));
 void hp_gc_visit(hval value);
@@ -342,7 +344,7 @@ void hp_gc_collect_now(void *ptr);
 /* ---------- objects ---------- */
 typedef void (*hp_drop_fn)(void *);
 struct hobj {
-    uint32_t rc;
+    atomic_uint rc;
     hp_drop_fn drop; /* invoked exactly once when the strong count reaches 0 */
     void (*trace)(void *);
     hp_gc_node *gc;

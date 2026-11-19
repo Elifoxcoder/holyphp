@@ -41,6 +41,8 @@ struct Codegen {
     Buf try_bufs[8];      /* file-scope try-helper defs, per nesting level */
     int loop_depth;       /* loop/switch nesting (break/continue legality) */
     Expr *cur_assign;     /* assignment currently emitted (destructuring) */
+    void *bounds_array_sym; /* array proven stable in canonical for loop */
+    void *bounds_index_sym; /* induction variable proven in [0, count(array)) */
 };
 
 static void emit_stmt(Codegen *g, Stmt *s);
@@ -1614,6 +1616,14 @@ static void emit_index(Codegen *g, Expr *e, Buf *dst) {
         /* container or index is mixed (PHP-style dynamic access):
          * route through the generic runtime helper. */
         buf_printf(&out, "hp_arr_get_v(hv(%s), hv(%s))", buf_take(&o), buf_take(&ix));
+    else if (g->bounds_array_sym && g->bounds_index_sym &&
+             ot && ot->kind == TY_ARRAY &&
+             e->u.index.obj && e->u.index.obj->kind == EX_VAR &&
+             e->u.index.obj->u.var.sym == g->bounds_array_sym &&
+             e->u.index.idx && e->u.index.idx->kind == EX_VAR &&
+             e->u.index.idx->u.var.sym == g->bounds_index_sym)
+        buf_printf(&out, "hp_arr_get_unchecked(%s, %s)",
+                   buf_take(&o), buf_take(&ix));
     else
         buf_printf(&out, "hp_arr_get_v(hp_of_arr(%s), hv(%s))", buf_take(&o), buf_take(&ix));
     /* Project into OUR buffer, never into the caller's.
@@ -2024,7 +2034,12 @@ static void emit_closure(Codegen *g, AstFn *fn) {
     for (size_t i = 0; i < fn->captures.len; i++) {
         VarSym *v = fn->captures.items[i];
         if (v->captured_byref) line(g, "hp_box_retain(_src.%s);", var_name(v));
-        else line(g, "hp_val_rc_inc(_src.%s);", var_name(v));
+        else {
+            bool moved = false;
+            for (size_t j = 0; j < fn->thread_moves.len; j++)
+                if (fn->thread_moves.items[j] == v) { moved = true; break; }
+            if (!moved) line(g, "hp_val_rc_inc(_src.%s);", var_name(v));
+        }
     }
     if (fn->uses_this) line(g, "hp_val_rc_inc(hp_of_ptr(_src.hp_this));");
     line(g, "return hpclosure_new(&_src, sizeof(%s_env), (void*)%s_impl, %s_env_drop, %s_env_trace);",
@@ -2954,7 +2969,10 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
                 continue;
             }
             const Type *t = v->type;
-            if (sema_type_is_linear(t) && type_is_move_pointer(t)) {
+            bool thread_move = false;
+            for (size_t j = 0; j < fn->thread_moves.len; j++)
+                if (fn->thread_moves.items[j] == v) { thread_move = true; break; }
+            if ((sema_type_is_linear(t) || thread_move) && type_is_move_pointer(t)) {
                 if (t && (t->kind == TY_ARRAY || t->kind == TY_VEC ||
                           t->kind == TY_MAP || t->kind == TY_SET ||
                           (t->kind == TY_OWN && t->elem && t->elem->kind == TY_ARRAY)))
@@ -3279,6 +3297,140 @@ static void emit_to_type(Codegen *g, Expr *val, const Type *want, Buf *dst) {
         return;
     }
     emit_expr(g, val, dst);
+}
+
+/* Keep bounds elision deliberately narrow: canonical counted loops only,
+ * with no calls, writes to the collection, or writes to the induction
+ * variable in the body. The loop structure then proves 0 <= i < count(a). */
+static bool bounds_expr_safe(Expr *e, void *array_sym, void *index_sym) {
+    if (!e) return true;
+    switch (e->kind) {
+    case EX_INT: case EX_FLOAT: case EX_STR: case EX_BOOL: case EX_NULL: case EX_VAR:
+        return true;
+    case EX_TPL:
+        for (size_t i = 0; i < e->u.tpl.exprs.len; i++)
+            if (!bounds_expr_safe(e->u.tpl.exprs.items[i], array_sym, index_sym)) return false;
+        return true;
+    case EX_CALL: case EX_METHOD: case EX_STATIC: case EX_NEW: case EX_CLOSURE:
+        return false;
+    case EX_ASSIGN: {
+        Expr *root = e->u.assign.target;
+        while (root && (root->kind == EX_INDEX || root->kind == EX_FIELD))
+            root = root->kind == EX_INDEX ? root->u.index.obj : root->u.field.obj;
+        if (root && root->kind == EX_VAR &&
+            (root->u.var.sym == array_sym || root->u.var.sym == index_sym))
+            return false;
+        return bounds_expr_safe(e->u.assign.target, array_sym, index_sym) &&
+               bounds_expr_safe(e->u.assign.value, array_sym, index_sym);
+    }
+    case EX_INDEX:
+        return bounds_expr_safe(e->u.index.obj, array_sym, index_sym) &&
+               bounds_expr_safe(e->u.index.idx, array_sym, index_sym);
+    case EX_FIELD: return bounds_expr_safe(e->u.field.obj, array_sym, index_sym);
+    case EX_BIN:
+        return bounds_expr_safe(e->u.bin.l, array_sym, index_sym) &&
+               bounds_expr_safe(e->u.bin.r, array_sym, index_sym) &&
+               bounds_expr_safe(e->u.bin.slice_hi, array_sym, index_sym);
+    case EX_UN: return bounds_expr_safe(e->u.un.operand, array_sym, index_sym);
+    case EX_TERNARY:
+        return bounds_expr_safe(e->u.tern.cond, array_sym, index_sym) &&
+               bounds_expr_safe(e->u.tern.then, array_sym, index_sym) &&
+               bounds_expr_safe(e->u.tern.els, array_sym, index_sym);
+    case EX_ARRAY_LIT:
+        for (size_t i = 0; i < e->u.arr.elems.len; i++)
+            if (!bounds_expr_safe(e->u.arr.elems.items[i], array_sym, index_sym)) return false;
+        return true;
+    case EX_MAP_LIT:
+        for (size_t i = 0; i < e->u.map.vals.len; i++)
+            if (!bounds_expr_safe(e->u.map.keys.items[i], array_sym, index_sym) ||
+                !bounds_expr_safe(e->u.map.vals.items[i], array_sym, index_sym)) return false;
+        return true;
+    case EX_TUPLE_LIT:
+        for (size_t i = 0; i < e->u.tuple.elems.len; i++)
+            if (!bounds_expr_safe(e->u.tuple.elems.items[i], array_sym, index_sym)) return false;
+        return true;
+    case EX_CAST:
+        return bounds_expr_safe(e->u.cast.operand, array_sym, index_sym);
+    case EX_BORROW: case EX_MUTBORROW: case EX_DEREF: case EX_IS:
+    default:
+        return false;
+    }
+}
+
+static bool bounds_block_safe(PtrVec stmts, void *array_sym, void *index_sym) {
+    for (size_t i = 0; i < stmts.len; i++) {
+        Stmt *s = stmts.items[i];
+        if (!s) continue;
+        switch (s->kind) {
+        case ST_EXPR:
+            if (!bounds_expr_safe(s->u.expr.expr, array_sym, index_sym)) return false;
+            break;
+        case ST_LET:
+            if (!bounds_expr_safe(s->u.let.init, array_sym, index_sym)) return false;
+            break;
+        case ST_ECHO:
+            for (size_t j = 0; j < s->u.echo.exprs.len; j++)
+                if (!bounds_expr_safe(s->u.echo.exprs.items[j], array_sym, index_sym)) return false;
+            break;
+        case ST_PRINT:
+            if (!bounds_expr_safe(s->u.print.expr, array_sym, index_sym)) return false;
+            break;
+        case ST_IF:
+            if (!bounds_expr_safe(s->u.if_.cond, array_sym, index_sym) ||
+                !bounds_block_safe(s->u.if_.then, array_sym, index_sym) ||
+                !bounds_block_safe(s->u.if_.els, array_sym, index_sym)) return false;
+            break;
+        case ST_BLOCK:
+            if (!bounds_block_safe(s->u.block.stmts, array_sym, index_sym)) return false;
+            break;
+        default:
+            /* Nested loops, global mutation, exceptions and other control
+             * effects are outside this first proof rule. */
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool prove_for_bounds(Stmt *s, void **array_out, void **index_out) {
+    if (!s || s->kind != ST_FOR || s->u.for_.init.len != 1 ||
+        s->u.for_.step.len != 1 || !s->u.for_.cond ||
+        s->u.for_.init.items[0] == NULL || s->u.for_.step.items[0] == NULL)
+        return false;
+    Stmt *init = s->u.for_.init.items[0], *step = s->u.for_.step.items[0];
+    if (init->kind != ST_EXPR || step->kind != ST_EXPR) return false;
+    Expr *ie = init->u.expr.expr, *se = step->u.expr.expr, *cond = s->u.for_.cond;
+    if (!ie || ie->kind != EX_ASSIGN || ie->u.assign.op.kind != T_ASSIGN ||
+        !ie->u.assign.target || ie->u.assign.target->kind != EX_VAR ||
+        !ie->u.assign.value || ie->u.assign.value->kind != EX_INT ||
+        ie->u.assign.value->u.i.ival != 0 ||
+        !se || se->kind != EX_ASSIGN || se->u.assign.op.kind != T_ASSIGN ||
+        !se->u.assign.target || se->u.assign.target->kind != EX_VAR ||
+        !se->u.assign.value || se->u.assign.value->kind != EX_BIN ||
+        se->u.assign.value->u.bin.op.kind != T_PLUS) return false;
+    void *index_sym = ie->u.assign.target->u.var.sym;
+    Expr *step_l = se->u.assign.value->u.bin.l, *step_r = se->u.assign.value->u.bin.r;
+    if (se->u.assign.target->u.var.sym != index_sym || !step_l ||
+        step_l->kind != EX_VAR || step_l->u.var.sym != index_sym || !step_r ||
+        step_r->kind != EX_INT || step_r->u.i.ival != 1 ||
+        cond->kind != EX_BIN || cond->u.bin.op.kind != T_LT ||
+        !cond->u.bin.l || cond->u.bin.l->kind != EX_VAR ||
+        cond->u.bin.l->u.var.sym != index_sym || !cond->u.bin.r ||
+        cond->u.bin.r->kind != EX_CALL ||
+        !cond->u.bin.r->builtin || strcmp(cond->u.bin.r->builtin, "count") != 0 ||
+        cond->u.bin.r->u.call.args.len != 1) return false;
+    Expr *array = cond->u.bin.r->u.call.args.items[0];
+    if (!array || array->kind != EX_VAR || !array->u.var.sym ||
+        !array->type || array->type->kind != TY_ARRAY ||
+        !bounds_block_safe(s->u.for_.body, array->u.var.sym, index_sym)) return false;
+    VarSym *av = (VarSym *)array->u.var.sym;
+    VarSym *iv = (VarSym *)index_sym;
+    if (av->is_program_global || av->is_global_alias || av->captured_byref ||
+        iv->is_program_global || iv->is_global_alias || iv->captured_byref)
+        return false;
+    *array_out = array->u.var.sym;
+    *index_out = index_sym;
+    return true;
 }
 
 static void emit_stmt(Codegen *g, Stmt *s) {
@@ -3647,7 +3799,16 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         int lid = g->label_id++;
         ptrvec_push(&g->loop_labels, (void *)(intptr_t)lid);
         g->pending_loop_cleanup_mark = true;
+        void *old_array = g->bounds_array_sym;
+        void *old_index = g->bounds_index_sym;
+        void *proven_array = NULL, *proven_index = NULL;
+        if (prove_for_bounds(s, &proven_array, &proven_index)) {
+            g->bounds_array_sym = proven_array;
+            g->bounds_index_sym = proven_index;
+        }
         emit_block(g, s->u.for_.body);
+        g->bounds_array_sym = old_array;
+        g->bounds_index_sym = old_index;
         line(g, "hp_cont_%d: ;", lid);
         g->loop_labels.len--;
         for (size_t i = 0; i < s->u.for_.step.len; i++)
@@ -3717,6 +3878,9 @@ static void emit_stmt(Codegen *g, Stmt *s) {
             try_syms(s, &raw);
             for (size_t i = 0; i < raw.len; i++) {
                 VarSym *cv = raw.items[i];
+                /* Instance method helpers receive `$this` through T_env.self;
+                 * it is not a local slot and must not also be put in vp[]. */
+                if (is_meth && cv->name && strcmp(cv->name, "this") == 0) continue;
                 if (cv->is_auto || cv->is_param) ptrvec_push(&vs, cv);
             }
             free(raw.items);
@@ -4325,6 +4489,18 @@ static void emit_register_owner(Codegen *g, const char *slot, const Type *t,
 
 static void emit_cleanup_setup(Codegen *g, AstFn *fn) {
     line(g, "void *_hp_mark = hp_cleanup_mark();");
+    /* Each concurrent invocation gets an owned local array/string handle.
+     * A write detaches through COW, while the closure environment remains an
+     * immutable shared owner. Heap counts are atomic at thread boundaries. */
+    if (g->in_closure && fn->thread_worker) {
+        for (size_t i = 0; i < fn->captures.len; i++) {
+            VarSym *v = fn->captures.items[i];
+            if (!v || v->captured_byref || !type_can_own_heap(v->type)) continue;
+            line(g, "hp_val_rc_inc(_env->%s);", var_name(v));
+            emit_register_owner(g, var_name(v), v->type, false,
+                                type_is_hval_slot(v->type));
+        }
+    }
     for (size_t i = 0; i < fn->params.len; i++) {
         Param *pm = fn->params.items[i];
         VarSym *v = (VarSym *)pm->sym;

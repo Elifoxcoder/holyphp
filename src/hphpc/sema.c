@@ -59,6 +59,7 @@ typedef struct Scope {
 
 static void check_stmt(Scope *sc, Stmt *s);
 static const Type *check_expr(Scope *sc, Expr *e);
+static Type *class_type_of(AstClass *c);
 
 static const Type *nullable_type_of(const Type *inner) {
     Type *t = type_new(TY_NULLABLE);
@@ -179,9 +180,86 @@ static bool thread_capture_is_sync(const Type *t) {
         return false;
     case TY_NULLABLE: case TY_OPTION:
         return thread_capture_is_sync(t->elem);
+    case TY_FN:
+        return t->thread_safe_callback;
     default:
         return false;
     }
+}
+
+static bool thread_capture_is_movable_value(const Type *t);
+
+static bool validate_thread_callback(Expr *value, const Type *type,
+                                     const Token *where, const char *callee) {
+    if (type && (type->kind == TY_NULLABLE || type->kind == TY_OPTION))
+        type = type->elem;
+    AstFn *closure = type && type->kind == TY_FN ? type->closure_fn : NULL;
+    if (!closure && value && value->kind == EX_CLOSURE)
+        closure = value->u.closure.fn;
+    if (type && type->kind == TY_FN && type->thread_safe_callback) return true;
+    if (!closure) {
+        sema_error(where ? where : (value ? &value->tok : NULL),
+                   "%s() requires a statically known thread_callable value",
+                   callee);
+        return false;
+    }
+    closure->thread_worker = true;
+    for (size_t i = 0; i < closure->captures.len; i++) {
+        VarSym *capture = closure->captures.items[i];
+        if (capture->captured_byref) {
+            sema_error(&capture->tok,
+                       "thread closure captures mutable or non-Sync value $%s; use a value container or a channel",
+                       capture->name);
+        } else if (!thread_capture_is_sync(capture->type)) {
+            if (thread_capture_is_movable_value(capture->type))
+                ptrvec_push(&closure->thread_moves, capture);
+            else
+                sema_error(&capture->tok,
+                           "thread closure captures mutable or non-Sync value $%s; use a value container or a channel",
+                           capture->name);
+        }
+    }
+    if (closure->uses_this &&
+        !thread_capture_is_sync(class_type_of(closure->owner_cls)))
+        sema_error(where ? where : &closure->name_tok,
+                   "thread closure captures mutable $this; use a channel or synchronized primitive");
+    if (type && type->kind == TY_FN) ((Type *)type)->thread_safe_callback = true;
+    return true;
+}
+
+/* Value containers have COW semantics, so a transferred container owner can
+ * be used by a worker while aliases detach on write. Its elements still have
+ * to be safe value types: a container of mutable object handles is not Sync. */
+static bool thread_capture_is_movable_value(const Type *t) {
+    if (!t) return false;
+    switch (t->kind) {
+    case TY_ARRAY: case TY_VEC: case TY_SET:
+        return thread_capture_is_sync(t->elem) ||
+               (t->elem && (t->elem->kind == TY_ARRAY || t->elem->kind == TY_VEC ||
+                            t->elem->kind == TY_MAP || t->elem->kind == TY_SET) &&
+                thread_capture_is_movable_value(t->elem));
+    case TY_MAP:
+        return thread_capture_is_sync(t->key) &&
+               (thread_capture_is_sync(t->val) || thread_capture_is_movable_value(t->val));
+    default: return false;
+    }
+}
+
+static bool thread_sendable_value(const Type *t) {
+    if (!t) return false;
+    if (thread_capture_is_sync(t) || t->kind == TY_MIXED) return true;
+    switch (t->kind) {
+    case TY_ARRAY: case TY_VEC: case TY_SET:
+        return thread_sendable_value(t->elem);
+    case TY_MAP:
+        return thread_sendable_value(t->key) && thread_sendable_value(t->val);
+    case TY_NULLABLE: case TY_OPTION:
+        return thread_sendable_value(t->elem);
+    default: break;
+    }
+    return t && t->kind == TY_OWN && t->elem &&
+           (t->elem->kind == TY_CLASS || t->elem->kind == TY_STRUCT ||
+            t->elem->kind == TY_INTERFACE);
 }
 
 static void enqueue_borrow_fn(AstFn *fn) {
@@ -1992,6 +2070,8 @@ static const Type *check_method_call(Scope *sc, Expr *e) {
                         const Type *pt = resolve_type(sc, pm->type, pm->name_tok);
                         Expr *arg = e->u.method.args.items[i];
                         const Type *at = check_expr(sc, arg);
+                        if (pt && pt->kind == TY_FN && pt->thread_safe_callback)
+                            validate_thread_callback(arg, at, &arg->tok, mname);
                         reject_untracked_reference(arg, at, pt, mname);
                         if (pt && !value_fits_slot(pt, at, arg))
                             sema_error(&arg->tok, "argument %zu to %s::%s(): expected %s, got %s",
@@ -2053,6 +2133,20 @@ static const Type *check_method_call(Scope *sc, Expr *e) {
             const Type *pt = resolve_type(sc, pm->type, pm->name_tok);
             Expr *arg = e->u.method.args.items[i];
             const Type *at = check_expr(sc, arg);
+            if (pt && pt->kind == TY_FN && pt->thread_safe_callback)
+                validate_thread_callback(arg, at, &arg->tok, mname);
+            if (c->name && strcmp(c->name, "Channel") == 0 && i == 0 &&
+                (strcmp(mname, "send") == 0 || strcmp(mname, "trySend") == 0)) {
+                if (!thread_sendable_value(at)) {
+                    sema_error(&arg->tok, "Channel::%s() cannot send non-Sync value %s",
+                               mname, type_to_string(at));
+                } else if (at && (at->kind == TY_STRING || at->kind == TY_ARRAY ||
+                                  at->kind == TY_VEC || at->kind == TY_MAP ||
+                                  at->kind == TY_SET || sema_type_is_linear(at)) &&
+                           expr_is_movable_place(arg)) {
+                    arg->is_move_source = true;
+                }
+            }
             if (sema_type_is_linear(at) && !pm->by_ref &&
                 (arg->kind == EX_VAR || arg->kind == EX_FIELD || arg->kind == EX_INDEX)) {
                 arg->is_move_source = true;
@@ -2113,23 +2207,21 @@ static const Type *check_builtin_call(Scope *sc, Expr *e, const Builtin *b) {
     if ((strcmp(b->name, "thr_spawn") == 0 ||
          strcmp(b->name, "thr_parallel_map") == 0) && na > 0) {
         Expr *worker = e->u.call.args.items[0];
-        if (worker->kind != EX_CLOSURE || !worker->u.closure.fn) {
-            sema_error(&worker->tok,
-                       "%s() requires a closure literal so its cross-thread captures can be checked",
-                       b->name);
-        } else {
-            AstFn *closure = worker->u.closure.fn;
-            for (size_t i = 0; i < closure->captures.len; i++) {
-                VarSym *capture = closure->captures.items[i];
-                if (capture->captured_byref || !thread_capture_is_sync(capture->type))
-                    sema_error(&capture->tok,
-                               "thread closure captures mutable or non-Sync value $%s; use an immutable value or a channel",
-                               capture->name);
-            }
-            if (closure->uses_this &&
-                !thread_capture_is_sync(class_type_of(closure->owner_cls)))
-                sema_error(&worker->tok,
-                           "thread closure captures mutable $this; use a channel or synchronized primitive");
+        validate_thread_callback(worker, worker->type, &worker->tok, b->name);
+    }
+    if ((strcmp(b->name, "chan_send") == 0 ||
+         strcmp(b->name, "chan_try_send") == 0) && na == 2) {
+        Expr *value = e->u.call.args.items[1];
+        if (!thread_sendable_value(value->type)) {
+            sema_error(&value->tok,
+                       "%s() cannot send non-Sync value %s; move a value container or an own value",
+                       b->name, type_to_string(value->type));
+        } else if (value->type &&
+                   (value->type->kind == TY_STRING || value->type->kind == TY_ARRAY ||
+                    value->type->kind == TY_VEC || value->type->kind == TY_MAP ||
+                    value->type->kind == TY_SET || sema_type_is_linear(value->type)) &&
+                   expr_is_movable_place(value)) {
+            value->is_move_source = true;
         }
     }
     if (strcmp(b->name, "array_push") == 0 && na >= 2) {
@@ -2310,6 +2402,8 @@ static const Type *check_call(Scope *sc, Expr *e) {
                     const Type *pt = resolve_type(sc, pm->type, pm->name_tok);
                     Expr *arg = e->u.call.args.items[i];
                     const Type *at = check_expr(sc, arg);
+                    if (pt && pt->kind == TY_FN && pt->thread_safe_callback)
+                        validate_thread_callback(arg, at, &arg->tok, name);
                     if (sema_type_is_linear(at) && !pm->by_ref &&
                         (arg->kind == EX_VAR || arg->kind == EX_FIELD || arg->kind == EX_INDEX)) {
                         arg->is_move_source = true;
@@ -2399,7 +2493,7 @@ static const Type *check_call(Scope *sc, Expr *e) {
     return e->type;
 }
 
-static const Type *check_expr(Scope *sc, Expr *e) {
+static const Type *check_expr_inner(Scope *sc, Expr *e) {
     if (!e) return ty_mixed;
     switch (e->kind) {
     case EX_INT: e->type = ty_int; return e->type;
@@ -2792,6 +2886,8 @@ static const Type *check_expr(Scope *sc, Expr *e) {
                 const Type *pt = resolve_type(sc, pm->type, pm->name_tok);
                 Expr *arg = e->u.newexpr.args.items[i];
                 const Type *at = check_expr(sc, arg);
+                if (pt && pt->kind == TY_FN && pt->thread_safe_callback)
+                    validate_thread_callback(arg, at, &arg->tok, "a constructor");
                 if (sema_type_is_linear(at) && !pm->by_ref &&
                     (arg->kind == EX_VAR || arg->kind == EX_FIELD || arg->kind == EX_INDEX))
                     arg->is_move_source = true;
@@ -3047,6 +3143,11 @@ static const Type *check_expr(Scope *sc, Expr *e) {
             tt = check_expr(sc, tgt);
             sema_error(&tgt->tok, "invalid assignment target");
         }
+        if ((e->u.assign.op.kind == T_ASSIGN || e->u.assign.op.kind == T_QQASSIGN) &&
+            tt && tt->kind == TY_FN && tt->thread_safe_callback &&
+            e->u.assign.value)
+            validate_thread_callback(e->u.assign.value, vt, &tgt->tok,
+                                     "thread_callable assignment");
         if (tgt->kind != EX_VAR && e->u.assign.value && vt &&
             vt->kind != TY_REF && vt->kind != TY_MUTREF && type_is_mutable_alias(vt) &&
             expr_through_shared_ref(e->u.assign.value))
@@ -3316,6 +3417,7 @@ static const Type *check_expr(Scope *sc, Expr *e) {
         const Type *ret = fn->ret ? resolve_type(sc, fn->ret, fn->name_tok) : ty_void;
         ft->fn.ret = ret;
         fn->ftype = ft;
+        ft->closure_fn = fn;
         e->type = ft;
         enqueue_borrow_fn(fn);
         g_clo_depth--;
@@ -3412,6 +3514,17 @@ static const Type *check_expr(Scope *sc, Expr *e) {
     }
     e->type = ty_mixed;
     return e->type;
+}
+
+/* Parser recovery and a few partially-built expressions can leave an inner
+ * checker without a type. Keep that representation local: every caller of
+ * check_expr receives a real error-tolerant type and can keep diagnosing. */
+static const Type *check_expr(Scope *sc, Expr *e) {
+    if (!e) return ty_mixed;
+    const Type *t = check_expr_inner(sc, e);
+    if (!t) t = ty_mixed;
+    e->type = t;
+    return t;
 }
 
 const char *expr_kind_name(ExprKind k) {
@@ -3577,6 +3690,9 @@ static void check_stmt(Scope *sc, Stmt *s) {
         }
         VarSym *v = scope_declare(sc, s->u.let.name, t, s->u.let.name_tok, s->u.let.is_mut);
         s->u.let.sym = v;
+        if (t && t->kind == TY_FN && t->thread_safe_callback)
+            validate_thread_callback(s->u.let.init, it, &s->tok,
+                                     "thread_callable binding");
         if (type_can_contain_heap_alias(t)) {
             Expr *init = s->u.let.init;
             if (init && init->kind == EX_VAR) {

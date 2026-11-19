@@ -1044,6 +1044,14 @@ static bool upwards_lib(LoadCtx *ctx, const char *start_dir, const char *spec) {
         char *pkg = fmt("%s/lib/%s", dir, rel);
         free(rel);
         if (load_candidate(ctx, pkg)) { hit = true; break; }
+        /* Runtime packages shipped in the repository live under
+         * packages/lib/<name>/<name>.hphp. Prefer that source to a stale
+         * user-installed copy so repo checks exercise the version being
+         * edited. */
+        rel = lib_rel_spec(spec);
+        pkg = fmt("%s/packages/lib/%s", dir, rel);
+        free(rel);
+        if (load_candidate(ctx, pkg)) { hit = true; break; }
         char *slash = strrchr(dir, '/');
         char *bslash = strrchr(dir, '\\');
         char *cut = slash > bslash ? slash : bslash;

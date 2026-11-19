@@ -51,6 +51,8 @@ struct Type {
     /* union members (TY_UNION) */
     const Type **members;
     size_t nmembers;
+    AstFn *closure_fn;        /* concrete closure origin, when statically known */
+    bool thread_safe_callback; /* callable whose captures passed worker checks */
     /* function types */
     struct { const Type **params; size_t nparams; const Type *ret; bool variadic; } fn;
 };
@@ -229,12 +231,14 @@ struct AstFn {
     PtrVec body;               /* Stmt* */
     bool is_method, is_static, is_abstract, is_pub;
     bool is_closure, is_unsafe, is_ctor;
+    bool thread_worker;        /* checker verified this closure for a worker */
     bool enforce_memory_safety;
     bool proto_emitted;        /* codegen: closure prototype already printed */
     Vis vis;
     AstClass *cls;
     const Type *ftype;         /* filled by sema */
     PtrVec captures;           /* VarSym* — closure captures (sema) */
+    PtrVec thread_moves;       /* VarSym* — non-Sync captures transferred to worker */
     PtrVec borrow_global_writes; /* VarSym* — globals modified directly or by callees */
     PtrVec borrow_global_escapes; /* VarSym* — globals retained by escaping closures */
     PtrVec borrow_heap_escapes; /* Type* — unknown heap roots retained by closures */
