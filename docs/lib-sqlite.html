@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script>
+<title>sqlite - HolyPHP standard library</title>
+<link rel="stylesheet" href="assets/style.css?v=6">
+</head>
+<body>
+<div class="layout">
+<script src="assets/nav.html.js?v=3"></script>
+<main>
+  <h1>sqlite</h1>
+  <p class="lead">SQLite is built into the compiler: a pinned, statically linked
+  SQLite 3.46.1, the generic <code>sqlite_*</code> statement API, WAL
+  checkpoint helpers and <code>bt_*</code> cursors that read SQLite's B-trees
+  directly. No package to install, no <code>import</code>, no system
+  <code>libsqlite3</code> &mdash; programs that never call these builtins do
+  not carry SQLite at all.</p>
+
+  <div>
+    <span class="pill e">built in</span>
+    <span class="pill">SQLite 3.46.1</span>
+    <span class="pill">WAL</span>
+    <span class="pill">B-tree cursors</span>
+    <span class="pill p">raw handles: unsafe</span>
+  </div>
+
+  <h2>At a glance</h2>
+  <table>
+    <tr><th>Call</th><th>What it does</th></tr>
+    <tr><td><code>sqlite_open($path)</code></td><td>open an existing database file; returns a handle, <code>0</code> on failure</td></tr>
+    <tr><td><code>sqlite_open_vfs($path, $vfs)</code></td><td>same through a named VFS (for example <code>"unix-excl"</code>)</td></tr>
+    <tr><td><code>sqlite_exec($db, $sql)</code></td><td>run one or more statements; <code>true</code> on success</td></tr>
+    <tr><td><code>sqlite_prepare($db, $sql)</code> / <code>sqlite_step($st)</code></td><td>compile one statement and advance it row by row (<code>100</code> row, <code>101</code> done)</td></tr>
+    <tr><td><code>sqlite_bind_int</code> / <code>sqlite_bind_text</code></td><td>bind a value to a 1-based <code>?</code> parameter</td></tr>
+    <tr><td><code>sqlite_column_int</code> / <code>sqlite_column_text</code></td><td>read a 0-based column of the current row</td></tr>
+    <tr><td><code>sqlite_reset</code> / <code>sqlite_clear_bindings</code></td><td>reuse a statement without recompiling it</td></tr>
+    <tr><td><code>sqlite_changes</code> / <code>sqlite_last_insert_rowid</code></td><td>rows changed by the last write / its rowid</td></tr>
+    <tr><td><code>sqlite_errmsg</code> / <code>sqlite_is_lock_error</code></td><td>last error text / whether it is worth retrying</td></tr>
+    <tr><td><code>sqlite_status($db)</code></td><td>JSON with cache hits, statement time and busy counters</td></tr>
+    <tr><td><code>bt_open($db, $name, $is_index)</code></td><td>cursor on a table or index; the low-level read path</td></tr>
+  </table>
+
+  <h2>First database</h2>
+  <p><code>sqlite_open()</code> opens an existing file; it deliberately does not
+  create one, so a typo in the path cannot silently produce an empty database.
+  <code>touch()</code> creates the file, then SQL does the rest.</p>
+<pre><code class="hphp"><?php
+$path = sys_get_temp_dir() . "/notes.db";
+touch($path);
+
+unsafe {
+    $db = sqlite_open($path);
+    if ($db == 0) { echo "cannot open the database\n"; exit(1); }
+    sqlite_busy_timeout($db, 5000);
+    sqlite_exec($db, "PRAGMA journal_mode = WAL");
+    sqlite_exec($db, "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY, body TEXT)");
+
+    $st = sqlite_prepare($db, "INSERT INTO notes (body) VALUES (?)");
+    sqlite_bind_text($st, 1, "hello from HolyPHP");
+    sqlite_step($st);
+    sqlite_finalize($st);
+
+    $st = sqlite_prepare($db, "SELECT id, body FROM notes ORDER BY id");
+    while (sqlite_step($st) == 100) {
+        echo sqlite_column_int($st, 0) . ": " . sqlite_column_text($st, 1) . "\n";
+    }
+    sqlite_finalize($st);
+    sqlite_close($db);
+}
+unlink($path);</code></pre>
+
+  <div class="note"><b>Handles are raw pointers.</b> A database or statement
+  handle is SQLite's own pointer widened to an integer, and <code>bt_*</code>
+  hands out payload addresses. The compiler therefore requires these calls
+  inside <code>unsafe { }</code>: <code>sqlite_open</code>,
+  <code>sqlite_open_vfs</code>, <code>sqlite_prepare</code>,
+  <code>bt_open</code>, <code>bt_root</code>, <code>bt_payload_ptr</code>,
+  <code>bt_payload_pin</code>, <code>bt_multi_seek</code>, <code>bt_tail</code>,
+  <code>bt_read</code>, <code>bt_col_off</code> and <code>bt_col_len</code>.
+  Nothing checks the integer for you; a stale handle is a dangling pointer.</div>
+
+  <h2>The B-tree path</h2>
+  <p><code>bt_*</code> is what the bundled
+  <a href="https://github.com/Elifoxcoder/holyphp/tree/main/benchmarks/challenge">challenge
+  server</a> uses for its hottest reads: skip SQLite's virtual machine, seek the
+  table B-tree by rowid or the index B-tree by key, decode the record bytes in
+  place. It is a driver primitive, not a second SQL engine &mdash; the caller
+  owns every buffer, page pin and cursor lifetime.</p>
+<pre class="fragment"><code class="hphp">$db = sqlite_open($path);
+$users = bt_open($db, "users", 0);          // table cursor
+$by_name = bt_open($db, "users_name_idx", 1); // index cursor
+
+// table: move to rowid 7 and decode the record at the cursor
+if (bt_seek($users, 7) == 1) {
+    $rowid = bt_rowid($users);
+    $cols  = bt_cols($users);               // decode this record once
+    $off   = bt_col_off(1);                 // second column, byte offset
+    $len   = bt_col_len(1);
+    $size  = bt_payload_size($users);       // bytes available on this page
+}
+
+// index: how many entries start with key 3, and a histogram for 1..20
+$likes = bt_count_key($by_name, 3);
+$hist  = iarr_new(20);
+bt_count_range($by_name, 1, 20, $hist);
+
+bt_close($users);
+bt_close($by_name);
+sqlite_close($db);</code></pre>
+  <table>
+    <tr><th>Call</th><th>Returns</th></tr>
+    <tr><td><code>bt_first</code> / <code>bt_last</code></td><td><code>1</code> on a row, <code>0</code> empty, <code>-1</code> error</td></tr>
+    <tr><td><code>bt_next</code> / <code>bt_prev</code></td><td><code>1</code> moved, <code>0</code> at the end</td></tr>
+    <tr><td><code>bt_seek($c, $rowid)</code></td><td><code>1</code> found, <code>0</code> not found</td></tr>
+    <tr><td><code>bt_rowid</code> / <code>bt_payload_size</code></td><td>rowid or local payload length of the current row</td></tr>
+    <tr><td><code>bt_cols</code>, <code>bt_col_off</code>, <code>bt_col_len</code>, <code>bt_col_int</code></td><td>decode the current record; call <code>bt_cols</code> first, in its own statement</td></tr>
+    <tr><td><code>bt_read($c, $arr, $cols)</code></td><td>serial type, offset, length and integer value per column, in one call</td></tr>
+    <tr><td><code>bt_count_key</code> / <code>bt_count_range</code></td><td>index entries with one key / per-key counts for a range</td></tr>
+    <tr><td><code>bt_multi_seek</code> / <code>bt_tail</code></td><td>a batch result handle; read it with <code>bt_multi_keys</code>, <code>bt_multi_payloads</code>, then <code>bt_multi_release</code></td></tr>
+    <tr><td><code>bt_payload_pin</code> / <code>bt_page_release</code></td><td>keep one payload page valid while another cursor moves</td></tr>
+  </table>
+  <p>HolyPHP evaluates call arguments right-to-left, so
+  <code>bt_cols()</code> and the column accessors must be separate statements
+  &mdash; the same rule the challenge server follows.</p>
+
+  <h2>WAL checkpoints</h2>
+  <p>A write-heavy program with its own event loop can move SQLite's passive
+  checkpointing to a worker thread, so a large WAL never stalls request
+  handling. The worker uses a second connection to the same file.</p>
+<pre class="fragment"><code class="hphp">$db = sqlite_open($path);
+sqlite_exec($db, "PRAGMA journal_mode = WAL");
+sqlite_exec($db, "PRAGMA wal_autocheckpoint = 0");
+sqlite_bg_checkpoint_start($db, $path, 4096, 4);   // frames, max hold in ms
+
+for (;;) {
+    // serve requests ...
+    sqlite_bg_checkpoint_tick($db);                // once per poll cycle
+    if (sqlite_bg_checkpoint_hold($db)) {
+        // commits are overtaking the copy: hold writes for a moment
+    }
+}
+// sqlite_close($db) also stops the worker</code></pre>
+  <p><code>sqlite_bg_checkpoint_start</code> refuses when SQLite was built
+  without thread safety or a worker is already running. On Windows the worker
+  stays off and these three calls report <code>false</code>; everything else
+  works the same.</p>
+
+  <h2>What gets linked, and which SQLite</h2>
+  <p>The vendored amalgamation lives in
+  <code>third_party/sqlite/</code> (public domain; version, checksums and the
+  compile options are documented in its README). <code>scripts/build.sh</code>
+  compiles it once per platform with <code>src/hp_btree.c</code> appended,
+  because the B-tree builtins use SQLite's private structures, and embeds the
+  static archive in the compiler. At build time the compiler writes it next to
+  the generated program and links it only for programs that call
+  <code>sqlite_*</code> or <code>bt_*</code>.</p>
+  <table>
+    <tr><th>Variable</th><th>Effect</th></tr>
+    <tr><td><code>HPHP_SQLITE_LIB</code></td><td>link this archive instead of the embedded one (a system or debug build)</td></tr>
+    <tr><td><code>HPHP_SQLITE_VFS</code></td><td>VFS name; the challenge uses <code>unix-excl</code> so the process holds the database lock itself</td></tr>
+    <tr><td><code>HPHP_SQLITE_WAL_COALESCE</code></td><td><code>1</code>: write each commit's WAL frames with one <code>pwrite</code></td></tr>
+  </table>
+  <p>On Linux a <code>bt_*</code> program needs no <code>libsqlite3.so</code>:
+  the archive is static. A plain program links neither SQLite nor io_uring.</p>
+
+  <h2>Try it</h2>
+  <pre><code class="bash">bash benchmarks/challenge/run.sh      # build + run the 42-check challenge suite
+hphp run tests/positive/bt_cursor.hphp</code></pre>
+  <p class="small muted">Source: <code>src/hphpc/runtime/hphp_sqlite.c</code>,
+  <code>src/hp_btree.c</code>, <code>third_party/sqlite/</code>. Per-builtin
+  signatures: <a href="builtins.html">built-in functions</a>.</p>
+</main>
+</div>
+<script src="assets/site.js?v=4"></script>
+<script src="assets/theme.js?v=1"></script>
+</body>
+</html>

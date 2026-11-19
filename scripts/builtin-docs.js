@@ -90,7 +90,7 @@ module.exports = {
   sqlite_column_int: "Integer value of a column in the current row.",
   sqlite_column_text: "Text value of a column in the current row.",
   sqlite_errmsg: "Last error message of the connection.",
-  sqlite_exec: "Runs one or more SQL statements and returns the SQLite result code.",
+  sqlite_exec: "Runs one or more SQL statements; true when SQLite reports SQLITE_OK.",
   sqlite_extended_errcode: "Extended SQLite error code of the connection.",
   sqlite_finalize: "Finalises a prepared statement.",
   sqlite_is_lock_error: "Whether the last error was a busy/locked condition worth retrying.",
