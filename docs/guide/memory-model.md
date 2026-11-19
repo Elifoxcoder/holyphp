@@ -4,7 +4,10 @@ This document specifies the ownership contract for phase 1 and the later region
 optimization. HolyPHP already checks a subset of borrows. Generated ownership
 cleanup and runtime reclamation are implemented for the paths listed below.
 Automatic cycle collection covers object/closure graphs, and weak properties
-are supported; builtin ownership metadata remains later work.
+are supported. Fresh owned operands in binary expressions are released after
+use, including managed builtin results that do not alias an input. The wider
+borrowing-consumer audit and complete builtin ownership table remain
+incomplete.
 
 ## Values and owners
 
@@ -70,8 +73,11 @@ incoming edges from trial counts,
 marks nodes with external owners as roots, then frees unmarked groups after
 invalidating weak handles. Small heaps are scanned on release; larger heaps are
 scanned after batches of reference releases. A pass is O(V+E) over registered
-nodes and edges. Collection must not run while an object graph is being mutated
-or while a borrowed reference is exposed to native code.
+nodes and edges. Before a program starts a worker thread, RC updates use the
+single-thread path and collector operations do not take the collector mutex.
+Thread creation switches the process to synchronized reference counts and a
+locked collector registry. Collection must not run while an object graph is
+being mutated or while a borrowed reference is exposed to native code.
 
 `public weak Node $parent;` stores a weak handle. Reading it returns `Node?`;
 if the target has died it returns `null`. Assigning a target does not keep it
@@ -80,7 +86,7 @@ are invalidated before object storage is reclaimed.
 
 ## Builtin ownership contract (for task 1.4)
 
-Each builtin parameter and result must be classified in the builtin table or a
+Each builtin parameter and result should be classified in the builtin table or a
 mechanically checked sidecar as one of:
 
 - **borrow**: input is read during the call only; no retain is stored;
@@ -142,6 +148,14 @@ ordinary code keep their meaning.
   aliasing/storage/consumption is explicit.
 
 ## Current implementation boundary
+
+Generated string literal sites cache their immortal runtime handle after the
+first evaluation. Owner cleanup uses a reusable per-thread vector; registration
+appends a slot and scope marks are vector indices. Escape analysis and function
+or loop regions are not implemented yet. The safety declaration currently
+enables stricter borrow checks and selected proof-based bounds-check elision,
+but it does not yet remove reference-count operations based on whole-file
+ownership proofs.
 
 The runtime implements reference counts and drop paths for strings, arrays,
 closures, and generated class objects. Generated code retains borrowed heap

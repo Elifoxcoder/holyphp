@@ -15,6 +15,8 @@ behaves differently, what they have to change.
 - Files can use `declare(enforce_memory_safety=1);` to make unsafe blocks and calls to builtins marked unsafe compile errors.
 - Thread captures and channel payloads now move their source values; later use of a moved source is rejected. Immutable scalar and string captures can be shared, and the bundled `Thread` and `Pool` wrappers use statically checked `thread_callable` callbacks.
 - Strings, arrays, closures, and class instances now release generated owners automatically; shared arrays detach on write. Object, array, and closure cycles are collected automatically, and `weak` class properties clear when their targets die.
+- Fresh heap results used as binary-expression operands are released after the operation. Builtin heap results follow the owned-result default unless a known aliasing builtin returns an input value.
+- Repeated string literals cache their handle per generated site, and cleanup registrations now append to a reusable per-thread buffer instead of allocating a node for every owner.
 - Ordinary `new Class()` expressions now have the normal copyable class type; explicit `own Class` slots can still take a fresh instance.
 - By-reference calls to mutating builtins are checked as one write, and separate scalar by-reference arguments no longer conflict merely because their storage is boxed.
 - Closure escape diagnostics now distinguish values actually passed to a retaining callback from unrelated heap values, while keeping conservative borrow checks for unknown callbacks.
