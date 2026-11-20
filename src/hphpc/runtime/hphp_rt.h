@@ -173,6 +173,12 @@ struct harr {
     hp_gc_node *gc;
 };
 
+/* Function-local arena used only for values proven not to escape. */
+typedef struct { void *blocks; } hp_region;
+void hp_region_begin(hp_region *region);
+void hp_region_end(hp_region *region);
+harr *hp_region_arr_scalars(hp_region *region, size_t len, const hval *values);
+
 harr *hp_arr_new(void);
 harr *hp_arr_of(int n, const hval *vals);      /* counted hval array */
 harr *hp_arr_of_take(int n, const hval *vals); /* consumes one owner per element */
@@ -308,6 +314,7 @@ void *hp_cleanup_mark(void);
 void hp_cleanup_register_hval(hval *slot);
 void hp_cleanup_register_ptr(void **slot, HKind kind);
 void hp_cleanup_register_box(hval **slot);
+void hp_cleanup_register_region(hp_region *region);
 void hp_cleanup_pop_to(void *mark);
 void hp_throw(hval v);
 void hp_throw_str(const char *msg);

@@ -700,6 +700,16 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
         }
     }
 
+    /* Keep the single-thread runtime object distinct: its RC operations can
+     * compile without the runtime thread-mode checks. */
+    char rt_cache_key_buf[256];
+    const char *rt_cache_key = rt_key;
+    if (rt_key && rt_key[0]) {
+        snprintf(rt_cache_key_buf, sizeof rt_cache_key_buf, "%s_%s", rt_key,
+                 needed[3] ? "threads" : "single");
+        rt_cache_key = rt_cache_key_buf;
+    }
+
     /* ---- incremental cache: two levels ----
      * The runtime objects are the same for every program, so they live in
      * their own slot keyed by the runtime sources and the toolchain alone -
@@ -708,12 +718,12 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
     bool use_cache = cache_key && cache_key[0];
     bool have[6] = {false};
     if (use_cache) {
-        if (rt_key && rt_key[0]) {
+        if (rt_cache_key && rt_cache_key[0]) {
             for (int i = 1; i < 6; i++) {
                 if (!needed[i]) continue;
-                if (!cache_has_object(rt_key, objnames[i])) continue;
+                if (!cache_has_object(rt_cache_key, objnames[i])) continue;
                 char *dest = path_join(wd, objs[i]);
-                have[i] = cache_get_object(rt_key, objnames[i], dest);
+                have[i] = cache_get_object(rt_cache_key, objnames[i], dest);
                 free(dest);
             }
         }
@@ -759,7 +769,10 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
         int ncmd = 0;
         for (int i = 0; i < 6; i++) {
             if (!needed[i] || have[i]) continue;
-            ccmds[ncmd] = fmt("gcc %s -std=c11 -I rt -c %s -o %s", opt, srcs[i], objs[i]);
+            const char *thread_mode = (i == 1 && !needed[3])
+                ? "-DHP_RUNTIME_NO_THREADS " : "";
+            ccmds[ncmd] = fmt("gcc %s %s-std=c11 -I rt -c %s -o %s",
+                              opt, thread_mode, srcs[i], objs[i]);
             cidx[ncmd] = i;
             ncmd++;
         }
@@ -786,7 +799,7 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
         if (compiled && use_cache) {
             for (int j = 0; j < ncmd; j++) {
                 int i = cidx[j];
-                const char *slot = (i == 0) ? cache_key : rt_key;
+                const char *slot = (i == 0) ? cache_key : rt_cache_key;
                 if (!slot || !slot[0]) continue;
                 char *srcp = path_join(wd, objs[i]);
                 cache_put_object(slot, objnames[i], srcp);

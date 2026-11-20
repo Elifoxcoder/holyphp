@@ -1508,7 +1508,11 @@ static void emit_call(Codegen *g, Expr *e, Buf *dst) {
                 emit_byref_arg(g, arg, pm, dst);
                 continue;
             }
-            emit_owned_call_arg(g, arg, pm ? pm->resolved : NULL, dst);
+            if (g->prog->enforce_memory_safety && pm && pm->borrow_only &&
+                arg && arg->kind == EX_VAR)
+                emit_arg(g, arg, pm->resolved, dst);
+            else
+                emit_owned_call_arg(g, arg, pm ? pm->resolved : NULL, dst);
         }
         emit_missing_defaults(g, fn, e->u.call.args.len, dst);
         buf_puts(dst, ")");
@@ -3460,19 +3464,83 @@ static void emit_to_type(Codegen *g, Expr *val, const Type *want, Buf *dst) {
     emit_expr(g, val, dst);
 }
 
-/* Keep bounds elision deliberately narrow: canonical counted loops only,
- * with no calls, writes to the collection, or writes to the induction
- * variable in the body. The loop structure then proves 0 <= i < count(a). */
-static bool bounds_expr_safe(Expr *e, void *array_sym, void *index_sym) {
+/* The counted-loop proof tolerates read-only calls in safety mode only when
+ * the array is passed directly to a parameter proven borrow-only. */
+static bool bounds_mentions_sym(Expr *e, void *sym) {
+    if (!e) return false;
+    if (e->kind == EX_VAR) return e->u.var.sym == sym;
+    switch (e->kind) {
+    case EX_TPL:
+        for (size_t i=0;i<e->u.tpl.exprs.len;i++) if(bounds_mentions_sym(e->u.tpl.exprs.items[i],sym)) return true;
+        break;
+    case EX_INDEX: return bounds_mentions_sym(e->u.index.obj,sym)||bounds_mentions_sym(e->u.index.idx,sym);
+    case EX_FIELD: return bounds_mentions_sym(e->u.field.obj,sym);
+    case EX_CALL:
+        if(bounds_mentions_sym(e->u.call.fn,sym)) return true;
+        for(size_t i=0;i<e->u.call.args.len;i++) if(bounds_mentions_sym(e->u.call.args.items[i],sym)) return true;
+        break;
+    case EX_METHOD:
+        if(bounds_mentions_sym(e->u.method.obj,sym)) return true;
+        for(size_t i=0;i<e->u.method.args.len;i++) if(bounds_mentions_sym(e->u.method.args.items[i],sym)) return true;
+        break;
+    case EX_STATIC: for(size_t i=0;i<e->u.staticcall.args.len;i++) if(bounds_mentions_sym(e->u.staticcall.args.items[i],sym)) return true; break;
+    case EX_NEW: for(size_t i=0;i<e->u.newexpr.args.len;i++) if(bounds_mentions_sym(e->u.newexpr.args.items[i],sym)) return true; break;
+    case EX_BIN: return bounds_mentions_sym(e->u.bin.l,sym)||bounds_mentions_sym(e->u.bin.r,sym)||bounds_mentions_sym(e->u.bin.slice_hi,sym);
+    case EX_UN: return bounds_mentions_sym(e->u.un.operand,sym);
+    case EX_ASSIGN: return bounds_mentions_sym(e->u.assign.target,sym)||bounds_mentions_sym(e->u.assign.value,sym);
+    case EX_TERNARY: return bounds_mentions_sym(e->u.tern.cond,sym)||bounds_mentions_sym(e->u.tern.then,sym)||bounds_mentions_sym(e->u.tern.els,sym);
+    case EX_MATCH:
+        if(bounds_mentions_sym(e->u.matchexpr.subject,sym)||bounds_mentions_sym(e->u.matchexpr.dflt,sym)) return true;
+        for(size_t i=0;i<e->u.matchexpr.cases.len;i++) { MatchCase *c=e->u.matchexpr.cases.items[i]; for(size_t j=0;j<c->patterns.len;j++) if(bounds_mentions_sym(c->patterns.items[j],sym)) return true; if(bounds_mentions_sym(c->body,sym)) return true; }
+        break;
+    case EX_ARRAY_LIT: for(size_t i=0;i<e->u.arr.elems.len;i++) if(bounds_mentions_sym(e->u.arr.elems.items[i],sym)) return true; break;
+    case EX_MAP_LIT:
+        for(size_t i=0;i<e->u.map.keys.len;i++) if(bounds_mentions_sym(e->u.map.keys.items[i],sym)||bounds_mentions_sym(e->u.map.vals.items[i],sym)) return true;
+        break;
+    case EX_TUPLE_LIT: for(size_t i=0;i<e->u.tuple.elems.len;i++) if(bounds_mentions_sym(e->u.tuple.elems.items[i],sym)) return true; break;
+    case EX_BORROW: case EX_MUTBORROW: return bounds_mentions_sym(e->u.borrow.operand,sym);
+    case EX_DEREF: return bounds_mentions_sym(e->u.deref.operand,sym);
+    case EX_CAST: return bounds_mentions_sym(e->u.cast.operand,sym);
+    case EX_IS: return bounds_mentions_sym(e->u.ischeck.operand,sym);
+    case EX_ELLIPSIS: return bounds_mentions_sym(e->u.ellipsis.inner,sym);
+    default: break;
+    }
+    return false;
+}
+
+static bool bounds_expr_safe(Expr *e, void *array_sym, void *index_sym,
+                             bool allow_borrow_calls) {
     if (!e) return true;
     switch (e->kind) {
     case EX_INT: case EX_FLOAT: case EX_STR: case EX_BOOL: case EX_NULL: case EX_VAR:
         return true;
     case EX_TPL:
         for (size_t i = 0; i < e->u.tpl.exprs.len; i++)
-            if (!bounds_expr_safe(e->u.tpl.exprs.items[i], array_sym, index_sym)) return false;
+            if (!bounds_expr_safe(e->u.tpl.exprs.items[i], array_sym, index_sym, allow_borrow_calls)) return false;
         return true;
-    case EX_CALL: case EX_METHOD: case EX_STATIC: case EX_NEW: case EX_CLOSURE:
+    case EX_CALL: {
+        if (!allow_borrow_calls) return false;
+        bool safe_builtin = e->builtin &&
+            (!strcmp(e->builtin,"count") || !strcmp(e->builtin,"array_sum") || !strcmp(e->builtin,"strlen"));
+        AstFn *target = e->u.call.target;
+        if (!safe_builtin && !target) return false;
+        for (size_t i=0;i<e->u.call.args.len;i++) {
+            Expr *arg=e->u.call.args.items[i];
+            if (bounds_mentions_sym(arg,index_sym)) return false;
+            if (bounds_mentions_sym(arg,array_sym)) {
+                if (safe_builtin) {
+                    if (!arg || arg->kind != EX_VAR || arg->u.var.sym != array_sym) return false;
+                } else {
+                    if (!arg || arg->kind != EX_VAR || arg->u.var.sym != array_sym || i>=target->params.len ||
+                        !((Param*)target->params.items[i])->borrow_only) return false;
+                }
+            } else if (!bounds_expr_safe(arg,array_sym,index_sym,allow_borrow_calls)) return false;
+        }
+        if (e->u.call.fn && e->u.call.fn->kind != EX_VAR &&
+            !bounds_expr_safe(e->u.call.fn,array_sym,index_sym,allow_borrow_calls)) return false;
+        return true;
+    }
+    case EX_METHOD: case EX_STATIC: case EX_NEW: case EX_CLOSURE:
         return false;
     case EX_ASSIGN: {
         Expr *root = e->u.assign.target;
@@ -3481,68 +3549,69 @@ static bool bounds_expr_safe(Expr *e, void *array_sym, void *index_sym) {
         if (root && root->kind == EX_VAR &&
             (root->u.var.sym == array_sym || root->u.var.sym == index_sym))
             return false;
-        return bounds_expr_safe(e->u.assign.target, array_sym, index_sym) &&
-               bounds_expr_safe(e->u.assign.value, array_sym, index_sym);
+        return bounds_expr_safe(e->u.assign.target, array_sym, index_sym, allow_borrow_calls) &&
+               bounds_expr_safe(e->u.assign.value, array_sym, index_sym, allow_borrow_calls);
     }
     case EX_INDEX:
-        return bounds_expr_safe(e->u.index.obj, array_sym, index_sym) &&
-               bounds_expr_safe(e->u.index.idx, array_sym, index_sym);
-    case EX_FIELD: return bounds_expr_safe(e->u.field.obj, array_sym, index_sym);
+        return bounds_expr_safe(e->u.index.obj, array_sym, index_sym, allow_borrow_calls) &&
+               bounds_expr_safe(e->u.index.idx, array_sym, index_sym, allow_borrow_calls);
+    case EX_FIELD: return bounds_expr_safe(e->u.field.obj, array_sym, index_sym, allow_borrow_calls);
     case EX_BIN:
-        return bounds_expr_safe(e->u.bin.l, array_sym, index_sym) &&
-               bounds_expr_safe(e->u.bin.r, array_sym, index_sym) &&
-               bounds_expr_safe(e->u.bin.slice_hi, array_sym, index_sym);
-    case EX_UN: return bounds_expr_safe(e->u.un.operand, array_sym, index_sym);
+        return bounds_expr_safe(e->u.bin.l, array_sym, index_sym, allow_borrow_calls) &&
+               bounds_expr_safe(e->u.bin.r, array_sym, index_sym, allow_borrow_calls) &&
+               bounds_expr_safe(e->u.bin.slice_hi, array_sym, index_sym, allow_borrow_calls);
+    case EX_UN: return bounds_expr_safe(e->u.un.operand, array_sym, index_sym, allow_borrow_calls);
     case EX_TERNARY:
-        return bounds_expr_safe(e->u.tern.cond, array_sym, index_sym) &&
-               bounds_expr_safe(e->u.tern.then, array_sym, index_sym) &&
-               bounds_expr_safe(e->u.tern.els, array_sym, index_sym);
+        return bounds_expr_safe(e->u.tern.cond, array_sym, index_sym, allow_borrow_calls) &&
+               bounds_expr_safe(e->u.tern.then, array_sym, index_sym, allow_borrow_calls) &&
+               bounds_expr_safe(e->u.tern.els, array_sym, index_sym, allow_borrow_calls);
     case EX_ARRAY_LIT:
         for (size_t i = 0; i < e->u.arr.elems.len; i++)
-            if (!bounds_expr_safe(e->u.arr.elems.items[i], array_sym, index_sym)) return false;
+            if (!bounds_expr_safe(e->u.arr.elems.items[i], array_sym, index_sym, allow_borrow_calls)) return false;
         return true;
     case EX_MAP_LIT:
         for (size_t i = 0; i < e->u.map.vals.len; i++)
-            if (!bounds_expr_safe(e->u.map.keys.items[i], array_sym, index_sym) ||
-                !bounds_expr_safe(e->u.map.vals.items[i], array_sym, index_sym)) return false;
+            if (!bounds_expr_safe(e->u.map.keys.items[i], array_sym, index_sym, allow_borrow_calls) ||
+                !bounds_expr_safe(e->u.map.vals.items[i], array_sym, index_sym, allow_borrow_calls)) return false;
         return true;
     case EX_TUPLE_LIT:
         for (size_t i = 0; i < e->u.tuple.elems.len; i++)
-            if (!bounds_expr_safe(e->u.tuple.elems.items[i], array_sym, index_sym)) return false;
+            if (!bounds_expr_safe(e->u.tuple.elems.items[i], array_sym, index_sym, allow_borrow_calls)) return false;
         return true;
     case EX_CAST:
-        return bounds_expr_safe(e->u.cast.operand, array_sym, index_sym);
+        return bounds_expr_safe(e->u.cast.operand, array_sym, index_sym, allow_borrow_calls);
     case EX_BORROW: case EX_MUTBORROW: case EX_DEREF: case EX_IS:
     default:
         return false;
     }
 }
 
-static bool bounds_block_safe(PtrVec stmts, void *array_sym, void *index_sym) {
+static bool bounds_block_safe(PtrVec stmts, void *array_sym, void *index_sym,
+                              bool allow_borrow_calls) {
     for (size_t i = 0; i < stmts.len; i++) {
         Stmt *s = stmts.items[i];
         if (!s) continue;
         switch (s->kind) {
         case ST_EXPR:
-            if (!bounds_expr_safe(s->u.expr.expr, array_sym, index_sym)) return false;
+            if (!bounds_expr_safe(s->u.expr.expr, array_sym, index_sym, allow_borrow_calls)) return false;
             break;
         case ST_LET:
-            if (!bounds_expr_safe(s->u.let.init, array_sym, index_sym)) return false;
+            if (!bounds_expr_safe(s->u.let.init, array_sym, index_sym, allow_borrow_calls)) return false;
             break;
         case ST_ECHO:
             for (size_t j = 0; j < s->u.echo.exprs.len; j++)
-                if (!bounds_expr_safe(s->u.echo.exprs.items[j], array_sym, index_sym)) return false;
+                if (!bounds_expr_safe(s->u.echo.exprs.items[j], array_sym, index_sym, allow_borrow_calls)) return false;
             break;
         case ST_PRINT:
-            if (!bounds_expr_safe(s->u.print.expr, array_sym, index_sym)) return false;
+            if (!bounds_expr_safe(s->u.print.expr, array_sym, index_sym, allow_borrow_calls)) return false;
             break;
         case ST_IF:
-            if (!bounds_expr_safe(s->u.if_.cond, array_sym, index_sym) ||
-                !bounds_block_safe(s->u.if_.then, array_sym, index_sym) ||
-                !bounds_block_safe(s->u.if_.els, array_sym, index_sym)) return false;
+            if (!bounds_expr_safe(s->u.if_.cond, array_sym, index_sym, allow_borrow_calls) ||
+                !bounds_block_safe(s->u.if_.then, array_sym, index_sym, allow_borrow_calls) ||
+                !bounds_block_safe(s->u.if_.els, array_sym, index_sym, allow_borrow_calls)) return false;
             break;
         case ST_BLOCK:
-            if (!bounds_block_safe(s->u.block.stmts, array_sym, index_sym)) return false;
+            if (!bounds_block_safe(s->u.block.stmts, array_sym, index_sym, allow_borrow_calls)) return false;
             break;
         default:
             /* Nested loops, global mutation, exceptions and other control
@@ -3553,7 +3622,8 @@ static bool bounds_block_safe(PtrVec stmts, void *array_sym, void *index_sym) {
     return true;
 }
 
-static bool prove_for_bounds(Stmt *s, void **array_out, void **index_out) {
+static bool prove_for_bounds(Stmt *s, void **array_out, void **index_out,
+                             bool allow_borrow_calls) {
     if (!s || s->kind != ST_FOR || s->u.for_.init.len != 1 ||
         s->u.for_.step.len != 1 || !s->u.for_.cond ||
         s->u.for_.init.items[0] == NULL || s->u.for_.step.items[0] == NULL)
@@ -3583,7 +3653,8 @@ static bool prove_for_bounds(Stmt *s, void **array_out, void **index_out) {
     Expr *array = cond->u.bin.r->u.call.args.items[0];
     if (!array || array->kind != EX_VAR || !array->u.var.sym ||
         !array->type || array->type->kind != TY_ARRAY ||
-        !bounds_block_safe(s->u.for_.body, array->u.var.sym, index_sym)) return false;
+        !bounds_block_safe(s->u.for_.body, array->u.var.sym, index_sym,
+                           allow_borrow_calls)) return false;
     VarSym *av = (VarSym *)array->u.var.sym;
     VarSym *iv = (VarSym *)index_sym;
     if (av->is_program_global || av->is_global_alias || av->captured_byref ||
@@ -3607,6 +3678,19 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         if (!s->u.let.init) {
             /* `let mut $x: T;` - a slot and no value (see sema) */
             if (v && !v->is_auto && t) line(g, "%s %s;", ctype_of(t), var_name(v));
+            break;
+        }
+        if (v && v->region_local && s->u.let.init->kind == EX_ARRAY_LIT) {
+            if (!v->is_auto)
+                line(g, "%s %s = NULL;", ctype_of(t), var_name(v));
+            Buf vals; buf_init(&vals);
+            for (size_t i = 0; i < s->u.let.init->u.arr.elems.len; i++) {
+                if (i) buf_puts(&vals, ", ");
+                to_hval(g, s->u.let.init->u.arr.elems.items[i], &vals);
+            }
+            line(g, "%s = hp_region_arr_scalars(&_hp_region, %zu, (const hval[]){%s});",
+                 var_name(v), s->u.let.init->u.arr.elems.len, buf_take(&vals));
+            free(vals.data);
             break;
         }
         bool boxed = v && (v->captured_byref || v->is_program_global);
@@ -3963,7 +4047,8 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         void *old_array = g->bounds_array_sym;
         void *old_index = g->bounds_index_sym;
         void *proven_array = NULL, *proven_index = NULL;
-        if (prove_for_bounds(s, &proven_array, &proven_index)) {
+        if (prove_for_bounds(s, &proven_array, &proven_index,
+                             g->prog->enforce_memory_safety)) {
             g->bounds_array_sym = proven_array;
             g->bounds_index_sym = proven_index;
         }
@@ -4650,6 +4735,16 @@ static void emit_register_owner(Codegen *g, const char *slot, const Type *t,
 
 static void emit_cleanup_setup(Codegen *g, AstFn *fn) {
     line(g, "void *_hp_mark = hp_cleanup_mark();");
+    PtrVec syms = {0};
+    for (size_t i = 0; i < fn->body.len; i++) collect_syms_stmt(&syms, fn->body.items[i]);
+    bool has_region = false;
+    for (size_t i = 0; i < syms.len; i++)
+        if (((VarSym *)syms.items[i])->region_local) { has_region = true; break; }
+    if (has_region) {
+        line(g, "hp_region _hp_region;");
+        line(g, "hp_region_begin(&_hp_region);");
+        line(g, "hp_cleanup_register_region(&_hp_region);");
+    }
     /* Each concurrent invocation gets an owned local array/string handle.
      * A write detaches through COW, while the closure environment remains an
      * immutable shared owner. Heap counts are atomic at thread boundaries. */
@@ -4666,6 +4761,7 @@ static void emit_cleanup_setup(Codegen *g, AstFn *fn) {
         Param *pm = fn->params.items[i];
         VarSym *v = (VarSym *)pm->sym;
         if (!v || pm->by_ref) continue;
+        if (fn->enforce_memory_safety && pm->borrow_only) continue;
         if (v->captured_byref) {
             emit_register_owner(g, var_name(v), NULL, true, false);
             continue;
@@ -4677,8 +4773,6 @@ static void emit_cleanup_setup(Codegen *g, AstFn *fn) {
         emit_register_owner(g, slot, pm->resolved, false,
                             type_is_hval_slot(pm->resolved));
     }
-    PtrVec syms = {0};
-    for (size_t i = 0; i < fn->body.len; i++) collect_syms_stmt(&syms, fn->body.items[i]);
     for (size_t i = 0; i < syms.len; i++) {
         VarSym *v = syms.items[i];
         if (!v || v->is_param || is_global_alias(v) || v->is_program_global) continue;
@@ -4686,7 +4780,7 @@ static void emit_cleanup_setup(Codegen *g, AstFn *fn) {
         for (size_t j = 0; j < i; j++) if (syms.items[j] == v) seen = true;
         for (size_t j = 0; j < fn->captures.len; j++)
             if (fn->captures.items[j] == v) capture = true;
-        if (seen || capture || !v->is_auto) continue;
+        if (seen || capture || !v->is_auto || v->region_local) continue;
         const char *slot = var_name(v);
         if (v->captured_byref) emit_register_owner(g, slot, NULL, true, false);
         else if (type_can_own_heap(v->type))

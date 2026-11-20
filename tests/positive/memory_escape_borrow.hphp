@@ -1,0 +1,20 @@
+declare(enforce_memory_safety=1);
+
+function borrowed_count(array $items): int {
+    return count($items);
+}
+
+function borrowed_count_forward(array $items): int {
+    return borrowed_count($items);
+}
+
+function escaping_copy(array $items): array {
+    return $items;
+}
+
+$items = [1, 2, 3, 4];
+if (borrowed_count_forward($items) != 4) { throw "borrowed count failed"; }
+$copy = escaping_copy($items);
+$copy[0] = 99;
+if ($items[0] != 1 || $copy[0] != 99) { throw "escaping copy lost COW"; }
+echo "memory borrow-only argument ok";

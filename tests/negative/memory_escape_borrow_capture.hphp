@@ -1,0 +1,6 @@
+declare(enforce_memory_safety=1);
+function retain_ref(array &$items): callable {
+    return function() use (&$items) { return count($items); };
+}
+$items = [1, 2];
+$callback = retain_ref($items);

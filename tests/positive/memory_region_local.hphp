@@ -1,0 +1,41 @@
+declare(enforce_memory_safety=1);
+
+function local_count(): int {
+    let $items: array = [2, 3, 5, 7];
+    return count($items);
+}
+
+function escaping_array(): array {
+    let $items: array = [2, 3, 5, 7];
+    return $items;
+}
+
+function branch_region_count(bool $take): int {
+    if ($take) {
+        let $items: array = [11, 13, 17];
+        return count($items);
+    }
+    return 0;
+}
+
+function switch_region_count(int $choice): int {
+    switch ($choice) {
+        case 1:
+            let $items: array = [19, 23];
+            return count($items);
+        default:
+            return 0;
+    }
+}
+
+if (local_count() != 4) { throw "region local count failed"; }
+if (branch_region_count(true) != 3 || branch_region_count(false) != 0) {
+    throw "nested branch region failed";
+}
+if (switch_region_count(1) != 2 || switch_region_count(0) != 0) {
+    throw "switch region failed";
+}
+$escaped = escaping_array();
+$escaped[0] = 99;
+if ($escaped[0] != 99) { throw "escaping region fallback failed"; }
+echo "memory local region ok";

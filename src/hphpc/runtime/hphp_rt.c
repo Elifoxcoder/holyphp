@@ -56,16 +56,83 @@ struct hp_gc_node {
     struct hp_gc_node *prev;
     struct hp_gc_node *next;
 };
+
+typedef struct hp_region_block {
+    struct hp_region_block *next;
+    size_t used, cap;
+    max_align_t align;
+    unsigned char data[];
+} hp_region_block;
+
+void hp_region_begin(hp_region *region) {
+    if (region) region->blocks = NULL;
+}
+
+static void *hp_region_alloc(hp_region *region, size_t size) {
+    if (!region) return NULL;
+    size_t align = _Alignof(max_align_t);
+    size = (size + align - 1) & ~(align - 1);
+    hp_region_block *block = (hp_region_block *)region->blocks;
+    if (!block || block->cap - block->used < size) {
+        size_t cap = size > 4096 ? size : 4096;
+        hp_region_block *fresh = (hp_region_block *)malloc(
+            offsetof(hp_region_block, data) + cap);
+        if (!fresh) { fprintf(stderr, "Fatal error: out of memory\n"); exit(255); }
+        fresh->next = block;
+        fresh->used = 0;
+        fresh->cap = cap;
+        region->blocks = fresh;
+        block = fresh;
+    }
+    void *out = block->data + block->used;
+    block->used += size;
+    return out;
+}
+
+void hp_region_end(hp_region *region) {
+    if (!region) return;
+    hp_region_block *block = (hp_region_block *)region->blocks;
+    while (block) {
+        hp_region_block *next = block->next;
+        free(block);
+        block = next;
+    }
+    region->blocks = NULL;
+}
 static hp_gc_node *hp_gc_nodes;
 static size_t hp_gc_node_count;
-static size_t hp_gc_release_count;
+#ifdef HP_RUNTIME_NO_THREADS
+static uint16_t hp_gc_release_count;
+#else
+static HP_THREAD_QUAL uint16_t hp_gc_release_count;
+#endif
 static bool hp_gc_collecting;
+#ifdef HP_RUNTIME_NO_THREADS
+static unsigned hp_gc_drop_depth;
+#else
 static HP_THREAD_QUAL unsigned hp_gc_drop_depth;
+#endif
 static uint64_t hp_gc_epoch;
 static hp_gc_node **hp_gc_work;
 static size_t hp_gc_work_len, hp_gc_work_cap;
 static enum { HP_GC_IDLE, HP_GC_GATHER, HP_GC_SUBTRACT, HP_GC_MARK } hp_gc_mode;
 static bool hp_gc_oom;
+#ifdef HP_RUNTIME_NO_THREADS
+void hp_runtime_thread_starting(void) { }
+static inline void hp_gc_lock(void) { }
+static inline void hp_gc_unlock(void) { }
+static inline uint32_t hp_rc_retain(uint32_t *rc) {
+    uint32_t old = *rc;
+    if (old != UINT32_MAX) *rc = old + 1;
+    return old;
+}
+static inline uint32_t hp_rc_release(uint32_t *rc) {
+    uint32_t old = *rc;
+    if (old != 0 && old != UINT32_MAX) *rc = old - 1;
+    return old;
+}
+static inline uint32_t hp_rc_count(uint32_t *rc) { return *rc; }
+#else
 static pthread_mutex_t hp_gc_mu;
 static pthread_once_t hp_gc_mu_once = PTHREAD_ONCE_INIT;
 static bool hp_threads_started;
@@ -118,9 +185,10 @@ static uint32_t hp_rc_release(uint32_t *rc) {
     return old;
 }
 
-static uint32_t hp_rc_count(uint32_t *rc) {
+static inline uint32_t hp_rc_count(uint32_t *rc) {
     return hp_threads_started ? __atomic_load_n(rc, __ATOMIC_RELAXED) : *rc;
 }
+#endif
 
 static bool hp_gc_work_push(hp_gc_node *node) {
     if (hp_gc_work_len == hp_gc_work_cap) {
@@ -224,7 +292,7 @@ static void hp_gc_clear_closure(void *raw) {
     c->drop_env = NULL;
 }
 
-static void hp_gc_collect_candidate(hp_gc_node *root, bool force) {
+static void hp_gc_collect_candidate(hp_gc_node *root) {
     hp_gc_lock();
     if (!root || hp_gc_collecting || hp_gc_drop_depth || hp_gc_node_count == 0) {
         hp_gc_unlock();
@@ -232,7 +300,6 @@ static void hp_gc_collect_candidate(hp_gc_node *root, bool force) {
     }
     /* Follow only the graph reachable from the released candidate. This
      * avoids rescanning unrelated live DOM/object graphs on every cycle pass. */
-    if (!force && ++hp_gc_release_count % 128 != 0) { hp_gc_unlock(); return; }
     hp_gc_collecting = true;
     if (++hp_gc_epoch == 0) {
         for (hp_gc_node *it = hp_gc_nodes; it; it = it->next) it->epoch = 0;
@@ -306,10 +373,16 @@ static void hp_gc_collect_candidate(hp_gc_node *root, bool force) {
     hp_gc_unlock();
 }
 
+static inline void hp_gc_candidate(hp_gc_node *root) {
+    if (!root) return;
+    if (++hp_gc_release_count & 1023u) return;
+    hp_gc_collect_candidate(root);
+}
+
 void hp_gc_collect_now(void *ptr) {
     if (!ptr) return;
     hp_gc_node *node = ((hobj *)ptr)->gc;
-    hp_gc_collect_candidate(node, true);
+    hp_gc_collect_candidate(node);
 }
 
 /* Generic strong object handles use the common generated-object header. */
@@ -337,7 +410,7 @@ void hp_rc_dec(void *p) {
         else free(p);
         hp_gc_drop_depth--;
     } else {
-        hp_gc_collect_candidate(h->gc, false);
+        hp_gc_candidate(h->gc);
     }
     hp_gc_unlock();
 }
@@ -876,6 +949,21 @@ harr *hp_arr_new(void) {
     a->next_index = 0;
     hp_gc_register(a, &a->rc, &a->gc, hp_gc_trace_array,
                    hp_gc_clear_array, hp_gc_destroy_array);
+    return a;
+}
+
+harr *hp_region_arr_scalars(hp_region *region, size_t len, const hval *values) {
+    harr *a = (harr *)hp_region_alloc(region, sizeof(*a));
+    if (!a) return NULL;
+    memset(a, 0, sizeof(*a));
+    a->len = a->cap = len;
+    a->rc = 1;
+    a->next_index = (int64_t)len;
+    if (len) {
+        a->vals = (hval *)hp_region_alloc(region, len * sizeof(*a->vals));
+        if (!a->vals) return NULL;
+        memcpy(a->vals, values, len * sizeof(*a->vals));
+    }
     return a;
 }
 
@@ -1608,6 +1696,14 @@ void hp_arr_free(harr *a) {
     hp_gc_drop_depth--;
 }
 
+static inline void hp_arr_release_cow_owner(harr *a) {
+    hp_gc_lock();
+    uint32_t old = hp_rc_release(&a->rc);
+    if (old == 1) hp_arr_free(a);
+    else if (old != 0 && old != UINT32_MAX) hp_gc_candidate(a->gc);
+    hp_gc_unlock();
+}
+
 /* COW: the runtime shares arrays on assignment; writes go through
  * hp_arr_cow which clones when more than one owner exists. Ownership is
  * tracked by the compiler: values assigned by-value share, explicit
@@ -1618,7 +1714,7 @@ harr *hp_arr_cow(harr *a) {
     if (hp_rc_count(&a->rc) > 1) {
         harr *r = hp_arr_clone(a);
         r->rc = 1;
-        hp_val_rc_dec(hp_of_arr(a));
+        hp_arr_release_cow_owner(a);
         return r;
     }
     return a;
@@ -1845,12 +1941,19 @@ static void hp_cleanup_register(void *slot, HKind kind, unsigned mode) {
 void hp_cleanup_register_hval(hval *slot) { hp_cleanup_register(slot, HV_NULL, 0); }
 void hp_cleanup_register_ptr(void **slot, HKind kind) { hp_cleanup_register(slot, kind, 1); }
 void hp_cleanup_register_box(hval **slot) { hp_cleanup_register(slot, HV_NULL, 2); }
+void hp_cleanup_register_region(hp_region *region) {
+    hp_cleanup_register((void *)region, HV_NULL, 3);
+}
 
 void hp_cleanup_pop_to(void *mark) {
     size_t target = (size_t)(uintptr_t)mark;
     if (target > hp_cleanup_len) target = 0;
     while (hp_cleanup_len > target) {
         hp_cleanup_node *n = &hp_cleanups[--hp_cleanup_len];
+        if (n->mode == 3) {
+            hp_region_end((hp_region *)n->slot);
+            continue;
+        }
         if (n->mode == 0) {
             hval *slot = (hval *)n->slot;
             hval value = *slot;
@@ -2037,7 +2140,7 @@ void hp_val_rc_dec(hval v) {
             uint32_t old = hp_rc_release(&v.u.a->rc);
             if (old == 1) hp_arr_free(v.u.a);
             else if (old != 0 && old != UINT32_MAX)
-                hp_gc_collect_candidate(v.u.a->gc, false);
+                hp_gc_candidate(v.u.a->gc);
         }
         break;
     case HV_CLO:
@@ -2045,7 +2148,7 @@ void hp_val_rc_dec(hval v) {
             uint32_t old = hp_rc_release(&v.u.c->rc);
             if (old == 1) hpclosure_free(v.u.c);
             else if (old != 0 && old != UINT32_MAX)
-                hp_gc_collect_candidate(v.u.c->gc, false);
+                hp_gc_candidate(v.u.c->gc);
         }
         break;
     case HV_OBJ: hp_rc_dec(v.u.p); break;

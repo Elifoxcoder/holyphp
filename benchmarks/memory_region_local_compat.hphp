@@ -1,0 +1,8 @@
+function local_count(): int {
+    let $items: array = [2, 3, 5, 7];
+    return count($items);
+}
+$sum = 0;
+$start = hrtime(true);
+for ($i = 0; $i < 200000; $i++) { $sum += local_count(); }
+echo $sum . " " . (hrtime(true) - $start) . "\n";

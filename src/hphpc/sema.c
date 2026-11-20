@@ -4614,6 +4614,227 @@ static void diagnose_unresolved_ref_returns(PtrVec stmts) {
     }
 }
 
+/* Conservative first escape summary for safety mode. A parameter is
+ * borrow-only when every direct use is an argument to a read-only builtin or
+ * another parameter already proven borrow-only. All other expression forms
+ * recurse conservatively, so return/store/closure/unknown-call uses disqualify
+ * the summary. */
+static bool escape_expr_safe(Expr *e, VarSym *param);
+
+static bool escape_arg_safe(Expr *arg, VarSym *param) {
+    if (arg && arg->kind == EX_VAR && arg->u.var.sym == param) return true;
+    return escape_expr_safe(arg, param);
+}
+
+static bool escape_expr_safe(Expr *e, VarSym *param) {
+    if (!e) return true;
+#define SAFE_CHILD(x) do { if (!escape_expr_safe((x), param)) return false; } while (0)
+    switch (e->kind) {
+    case EX_VAR:
+        return e->u.var.sym != param;
+    case EX_CALL: {
+        bool borrow_builtin = e->builtin &&
+            (!strcmp(e->builtin, "count") || !strcmp(e->builtin, "array_sum") ||
+             !strcmp(e->builtin, "strlen"));
+        AstFn *target = e->u.call.target;
+        for (size_t i = 0; i < e->u.call.args.len; i++) {
+            Expr *arg = e->u.call.args.items[i];
+            bool borrow_arg = borrow_builtin;
+            if (!borrow_arg && target && i < target->params.len)
+                borrow_arg = ((Param *)target->params.items[i])->borrow_only;
+            if (borrow_arg) {
+                if (!escape_arg_safe(arg, param)) return false;
+            } else SAFE_CHILD(arg);
+        }
+        if (e->u.call.fn && e->u.call.fn->kind != EX_VAR)
+            SAFE_CHILD(e->u.call.fn);
+        return true;
+    }
+    case EX_TPL:
+        for (size_t i = 0; i < e->u.tpl.exprs.len; i++) SAFE_CHILD(e->u.tpl.exprs.items[i]);
+        return true;
+    case EX_INDEX: SAFE_CHILD(e->u.index.obj); SAFE_CHILD(e->u.index.idx); return true;
+    case EX_FIELD: SAFE_CHILD(e->u.field.obj); return true;
+    case EX_METHOD:
+        SAFE_CHILD(e->u.method.obj);
+        for (size_t i = 0; i < e->u.method.args.len; i++) SAFE_CHILD(e->u.method.args.items[i]);
+        return true;
+    case EX_STATIC:
+        for (size_t i = 0; i < e->u.staticcall.args.len; i++) SAFE_CHILD(e->u.staticcall.args.items[i]);
+        return true;
+    case EX_NEW:
+        for (size_t i = 0; i < e->u.newexpr.args.len; i++) SAFE_CHILD(e->u.newexpr.args.items[i]);
+        return true;
+    case EX_BIN: SAFE_CHILD(e->u.bin.l); SAFE_CHILD(e->u.bin.r); SAFE_CHILD(e->u.bin.slice_hi); return true;
+    case EX_UN: SAFE_CHILD(e->u.un.operand); return true;
+    case EX_ASSIGN: SAFE_CHILD(e->u.assign.target); SAFE_CHILD(e->u.assign.value); return true;
+    case EX_TERNARY: SAFE_CHILD(e->u.tern.cond); SAFE_CHILD(e->u.tern.then); SAFE_CHILD(e->u.tern.els); return true;
+    case EX_MATCH:
+        SAFE_CHILD(e->u.matchexpr.subject);
+        for (size_t i = 0; i < e->u.matchexpr.cases.len; i++) {
+            MatchCase *mc = e->u.matchexpr.cases.items[i];
+            for (size_t j = 0; j < mc->patterns.len; j++) SAFE_CHILD(mc->patterns.items[j]);
+            SAFE_CHILD(mc->body);
+        }
+        SAFE_CHILD(e->u.matchexpr.dflt); return true;
+    case EX_CLOSURE:
+        /* Capture summaries are not a complete escape proof yet. */
+        return false;
+    case EX_ARRAY_LIT:
+        for (size_t i = 0; i < e->u.arr.elems.len; i++) SAFE_CHILD(e->u.arr.elems.items[i]);
+        return true;
+    case EX_MAP_LIT:
+        for (size_t i = 0; i < e->u.map.keys.len; i++) SAFE_CHILD(e->u.map.keys.items[i]);
+        for (size_t i = 0; i < e->u.map.vals.len; i++) SAFE_CHILD(e->u.map.vals.items[i]);
+        return true;
+    case EX_TUPLE_LIT:
+        for (size_t i = 0; i < e->u.tuple.elems.len; i++) SAFE_CHILD(e->u.tuple.elems.items[i]);
+        return true;
+    case EX_BORROW: case EX_MUTBORROW: SAFE_CHILD(e->u.borrow.operand); return true;
+    case EX_DEREF: SAFE_CHILD(e->u.deref.operand); return true;
+    case EX_CAST: SAFE_CHILD(e->u.cast.operand); return true;
+    case EX_IS: SAFE_CHILD(e->u.ischeck.operand); return true;
+    case EX_ELLIPSIS: SAFE_CHILD(e->u.ellipsis.inner); return true;
+    default: return true;
+    }
+#undef SAFE_CHILD
+}
+
+static bool escape_stmts_safe(PtrVec stmts, VarSym *param) {
+    for (size_t i = 0; i < stmts.len; i++) {
+        Stmt *s = stmts.items[i];
+        if (!s) continue;
+#define SAFE_STMTS(v) do { if (!escape_stmts_safe((v), param)) return false; } while (0)
+        switch (s->kind) {
+        case ST_EXPR: if (!escape_expr_safe(s->u.expr.expr, param)) return false; break;
+        case ST_LET: if (!escape_expr_safe(s->u.let.init, param)) return false; break;
+        case ST_RETURN: if (!escape_expr_safe(s->u.ret.value, param)) return false; break;
+        case ST_ECHO:
+            for (size_t j=0;j<s->u.echo.exprs.len;j++) if(!escape_expr_safe(s->u.echo.exprs.items[j],param)) return false;
+            break;
+        case ST_PRINT: if (!escape_expr_safe(s->u.print.expr, param)) return false; break;
+        case ST_IF:
+            if (!escape_expr_safe(s->u.if_.cond,param)) return false;
+            SAFE_STMTS(s->u.if_.then); SAFE_STMTS(s->u.if_.els); break;
+        case ST_WHILE: if(!escape_expr_safe(s->u.while_.cond,param)) return false; SAFE_STMTS(s->u.while_.body); break;
+        case ST_DO: if(!escape_expr_safe(s->u.do_.cond,param)) return false; SAFE_STMTS(s->u.do_.body); break;
+        case ST_FOR:
+            SAFE_STMTS(s->u.for_.init); if(!escape_expr_safe(s->u.for_.cond,param)) return false;
+            SAFE_STMTS(s->u.for_.step); SAFE_STMTS(s->u.for_.body); break;
+        case ST_FOREACH: if(!escape_expr_safe(s->u.foreach.iter,param)) return false; SAFE_STMTS(s->u.foreach.body); break;
+        case ST_BLOCK: SAFE_STMTS(s->u.block.stmts); break;
+        case ST_UNSAFE_BLOCK: SAFE_STMTS(s->u.unsafe.stmts); break;
+        case ST_THROW: if(!escape_expr_safe(s->u.throw.expr,param)) return false; break;
+        case ST_TRY:
+            SAFE_STMTS(s->u.try.body); SAFE_STMTS(s->u.try.fin);
+            for(size_t j=0;j<s->u.try.catches.len;j++) SAFE_STMTS(((CatchClause*)s->u.try.catches.items[j])->body);
+            break;
+        case ST_SWITCH:
+            if(!escape_expr_safe(s->u.switch_.cond,param)) return false;
+            for(size_t j=0;j<s->u.switch_.cases.len;j++) {
+                SwitchCase *scase=s->u.switch_.cases.items[j];
+                for(size_t k=0;k<scase->patterns.len;k++)
+                    if(!escape_expr_safe(scase->patterns.items[k],param)) return false;
+                SAFE_STMTS(scase->body);
+            }
+            break;
+        default: break;
+        }
+#undef SAFE_STMTS
+    }
+    return true;
+}
+
+static bool escape_summary_type(const Type *t) {
+    if (!t) return false;
+    switch (t->kind) {
+    case TY_STRING: case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void infer_borrow_only_params(Program *prog) {
+    for (size_t i = 0; i < prog->decls.len; i++) {
+        Decl *d = prog->decls.items[i];
+        AstFn *fn = d->kind == DK_FN ? d->u.fn : NULL;
+        if (!fn || !fn->enforce_memory_safety || fn->is_closure || fn->is_method || fn->is_abstract) continue;
+        for (size_t j = 0; j < fn->params.len; j++) {
+            Param *pm = fn->params.items[j];
+            pm->borrow_only = !pm->by_ref && escape_summary_type(pm->resolved);
+        }
+    }
+    bool changed;
+    do {
+        changed = false;
+        for (size_t i = 0; i < prog->decls.len; i++) {
+            Decl *d = prog->decls.items[i];
+            AstFn *fn = d->kind == DK_FN ? d->u.fn : NULL;
+            if (!fn || !fn->enforce_memory_safety || fn->is_closure || fn->is_method || fn->is_abstract) continue;
+            for (size_t j = 0; j < fn->params.len; j++) {
+                Param *pm = fn->params.items[j];
+                if (!pm->borrow_only) continue;
+                if (!escape_stmts_safe(fn->body, (VarSym *)pm->sym)) {
+                    pm->borrow_only = false;
+                    changed = true;
+                }
+            }
+        }
+    } while (changed);
+}
+
+static bool scalar_array_literal(const Expr *e) {
+    if (!e || e->kind != EX_ARRAY_LIT) return false;
+    for (size_t i = 0; i < e->u.arr.elems.len; i++) {
+        Expr *item = e->u.arr.elems.items[i];
+        if (!item || (item->kind != EX_INT && item->kind != EX_FLOAT &&
+                      item->kind != EX_BOOL && item->kind != EX_NULL)) return false;
+    }
+    return true;
+}
+
+static void infer_local_regions_block(AstFn *fn, PtrVec stmts) {
+    for (size_t j = 0; j < stmts.len; j++) {
+        Stmt *s = stmts.items[j];
+        if (!s) continue;
+        if (s->kind == ST_LET && s->u.let.sym &&
+            scalar_array_literal(s->u.let.init)) {
+            VarSym *v = (VarSym *)s->u.let.sym;
+            if (v->type && v->type->kind == TY_ARRAY && !v->is_param &&
+                !v->is_program_global && !v->is_global_alias &&
+                !v->captured_byref && !v->captured && !v->captured_heap_alias &&
+                escape_stmts_safe(fn->body, v))
+                v->region_local = true;
+            continue;
+        }
+        /* These constructs execute a nested binding at most once per
+         * function invocation. Do not descend into loops: a function region
+         * would otherwise retain one arena allocation per iteration. */
+        if (s->kind == ST_BLOCK) {
+            infer_local_regions_block(fn, s->u.block.stmts);
+        } else if (s->kind == ST_IF) {
+            infer_local_regions_block(fn, s->u.if_.then);
+            infer_local_regions_block(fn, s->u.if_.els);
+        } else if (s->kind == ST_UNSAFE_BLOCK) {
+            infer_local_regions_block(fn, s->u.unsafe.stmts);
+        } else if (s->kind == ST_SWITCH) {
+            for (size_t k = 0; k < s->u.switch_.cases.len; k++)
+                infer_local_regions_block(fn, ((SwitchCase *)s->u.switch_.cases.items[k])->body);
+        }
+    }
+}
+
+static void infer_local_regions(Program *prog) {
+    for (size_t i = 0; i < prog->decls.len; i++) {
+        Decl *d = prog->decls.items[i];
+        AstFn *fn = d->kind == DK_FN ? d->u.fn : NULL;
+        if (!fn || !fn->enforce_memory_safety || fn->is_closure ||
+            fn->is_method || fn->is_abstract) continue;
+        infer_local_regions_block(fn, fn->body);
+    }
+}
+
 void sema_run(Program *prog) {
     builtins_init();
     sema_ok = true;
@@ -4660,6 +4881,8 @@ void sema_run(Program *prog) {
     borrow_check_script(prog->stmts);
     for (size_t i = 0; i < g_borrow_fns.len; i++)
         borrow_check_function(g_borrow_fns.items[i]);
+    infer_borrow_only_params(prog);
+    infer_local_regions(prog);
 }
 
 const FnSig *sema_fn_sig(AstFn *fn) { return fn_make_sig(fn); }

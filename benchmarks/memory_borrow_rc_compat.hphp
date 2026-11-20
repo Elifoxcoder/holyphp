@@ -1,0 +1,11 @@
+function borrowed_count(array $items): int {
+    return count($items);
+}
+$items = [1, 2, 3, 4];
+$sum = 0;
+$start = hrtime(true);
+for ($i = 0; $i < 1000000; $i++) {
+    $sum += borrowed_count($items);
+}
+$elapsed = hrtime(true) - $start;
+echo $sum . " " . $elapsed . "\n";

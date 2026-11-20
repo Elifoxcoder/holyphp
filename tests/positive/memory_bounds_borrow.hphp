@@ -1,0 +1,10 @@
+declare(enforce_memory_safety=1);
+function borrowed_count(array $items): int { return count($items); }
+$items = [3, 5, 7, 11];
+$total = 0;
+for ($i = 0; $i < count($items); $i++) {
+    $total += $items[$i];
+    borrowed_count($items);
+}
+if ($total != 26) { throw "bounded read failed"; }
+echo "memory borrow bounds proof ok";

@@ -40,6 +40,7 @@ typedef struct VarSym {
     bool alias_unknown;                 /* may alias any object of its type */
     bool shared_alias;                  /* mutable heap alias derived from &T */
     bool captured_heap_alias;           /* a closure may retain this object */
+    bool region_local;                  /* safety-mode value proven function-local */
     AstFn *owner_fn;                     /* declaration scope for effect propagation */
     bool borrow_mut;
     bool borrow_pending;       /* reference origin awaits a forward-call summary */

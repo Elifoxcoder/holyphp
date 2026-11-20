@@ -201,6 +201,7 @@ struct Param {
     void *sym;                 /* VarSym* (sema) */
     bool captures_heap_alias;  /* closure may retain/mutate object argument */
     bool mutates_heap_alias;   /* borrow analysis: body may mutate object argument */
+    bool borrow_only;          /* safety-mode summary: input is only borrowed */
 };
 
 struct MatchCase {
