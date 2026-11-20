@@ -119,6 +119,12 @@ behaves differently, what they have to change.
   `unsafe { }`; the challenge benchmark already did so for the B-tree ones.
   `scripts/check-repo.sh` now fails when a `*_ptr`/`*_fast` builtin is not
   flagged or a flagged builtin's description does not mention `unsafe`.
+- The vendored SQLite is compiled with `-O3` and without APIs HolyPHP does not
+  expose (`SQLITE_OMIT_DEPRECATED`, `SQLITE_OMIT_DECLTYPE`,
+  `SQLITE_OMIT_COMPILEOPTION_DIAGS`). Prepared-statement reads and inserts are
+  4-8% faster in the new `benchmarks/sqlite/` micro benchmark; see
+  `benchmarks/RESULTS.md`. A change to the SQLite flags now rebuilds the
+  archive even when the sources are unchanged.
 
 - Ordinary `new Class()` expressions now have the normal copyable class type; explicit `own Class` slots can still take a fresh instance.
 - By-reference calls to mutating builtins are checked as one write, and separate scalar by-reference arguments no longer conflict merely because their storage is boxed.

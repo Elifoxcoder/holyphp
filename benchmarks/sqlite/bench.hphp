@@ -1,0 +1,362 @@
+<?php
+/* bench.hphp — SQLite micro benchmark for the runtime module (task 4.4).
+ *
+ * A small, repeatable mix that looks like the challenge server's hot path:
+ *
+ *   point   SELECT body, user_id FROM posts WHERE id = ?          (primary key)
+ *   range   the feed's 20-row index range scan (created_at DESC)
+ *   insert  one small row with an indexed column, committed in groups
+ *   bt      bt_last + 19 bt_prev on posts_created_at_id_idx        (cursor)
+ *   prepare sqlite_prepare + sqlite_finalize of the point query    (re-prepare)
+ *
+ * Every metric prints one line:
+ *
+ *   BENCH <name> iters=<n> ns_per_op=<n> checksum=<n>
+ *
+ * run.sh also runs this with BENCH_ITERS=0 and a counting malloc wrapper; the
+ * difference between the two totals is the marginal malloc() cost per op.
+ * BENCH_PREPARE_EACH=1 re-prepares the point statement per iteration and
+ * BENCH_REOPEN_CURSOR=1 reopens the B-tree cursor per iteration, so the cost
+ * of not reusing them can be measured instead of assumed.
+ *
+ * BENCH_ONLY=<point|range|insert|bt|prepare> runs one workload (run.sh uses
+ * this to attribute the per-op malloc count). The database is never created
+ * here: BENCH_DB must point at a writable copy of
+ * benchmarks/challenge/fixture/feed.db. The setup adds one scratch table
+ * (bench_ins) for the insert workload.
+ */
+
+function bench_line(string $name, int $iters, int $t0, int $t1, int $sum): void {
+    $ns = 0;
+    if ($iters > 0) {
+        $ns = intdiv($t1 - $t0, $iters);
+    }
+    echo "BENCH " . $name . " iters=" . $iters . " ns_per_op=" . $ns . " checksum=" . $sum . "\n";
+}
+
+$db_path = getenv("BENCH_DB");
+if ($db_path === false || $db_path == "") {
+    echo "bench: BENCH_DB is not set\n";
+    exit(2);
+}
+
+$iters = 20000;
+$e = getenv("BENCH_ITERS");
+if ($e !== false && $e != "") { $iters = intval($e); }
+if ($iters < 0) { $iters = 0; }
+
+$only = "";
+$e = getenv("BENCH_ONLY");
+if ($e !== false) { $only = $e; }
+if ($only != "" && $only != "point" && $only != "range" && $only != "feed"
+        && $only != "insert" && $only != "bt" && $only != "prepare") {
+    echo "bench: unknown BENCH_ONLY=" . $only . "\n";
+    exit(2);
+}
+$do_point = ($only == "" || $only == "point");
+$do_range = ($only == "" || $only == "range");
+$do_feed = ($only == "" || $only == "feed");
+$do_insert = ($only == "" || $only == "insert");
+$do_bt = ($only == "" || $only == "bt");
+$do_prepare = ($only == "" || $only == "prepare");
+
+$prepare_each = false;
+$e = getenv("BENCH_PREPARE_EACH");
+if ($e !== false && $e == "1") { $prepare_each = true; }
+$reopen_cursor = false;
+$e = getenv("BENCH_REOPEN_CURSOR");
+if ($e !== false && $e == "1") { $reopen_cursor = true; }
+
+/* Fixed warm-up so a BENCH_ITERS=0 run differs from a full run only in the
+ * measured loop. */
+$warm_point = 500;
+$warm_range = 200;
+$warm_feed = 200;
+$warm_insert = 100;
+$warm_bt = 200;
+$warm_prepare = 200;
+
+$db = 0;
+/* The challenge opens with the unix-excl VFS (start.sh sets
+ * HPHP_SQLITE_VFS=unix-excl): the process owns the database lock, so SQLite
+ * does not take a file lock per read transaction. Mirror that; on a platform
+ * without the VFS, fall back to the default. BENCH_VFS overrides it. */
+$vfs = getenv("BENCH_VFS");
+if ($vfs === false || $vfs == "") { $vfs = "unix-excl"; }
+if ($vfs == "default") { $vfs = ""; }
+unsafe {
+    if ($vfs != "") {
+        $db = sqlite_open_vfs($db_path, $vfs);
+    }
+    if ($db == 0) {
+        $db = sqlite_open($db_path);
+    }
+}
+if ($db == 0) {
+    echo "bench: cannot open " . $db_path . "\n";
+    exit(2);
+}
+
+sqlite_exec($db, "PRAGMA journal_mode=WAL");
+sqlite_exec($db, "PRAGMA synchronous=NORMAL");
+sqlite_exec($db, "PRAGMA temp_store=MEMORY");
+sqlite_exec($db, "PRAGMA foreign_keys=OFF");
+sqlite_exec($db, "PRAGMA wal_autocheckpoint=1000");
+sqlite_exec($db, "DROP TABLE IF EXISTS bench_ins");
+sqlite_exec($db, "CREATE TABLE bench_ins (id INTEGER PRIMARY KEY, uid INTEGER NOT NULL, body TEXT NOT NULL)");
+sqlite_exec($db, "CREATE INDEX bench_ins_uid ON bench_ins (uid)");
+
+/* ---- the rows the point and B-tree workloads visit ---- */
+$ids = [];
+$st = 0;
+unsafe { $st = sqlite_prepare($db, "SELECT id FROM posts ORDER BY id"); }
+if ($st == 0) {
+    echo "bench: id query failed: " . sqlite_errmsg($db) . "\n";
+    exit(2);
+}
+while (sqlite_step($st) == 100) {
+    $ids[] = sqlite_column_int($st, 0);
+}
+sqlite_finalize($st);
+$nids = count($ids);
+if ($nids < 1) {
+    echo "bench: no posts in " . $db_path . "\n";
+    exit(2);
+}
+
+$point_sql = "SELECT body, user_id FROM posts WHERE id = ?1";
+$range_sql = "SELECT id FROM posts WHERE created_at >= ?1 ORDER BY created_at DESC, id DESC LIMIT 20";
+$feed_sql = "SELECT '{' || '\"posts\":' || json_group_array(json_object("
+   . "'id', p.id, 'body', p.body, 'created_at', p.created_at, "
+   . "'author', p.author, "
+   . "'like_count', (SELECT count(*) FROM likes l WHERE l.post_id = p.id)"
+   . ") ) || '}' "
+   . "FROM (SELECT p.id, p.body, p.created_at, u.username AS author "
+   . "FROM posts p JOIN users u ON u.id = p.user_id "
+   . "ORDER BY p.created_at DESC, p.id DESC LIMIT 20) p";
+$insert_sql = "INSERT INTO bench_ins (uid, body) VALUES (?1, ?2)";
+$since = "2000-01-01T00:00:00.000Z";
+$body = "benchmark body, forty bytes of filler text";
+
+if ($do_point) {
+    /* ---- point read by primary key ---- */
+    $point = 0;
+    unsafe { $point = sqlite_prepare($db, $point_sql); }
+    if ($point == 0) {
+        echo "bench: point query failed: " . sqlite_errmsg($db) . "\n";
+        exit(2);
+    }
+
+    $sum = 0;
+    for ($i = 0; $i < $warm_point; $i = $i + 1) {
+        sqlite_bind_int($point, 1, $ids[$i % $nids]);
+        $rc = sqlite_step($point);
+        if ($rc == 100) {
+            $sum = $sum + strlen(sqlite_column_text($point, 0));
+            $sum = $sum + sqlite_column_int($point, 1);
+        }
+        sqlite_reset($point);
+    }
+
+    $t0 = hrtime(true);
+    if ($iters > 0) {
+        if ($prepare_each) {
+            for ($i = 0; $i < $iters; $i = $i + 1) {
+                unsafe { $st = sqlite_prepare($db, $point_sql); }
+                sqlite_bind_int($st, 1, $ids[$i % $nids]);
+                $rc = sqlite_step($st);
+                if ($rc == 100) {
+                    $sum = $sum + strlen(sqlite_column_text($st, 0));
+                    $sum = $sum + sqlite_column_int($st, 1);
+                }
+                sqlite_finalize($st);
+            }
+        } else {
+            for ($i = 0; $i < $iters; $i = $i + 1) {
+                sqlite_bind_int($point, 1, $ids[$i % $nids]);
+                $rc = sqlite_step($point);
+                if ($rc == 100) {
+                    $sum = $sum + strlen(sqlite_column_text($point, 0));
+                    $sum = $sum + sqlite_column_int($point, 1);
+                }
+                sqlite_reset($point);
+            }
+        }
+    }
+    $t1 = hrtime(true);
+    bench_line("point", $iters, $t0, $t1, $sum);
+    sqlite_finalize($point);
+}
+
+if ($do_range) {
+    /* ---- short range scan (the feed's index order) ---- */
+    $range = 0;
+    unsafe { $range = sqlite_prepare($db, $range_sql); }
+    if ($range == 0) {
+        echo "bench: range query failed: " . sqlite_errmsg($db) . "\n";
+        exit(2);
+    }
+    $sum = 0;
+    for ($i = 0; $i < $warm_range; $i = $i + 1) {
+        sqlite_reset($range);
+        sqlite_bind_text($range, 1, $since);
+        while (sqlite_step($range) == 100) {
+            $sum = $sum + sqlite_column_int($range, 0);
+        }
+    }
+    $t0 = hrtime(true);
+    if ($iters > 0) {
+        for ($i = 0; $i < $iters; $i = $i + 1) {
+            sqlite_reset($range);
+            sqlite_bind_text($range, 1, $since);
+            while (sqlite_step($range) == 100) {
+                $sum = $sum + sqlite_column_int($range, 0);
+            }
+        }
+    }
+    $t1 = hrtime(true);
+    bench_line("range", $iters, $t0, $t1, $sum);
+    sqlite_finalize($range);
+}
+
+if ($do_feed) {
+    /* ---- the challenge feed: 20 rows, JSON aggregation and like counts ---- */
+    $feed = 0;
+    unsafe { $feed = sqlite_prepare($db, $feed_sql); }
+    if ($feed == 0) {
+        echo "bench: feed query failed: " . sqlite_errmsg($db) . "\n";
+        exit(2);
+    }
+    $sum = 0;
+    for ($i = 0; $i < $warm_feed; $i = $i + 1) {
+        sqlite_reset($feed);
+        while (sqlite_step($feed) == 100) {
+            $sum = $sum + strlen(sqlite_column_text($feed, 0));
+        }
+    }
+    $t0 = hrtime(true);
+    if ($iters > 0) {
+        for ($i = 0; $i < $iters; $i = $i + 1) {
+            sqlite_reset($feed);
+            while (sqlite_step($feed) == 100) {
+                $sum = $sum + strlen(sqlite_column_text($feed, 0));
+            }
+        }
+    }
+    $t1 = hrtime(true);
+    bench_line("feed", $iters, $t0, $t1, $sum);
+    sqlite_finalize($feed);
+}
+
+if ($do_insert) {
+    /* ---- small insert, committed in groups of 100 like the server ---- */
+    $ins = 0;
+    $begin = 0;
+    $commit = 0;
+    unsafe {
+        $ins = sqlite_prepare($db, $insert_sql);
+        $begin = sqlite_prepare($db, "BEGIN IMMEDIATE");
+        $commit = sqlite_prepare($db, "COMMIT");
+    }
+    if ($ins == 0 || $begin == 0 || $commit == 0) {
+        echo "bench: insert setup failed: " . sqlite_errmsg($db) . "\n";
+        exit(2);
+    }
+    $sum = 0;
+    for ($i = 0; $i < $warm_insert; $i = $i + 1) {
+        sqlite_bind_int($ins, 1, ($i % 23) + 1);
+        sqlite_bind_text($ins, 2, $body);
+        sqlite_step($ins);
+        sqlite_reset($ins);
+    }
+    $t0 = hrtime(true);
+    if ($iters > 0) {
+        $in_tx = false;
+        for ($i = 0; $i < $iters; $i = $i + 1) {
+            if ($i % 100 == 0) {
+                if ($in_tx) {
+                    sqlite_step($commit);
+                    sqlite_reset($commit);
+                }
+                sqlite_step($begin);
+                sqlite_reset($begin);
+                $in_tx = true;
+            }
+            sqlite_bind_int($ins, 1, ($i % 23) + 1);
+            sqlite_bind_text($ins, 2, $body);
+            $rc = sqlite_step($ins);
+            if ($rc == 101) { $sum = $sum + sqlite_changes($db); }
+            sqlite_reset($ins);
+        }
+        if ($in_tx) {
+            sqlite_step($commit);
+            sqlite_reset($commit);
+        }
+    }
+    $t1 = hrtime(true);
+    bench_line("insert", $iters, $t0, $t1, $sum);
+    sqlite_finalize($ins);
+    sqlite_finalize($begin);
+    sqlite_finalize($commit);
+}
+
+if ($do_bt) {
+    /* ---- B-tree cursor: the last 20 feed entries ---- */
+    $sum = 0;
+    $idx = 0;
+    $r = 0;
+    unsafe {
+        $idx = bt_open($db, "posts_created_at_id_idx", 1);
+        if ($idx == 0) {
+            echo "bench: bt_open failed\n";
+            exit(2);
+        }
+        for ($i = 0; $i < $warm_bt; $i = $i + 1) {
+            $r = bt_last($idx);
+            for ($k = 0; $k < 20; $k = $k + 1) {
+                if ($r != 1) { break; }
+                $sum = $sum + bt_payload_size($idx);
+                $r = bt_prev($idx);
+            }
+        }
+        $t0 = hrtime(true);
+        if ($iters > 0) {
+            for ($i = 0; $i < $iters; $i = $i + 1) {
+                if ($reopen_cursor) {
+                    bt_close($idx);
+                    $idx = bt_open($db, "posts_created_at_id_idx", 1);
+                }
+                $r = bt_last($idx);
+                for ($k = 0; $k < 20; $k = $k + 1) {
+                    if ($r != 1) { break; }
+                    $sum = $sum + bt_payload_size($idx);
+                    $r = bt_prev($idx);
+                }
+            }
+        }
+        $t1 = hrtime(true);
+        bt_close($idx);
+    }
+    bench_line("bt", $iters, $t0, $t1, $sum);
+}
+
+if ($do_prepare) {
+    /* ---- cost of re-preparing the point statement ---- */
+    $sum = 0;
+    for ($i = 0; $i < $warm_prepare; $i = $i + 1) {
+        unsafe { $st = sqlite_prepare($db, $point_sql); }
+        sqlite_finalize($st);
+    }
+    $t0 = hrtime(true);
+    if ($iters > 0) {
+        for ($i = 0; $i < $iters; $i = $i + 1) {
+            unsafe { $st = sqlite_prepare($db, $point_sql); }
+            $sum = $sum + $st;
+            sqlite_finalize($st);
+        }
+    }
+    $t1 = hrtime(true);
+    bench_line("prepare", $iters, $t0, $t1, $sum % 2);
+}
+
+sqlite_close($db);

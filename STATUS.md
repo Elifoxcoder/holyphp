@@ -461,4 +461,43 @@ LeakSanitizer logs (the known F1 compiler and F2 language leaks), the known
 `ide_workbench` F4 SEGV/UBSan report, and no new memory error (no
 use-after-free, no double free, no bounds error) in any ownership test.
 
+### SQLite speed work (task 4.4, 2026-11-19)
+
+`benchmarks/sqlite/` measures the module's own hot path — point read by primary
+key, 20-row index range, the challenge's JSON feed query, a small indexed
+insert, a 20-row B-tree cursor walk and a bare `sqlite_prepare` — and counts
+allocations per operation with an `LD_PRELOAD` malloc counter. It opens the
+database with `unix-excl` like `challenge/start.sh`; with SQLite's default VFS
+every read transaction pays three `fcntl` locks and a `fstat`, which doubles
+the point-read time. Numbers and the paired A/B method are in
+`benchmarks/RESULTS.md`.
+
+Kept: the vendored SQLite is compiled with `-O3`, and its unused-feature list
+gained `SQLITE_OMIT_DEPRECATED`, `SQLITE_OMIT_DECLTYPE` and
+`SQLITE_OMIT_COMPILEOPTION_DIAGS` (none of those APIs is reachable from
+HolyPHP). Paired runs give about 4-8% on point reads, range scans, inserts and
+the JSON feed; the B-tree cursor path is unchanged. `scripts/build.sh` now
+stamps the flags used for the archive so a flag change rebuilds it.
+
+Rejected after measurement, each with the numbers in `benchmarks/RESULTS.md`:
+a 480 KiB lookaside (no malloc removed; the 48 KiB default already covers every
+small object, while disabling lookaside costs 28 → 119 malloc/op), a 512-page
+bulk page-cache allocation (reads 2% slower, inserts unchanged), persistent
+prepared statements (only the one-time prepare changes), a fixed MEMSYS5 heap
+(no speed win, `SQLITE_NOMEM` risk), and "statement journal off" (the challenge
+statements create no statement journal at all).
+
+The remaining per-request allocations are not SQLite bookkeeping: the feed's 28
+allocations per request are the JSON aggregate's string buffers, and the
+`point`/`feed` counts also include the `hstr` that `sqlite_column_text` must
+return. Reducing those needs the memory-model work (regions / reference
+counting), not another SQLite knob.
+
+Verification on this branch with the new archive: `bash tests/run.sh` gives the
+same 54 passed and the same two pre-existing failures (`ide_workbench`, docs
+snippet `pkg_02` importing `mathx`); `bash benchmarks/challenge/run.sh both`
+passes 42/42 in direct and classic mode; `scripts/check-repo.sh` is clean.
+`tests/run.sh --asan` was run in WSL: 54 tests with findings, 1 passed, the
+same picture as section 4, and no stack frame in `hphp_sqlite.c`,
+`hp_btree.c` or `sqlite3.c`.
 
