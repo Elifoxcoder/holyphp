@@ -432,3 +432,93 @@ Extended discovery to switch arms and try/catch/finally bodies as well as nested
 ### Exception-scope region correction - 2026-11-19
 
 An experimental region candidate inside `try` exposed that codegen lowers try/catch bodies into separate generated functions. They cannot reference the enclosing function's stack region. Region inference now deliberately skips try/catch/finally bodies; the docs and prior continuation note are corrected accordingly. Build and targeted branch/switch region tests passed after the correction. The full positive group then completed: 45 passed, one failure (`challenge_runtime.hphp` still cannot compile due to missing helper builtins). This is a compile-time dependency gap, not a runtime crash fix.
+## Round 6 — ownership regressions and builtin result audit
+
+### Changes
+
+- Changed `malloc()` to return raw addresses as integers, outside the `HV_OBJ` reference-count path. Raw memory helpers now accept the integer representation; `memset()` and `memcpy()` return the same pointer without making it an owned result. This fixes cleanup reading arbitrary malloc bytes as an `hobj` header and fixes the failed memset write.
+- Made `hp_str_free()` ignore immortal literal-pool strings. `html_entity_decode()` uses interned replacement patterns and had been freeing them as ordinary heap strings, corrupting the allocator on the next loop iteration. Added `ownership_string_literal_patterns.hphp` to cover repeated decode.
+- Distinguished an empty function definition from a body-less prototype with `AstFn.has_body`. The borrow checker now recognizes an empty by-value helper as a known implementation instead of treating every heap argument as an escaping closure capture. `ownership_regex_split.hphp` now checks successfully without changing its assertions.
+- Corrected codegen's builtin result ownership exceptions for raw pointers, alias-returning memory helpers, borrowed array keys/elements, `str_persist`, and `max`/`min`. Corrected the ownership guide's `memcpy`/`memset` contracts.
+- Copied io_uring receive data before returning it from both stream receive wrappers, so the caller receives stable owned bytes while the ring can reuse its buffer.
+- Adjusted `ownership_io_contents.hphp` to omit `FILE_APPEND` for the case named “write an array”. The flag had caused repeated suite runs to append to a stale temp file; the test now exercises a truncating array write.
+- Updated `docs/lang.html`, `docs/guide/memory-model.md`, and `CHANGELOG.md`.
+
+### Verification and measurements
+
+- `bash scripts/check-repo.sh` before adding the new regression: passed on baseline. Final check reports the new test as untracked until Claude stages/commits it.
+- `bash scripts/build.sh`: passed (`build ok: hphp.exe`, runtime embedded).
+- Positive suite: **116 passed, 0 failed, 0 skipped**.
+- Negative suite: **37 passed, 0 failed, 0 skipped**.
+- `challenge_runtime.hphp`: **50/50 successful runs**, no intermittent exit 127 observed. The existing fixture is the regression coverage; no separate reproducer for the reported intermittent crash was found.
+- Focused reruns passed all five named ownership tests, plus the new literal-pattern regression and challenge fixture. The by-value helper regression is accepted; the existing capture negative remains rejected.
+- Paired 15-run microbenchmarks, matching outputs:
+  - Borrow-only call: **24.98 ms** safety mode vs **34.85 ms** compatibility median (about **28.3% faster**).
+  - Function-local scalar-array region: **20.97 ms** safety mode vs **82.02 ms** compatibility median (about **74.4% faster**).
+- `git diff --check`: passed. Docs snippets are skipped because Python is unavailable. WSL is unavailable, so sanitizer runs were not performed. The earlier full-suite run exposed two extension test failures: the LSP integration timeout (user-excluded) and a separate grammar scope assertion. The final positive and negative groups were rerun; the extension group was not.
+
+### Phase 2 status
+
+The existing free-function borrow inference, scalar-array function regions, and canonical bounds proof remain in place and were rebenchmarked above. This round did not add loop-iteration regions, string regions, or method receiver summaries. The current region implementation registers function-lifetime cleanup; reusing it for loop locals would retain one allocation per iteration. Correct loop regions need a nested cleanup scope that is unwound on normal iteration, `continue`, `break`, `return`, and exceptions. That control-flow support is not present, so these Phase 2 cases remain open rather than being treated as safe optimizations.
+
+### Logical commit groups for Claude
+
+1. `keep unsafe raw pointers out of managed cleanup` — `src/hphpc/runtime/hphp_std.c`, `src/hphpc/codegen.c`, `src/hphpc/runtime_embed.h`, `tests/positive/ownership_misc_unsafe.hphp` (existing regression).
+2. `preserve immortal strings and borrowed builtin results` — `src/hphpc/runtime/hphp_rt.c`, `src/hphpc/codegen.c`, `src/hphpc/runtime/hphp_uring.c`, `src/hphpc/runtime_embed.h`, `docs/guide/builtin-ownership.md`, `tests/positive/ownership_string_literal_patterns.hphp`.
+3. `recognize empty by-value helper bodies in borrow analysis` — `src/hphpc/ast.h`, `src/hphpc/parser.c`, `src/hphpc/borrow.c`, `tests/positive/ownership_regex_split.hphp` (existing regression).
+4. `document Round 6 behavior and remaining Phase 2 work` — `docs/lang.html`, `docs/guide/memory-model.md`, `CHANGELOG.md`, `REPORT-codex-1.md`.
+5. `stabilize ownership test fixtures` — `tests/positive/ownership_io_contents.hphp`, `tests/positive/ownership_strings_loop.hphp`.
+
+No commit was made. WSL is unavailable; `ship.sh` was not run. Round 6 remains incomplete because loop-iteration regions and the broader Phase 2 non-escape cases are not implemented, and the extension grammar assertion remains outside the passing groups.
+
+### Round 6 verification note
+
+The final `git add tests/positive/ownership_string_literal_patterns.hphp` attempt failed because Git could not create `.git/worktrees/hp-codex/index.lock` (`Permission denied`). The final `check-repo.sh` therefore reports only that new regression as untracked. This is an index permission issue; no tracked source or test was lost. No commit was attempted.
+
+### Round 6 continuation — loop-iteration regions
+
+- Added loop-local region inference for scalar-only array literals and string expressions. Candidates must be noncaptured, initialized within the loop body, pass the existing conservative escape scan, and have no use outside the loop. Nested loops have independent regions; try/catch remains excluded.
+- Added reusable runtime arena blocks, reset at the start of each loop-body iteration. Loop cleanup registrations are unwound at loop exit; block cleanup marks continue to handle `continue` and `break`, and function cleanup handles `return`.
+- Added `tests/positive/memory_region_loop.hphp`, covering generated strings and arrays, read-only use, `continue`, and `break`. It prints `loop regions ok`.
+- Added 200,000-iteration paired string benchmark programs at `benchmarks/memory_region_loop.hphp` and `_compat.hphp`. A 10,000-iteration run measured 233,921,900 ns for the safety-mode region case and 240,364,700 ns for compatibility mode (one run each, about 2.7% lower). This is a preliminary, noisy comparison, not enough evidence for a performance claim. The full 200,000 compatibility run exceeded 20 seconds and was interrupted; the region run completed at 1,330,032,485 ns. More repeat measurements should use prebuilt executables to exclude compiler startup.
+- Rebuilt successfully. All five ownership regressions passed in a targeted sequence; the challenge fixture passed in that sequence. A separate 50-run loop was started, but its summary had not returned at this report checkpoint.
+- `docs/lang.html`, `docs/guide/memory-model.md`, and `CHANGELOG.md` now describe iteration arenas. Method calls remain conservatively ineligible: `borrow_mutates_receiver == false` alone proves no mutation, not that the receiver cannot escape. Receiver non-escape summaries and other broader Phase 2 cases remain open.
+- Continuation logical group: `add reusable loop-local regions` — AST/sema/codegen/runtime/embed, `tests/positive/memory_region_loop.hphp`, paired benchmarks, and memory-model/language/changelog documentation.
+
+This supersedes the earlier Round 6 Phase 2 note above where it says loop regions were not implemented. The goal remains incomplete pending method receiver non-escape proof, stable repeated benchmark data, the 50-run result, full suites, and delivery gates. No commit was made.
+
+### Round 6 continuation — private method arguments and final verification
+
+- Extended conservative borrow-only parameter inference to concrete private methods only. Private methods cannot be overridden, so their parameter proof cannot be invalidated by virtual dispatch. They are eligible only when the expression scan proves the parameter is read-only and nonescaping. Codegen passes direct local arguments without a retain/release pair for proven parameters. This does not prove that a method receiver itself cannot escape.
+- Added `tests/positive/memory_region_private_method.hphp`; emitted C confirms the local array is passed directly (`sum_values(self, v5)`) instead of through `hp_arg_keep_ptr`. It prints `private method borrow ok`.
+- Current latest build succeeded. Post-extension full suites passed: positives 118/118, negatives 37/37. The five ownership regressions were individually verified. `challenge_runtime.hphp` passed 50/50 on the prior build and again 50/50 on the final build.
+- `git diff --check` passed. `scripts/check-repo.sh` reports three untracked regression files: `memory_region_loop.hphp`, `memory_region_private_method.hphp`, and `ownership_string_literal_patterns.hphp`. The worktree index is not writable in this environment, so they could not be staged; no commit was made.
+- Benchmark evidence remains preliminary. Fifteen alternating 10,000-iteration runs gave a median of 232,475,900 ns for the region version and 234,428,700 ns for compatibility (0.8% lower). Both distributions had roughly 100 ms low outliers, so this does not establish a meaningful speedup; prebuilt executable timing with tighter system isolation is needed. The 200,000-iteration region run measured 1,330,032,485 ns; the compatibility run was interrupted after exceeding 20 seconds.
+- Latest logical commit group: `infer borrow-only parameters for private methods` — `src/hphpc/sema.c`, `src/hphpc/codegen.c`, `tests/positive/memory_region_private_method.hphp`, `docs/lang.html`, `docs/guide/memory-model.md`, `CHANGELOG.md`.
+- Final consistency check: after approval, the three new regression tests were staged (tests only; no commit). `scripts/check-repo.sh` then passed. The earlier note about untracked tests and the index permission failure describes the pre-approval checkpoint and is superseded.
+- Challenge crash status: the intermittent exit 127 could not be reproduced in either 50-run batch (100/100 final observations across the two builds). No crash root cause was established and no crash-specific regression test was added; this remains the unresolved Round 6 item.
+- Initial scalar-array benchmark results in this section are invalid: the array literal referenced `$i`, so those samples did not qualify for region allocation. The corrected measurements below supersede them.
+- Reconciled `stream_recv` against the ownership table and generated-result defaults: the socket path copies its reusable TLS buffer and the io_uring path copies the ring buffer before returning. Added a 1,000-call invalid-handle regression in `tests/positive/ownership_net_misc.hphp` for cleanup of its immortal empty-string result; the targeted test passed. The live io_uring ring-reuse path still needs Linux/WSL execution.
+- Expanded borrow-only parameter inference to class methods and added a dispatch-aware `sema_method_param_borrow_only` proof. For a concrete receiver class, codegen suppresses the argument retain only if the statically resolved method and every compiled concrete descendant implementation prove the parameter read-only and nonescaping. Interface/unknown receiver dispatch remains conservative. Method bodies now participate in local-region inference.
+- Added tests for private method borrowing, safe virtual override dispatch, an escaping method argument, and a safe base method with a descendant override that stores the argument. Targeted runs passed. Emitted C confirms safe virtual dispatch uses `hp_region_arr_scalars` and passes the array directly, while the escaping virtual override leaves `hp_arr_new` plus `hp_arg_keep_ptr` in place.
+- The current full suite passed 121 positive and 37 negative tests before the final private-name dispatch conservatism tweak; after that tweak the compiler rebuilt and the four method/region regressions plus challenge fixture passed. The challenge run completed 50/50 before the tweak; this tweak affects class method arguments only.
+- Corrected scalar-array benchmark pair: `benchmarks/memory_region_array_loop.hphp` now uses an eligible scalar-only array literal and adds the loop index separately. Fifteen alternating 10,000-iteration runs measured median 1,480,600 ns with regions and 5,818,600 ns in compatibility mode (about 74.5% lower). The corresponding string-loop medians remain 232,475,900 ns and 234,428,700 ns (about 0.8% lower, noisy). The array result confirms a useful benefit for this narrow case; the string result does not.
+- Generated C for the corrected array benchmark explicitly contains `hp_region_arr_scalars` and `hp_region_reset`, confirming the measured version uses an iteration region. After the final rebuild, the loop, private-method, safe-virtual, escaping-method, escaping-virtual, stream-receive, and challenge tests passed targeted execution; `scripts/check-repo.sh` and `git diff --check` passed.
+- Exit-127 source audit found that the POSIX compiler path returns 127 when `system()` fails and `_exit(127)` when `/bin/sh` cannot be launched in `run_parallel`; runtime child-process launch helpers also use 127 on exec failure. `challenge_runtime.hphp` does not call process-launch builtins, and 50 consecutive runs on the method-dispatch build passed. These are possible launch-path sources, not a confirmed cause of the reported intermittent result.
+### Round 6 continuation verification � 2026-11-20
+
+- Read `docs/guide/builtin-ownership.md` and the Round 5 report section before continuing.
+- Git for Windows bash was available at `C:\Program Files\Git\bin\bash.exe`; `scripts/check-repo.sh` passed.
+- Fresh `scripts/build.sh` passed (`hphp.exe`, runtime embedded). Compiler warnings remain as noted in build output.
+- Full `tests/run.sh` with `HPHP_WORK_DIR=C:/Projects/HolyPHP/hp-codex/scratch/hphpbuild`: all 121 positive and 37 negative tests passed, including the five ownership regressions and new method/loop-region tests. Docs snippets were skipped because no Python interpreter was available. The first extension run reported 99 pass / 2 fail: the user-excluded LSP initialize timeout and a grammar assertion for custom function calls. The grammar failure was fixed in the extension grammar follow-up below; the LSP timeout remains excluded per user instruction.
+- Fresh repeated challenge run: **50/50 passed**, 0 failures. The challenge fixture contains no subprocess, socket, or SQLite calls; inspected compiler/runtime exit-127 paths (`system()` failure and failed `exec` in `run_parallel`) are not exercised by this fixture. The reported intermittent 127 was not reproduced, so no supported root cause or dedicated reproducer exists yet.
+- `git diff --check` passed (only Git line-ending conversion warnings). No commit was made.
+
+### Extension grammar follow-up � 2026-11-20
+
+- The full suite exposed a non-LSP extension failure: custom function calls had no generic syntax rule. Added the rule after the builtin pattern, excluding `$callback()` and object method calls so builtin scopes and variable/member syntax remain intact. Bumped the VS Code extension patch version from 0.3.2 to 0.3.3.
+- `node --test test/grammar.test.js`: 10/10 passed. The broad extension run still reproduced the known initialize timeout in the LSP integration test; all 100 other extension tests passed. No compiler/runtime behavior changed in this follow-up.
+- Follow-up ownership cross-check: `strchr` is a name alias for `strstr`, but its result is an independent `hp_str_slice` allocation; it correctly remains on codegen's owned-result default. Added suffix/value and input-survival assertions to `tests/positive/ownership_strings_copy.hphp`; the updated test passed on the current compiler.
+- Expanded `memory_region_loop.hphp` to cover nested iteration regions plus `continue`, inner/outer `break`, and return from inside an active iteration. The focused run passed (`loop regions ok`); emitted C showed distinct nested arenas, per-iteration resets, and cleanup pops on control-flow exits.
+- Final focused rerun in this continuation: all 12 ownership and region cases passed, covering the five named ownership regressions, `strchr` ownership, stream receive cleanup, loop iteration, nested method dispatch, and escaping-argument fallbacks. `scripts/check-repo.sh` passed afterward.
+- WSL availability recheck: `wsl.exe --list --quiet` returned `Wsl/EnumerateDistros/Service/E_ACCESSDENIED`, so Linux io_uring ring-reuse execution remains unavailable in this environment.

@@ -269,8 +269,17 @@ echo laenge($w);        // owner keeps $w
   A function-local array made from scalar literals also uses a short-lived arena when
   every use is read-only; returning, storing, or mutating it keeps normal ownership.
   In canonical counted loops, the same proof can also remove array index checks
-  when the body only passes the stable array to a proven borrower. Function and
-  loop-iteration regions and broader escape analysis remain planned.</p>
+  when the body only passes the stable array to a proven borrower. Safety mode
+  also uses reusable iteration regions for local scalar arrays and strings
+  whose uses stay inside the loop, including method bodies. Calls on concrete
+  class receivers may borrow direct local arguments when every reachable
+  override proves the parameter read-only and nonescaping. Interface or unknown
+  dispatch keeps normal reference counting.</p>
+  <p><b>Unsafe pointers:</b> raw addresses are integers outside the managed-object
+  reference-count path. <code>memset()</code> and <code>memcpy()</code> return their
+  input address; <code>stream_recv()</code> copies data out of reusable io_uring
+  buffers before returning an owned string. Builtin temporary cleanup respects
+  borrowed results and immortal string literals.</p>
   <p><b>Indexing:</b> array-list and string reads check their bounds at runtime. An
   out-of-range read raises a catchable error ("Array index out of bounds" or
   "String index out of bounds"). Map lookups for absent keys continue to return

@@ -9,6 +9,19 @@ behaves differently, what they have to change.
 
 ## Unreleased
 
+- Fixed unsafe pointer cleanup and immortal string literal handling. Builtin
+  temporary release now respects borrowed results, and io_uring receive values
+  remain stable after the ring reuses its buffer.
+- Corrected borrow checking for empty by-value helper functions and covered
+  repeated string transformations.
+- In safety mode, loop-local scalar arrays and strings with confined uses now
+  reuse an iteration arena, reducing per-iteration ownership bookkeeping.
+- Method calls on concrete classes can borrow eligible arguments when every
+  reachable override proves the parameter read-only and nonescaping. Method
+  bodies now use the same local-region inference as free functions.
+- The VS Code extension highlights custom function calls while keeping builtin
+  calls in their dedicated syntax scope.
+
 - The semantic checker now recovers with an error type when an invalid or partially parsed expression has no type, avoiding a compiler crash. `array_sum()` promotes to a float when summing integers would overflow.
 - Array-list and string reads outside their bounds now raise catchable errors instead of returning an empty value or risking an invalid access. Missing map keys still return `null`.
 - Canonical counted loops over a stable array avoid repeated index bounds checks when the compiler can prove the index stays in range. Other indexed reads keep their checks.

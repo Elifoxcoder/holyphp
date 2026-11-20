@@ -546,8 +546,8 @@ owner) matter when reading the tests:
 | `atomic_cas` | scalar or handle | borrows and mutates |
 | `malloc (*unsafe*)` | raw pointer (unsafe) | borrows |
 | `free (*unsafe*)` | nothing | **takes** the value/handle |
-| `memcpy (*unsafe*)` | new value | borrows |
-| `memset (*unsafe*)` | new value | borrows |
+| `memcpy (*unsafe*)` | same pointer (borrowed) | borrows |
+| `memset (*unsafe*)` | same pointer (borrowed) | borrows |
 | `ffi_load (*unsafe*)` | raw pointer (unsafe) | borrows |
 | `ffi_call (*unsafe*)` | raw pointer (unsafe) | borrows |
 | `heap_dump (*unsafe*)` | new string | borrows |

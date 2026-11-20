@@ -125,13 +125,29 @@ generated functions. The arena is released through the normal cleanup path,
 including early returns.
 Canonical counted loops can also omit an index bounds check when the array and
 induction variable remain stable; in safety mode, the body may pass that array
-only to a proven borrower. These are deliberately narrow cases. Nested or
-loop-iteration regions, general escape promotion, and broad removal of
-retain/release and bounds checks are not implemented yet. Values that do not
+only to a proven borrower. Safety mode also puts eligible scalar-array and
+string locals in reusable loop-iteration regions when their uses stay within
+the loop and the existing conservative escape scan proves non-escape. The
+region resets at each iteration and is released on loop exit. Method bodies
+also participate in local-region inference. For calls on a concrete class,
+parameter borrowing is accepted only when every implementation reachable by
+virtual dispatch proves that parameter read-only and nonescaping. Interface
+or unknown receiver dispatch stays on ordinary RC. Receiver summaries do not
+yet establish receiver non-escape. General escape promotion and broad
+removal of retain/release and bounds checks are not implemented yet. Values that do not
 match a proof continue to use the existing RC/COW representation. Both safety
 and compatibility modes use the same value representation, so this remains an
 internal allocation and ownership optimization; `own<T>`, `Rc<T>`, borrows,
 and ordinary code keep their meaning.
+
+Unsafe raw addresses are represented as integers and do not participate in
+managed-object reference counting. `malloc()` results can be passed to
+`memset()`, `memcpy()`, `free()`, and byte accessors without scope cleanup
+interpreting arbitrary memory as an object header. `memset()` and `memcpy()`
+return the same address they receive. `stream_recv()` returns an owned string
+copy even when the Linux io_uring backend reads into a reusable ring buffer.
+Builtin temporary release also respects borrowed array elements and aliases.
+Literal-pool strings are immortal; internal cleanup leaves them alone.
 
 ## Test plan
 
@@ -172,15 +188,24 @@ now infers conservative borrow-only summaries for free-function parameters
 used only by `count`, `array_sum`, `strlen`, or calls to another proven
 borrow-only parameter. A direct local variable passed to such a parameter does
 not get a retain/release pair at the call boundary. Returns, stores, writes,
-closures, unknown calls, methods, and function values keep the ordinary RC
-path. A top-level function local initialized from a scalar-only array literal
+closures, unknown calls, interface-dispatched methods, and function values
+keep the ordinary RC path. A method argument is borrowed only when all
+concrete implementations for the receiver's class dispatch prove read-only
+non-escape. A top-level
+function local initialized from a scalar-only array literal
 also uses a function-local arena when every use is a read-only builtin or
 proven borrowing call. These arrays have no RC or collector registration and
 the arena is released on every function exit. Escaping arrays keep the normal
 RC/COW path. The same summaries allow a canonical counted loop in safety mode
 to omit index checks when its body passes the iterated array only to a proven
-borrower. Loop-iteration regions and broader whole-file escape analysis are
-still not implemented; other indexed reads keep their runtime checks.
+borrower. Method bodies also use local-region inference. Calls on concrete
+class receivers can borrow a direct local argument only when every reachable
+override proves the parameter read-only and nonescaping; interface and unknown
+dispatch remain reference-counted. Eligible loop-local scalar arrays and
+strings use a reusable per-loop arena. Method receiver summaries do not yet
+establish receiver non-escape, and broader whole-file
+escape analysis is still not implemented; other indexed reads keep their
+runtime checks.
 
 The runtime implements reference counts and drop paths for strings, arrays,
 closures, and generated class objects. Generated code retains borrowed heap
