@@ -4144,7 +4144,13 @@ static void check_stmt(Scope *sc, Stmt *s) {
         if (sema_type_is_linear(it))
             sema_error(&s->tok, "foreach cannot copy elements from a collection containing ownership values");
         const Type *elem = NULL, *key = NULL;
-        if (it->kind == TY_ARRAY || it->kind == TY_VEC || it->kind == TY_SET) {
+        if (it->kind == TY_ARRAY) {
+            /* an `array` becomes a keyed map as soon as a string key is
+             * assigned (PHP semantics), so its keys are dynamic: typing them
+             * int read a string key's pointer as a number */
+            elem = it->elem;
+            key = ty_mixed;
+        } else if (it->kind == TY_VEC || it->kind == TY_SET) {
             elem = it->elem;
             key = ty_int;
         } else if (it->kind == TY_MAP) {

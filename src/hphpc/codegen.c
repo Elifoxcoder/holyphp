@@ -2058,6 +2058,11 @@ static void emit_closure(Codegen *g, AstFn *fn) {
         case TY_ARRAY: case TY_VEC: case TY_MAP: case TY_SET:
             line(g, "harr* %s = _args[%zu].u.a;", var_name(pm->sym), ai++);
             break;
+        case TY_CLASS: case TY_STRUCT:
+            /* `function(Request $r)`: the body uses $r as an object pointer */
+            line(g, "%s %s = (%s)_args[%zu].u.p;", ctype_of(pt), var_name(pm->sym),
+                 ctype_of(pt), ai++);
+            break;
         default:
             line(g, "hval %s = _args[%zu];", var_name(pm->sym), ai++);
             break;
@@ -2885,6 +2890,17 @@ static void emit_cast(Codegen *g, Expr *e, Buf *dst) {
         buf_printf(dst, "((hp_i128)hp_val_to_int(%s))", os);
     } else if (to_i128) {
         buf_printf(dst, "((hp_i128)(%s))", os);
+    } else if (from && from->kind == TY_MIXED &&
+               (to->kind == TY_CLASS || to->kind == TY_STRUCT)) {
+        /* `$fn($x) as Response`: the dynamic value holds the object pointer */
+        buf_printf(dst, "((%s)hv(%s).u.p)", ctype_of(to), os);
+    } else if (from && from->kind == TY_MIXED && type_is_integral(to->kind)) {
+        buf_printf(dst, "hp_val_to_int(hv(%s))", os);
+    } else if (from && from->kind == TY_MIXED &&
+               (to->kind == TY_FLOAT || to->kind == TY_F32 || to->kind == TY_F64)) {
+        buf_printf(dst, "hp_val_to_float(hv(%s))", os);
+    } else if (from && from->kind == TY_MIXED && to->kind == TY_BOOL) {
+        buf_printf(dst, "hp_val_to_bool(hv(%s))", os);
     } else if (type_is_integral(to->kind) && from && from->kind == TY_STRING) {
         buf_printf(dst, "hp_str_to_int(%s)", os);
     } else if ((to->kind == TY_FLOAT || to->kind == TY_F32 || to->kind == TY_F64) &&
@@ -3466,6 +3482,10 @@ static void emit_foreach(Codegen *g, Stmt *s) {
         switch (kt2 ? kt2->kind : TY_INT) {
         case TY_STRING:
             line(g, "hstr* %s = ctx%d.k.u.s;", k, id);
+            break;
+        case TY_MIXED:
+            /* an `array` may hold string keys: keep the tagged value */
+            line(g, "hval %s = ctx%d.k;", k, id);
             break;
         default:
             line(g, "int64_t %s = ctx%d.k.u.i;", k, id);

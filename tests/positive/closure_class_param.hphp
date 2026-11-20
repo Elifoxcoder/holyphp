@@ -1,0 +1,35 @@
+<?php
+/* closures with class-typed parameters, and `as Class` / `as int` on mixed
+ * values (the result of calling a closure stored in a variable) */
+class Box {
+    pub int $n = 0;
+    pub function __construct(int $n) { $this->n = $n; }
+    pub function twice(): int { return $this->n * 2; }
+}
+
+$fail = 0;
+function check(string $name, bool $ok): int {
+    if ($ok) {
+        echo "OK   " . $name;
+        return 0;
+    }
+    echo "FAIL " . $name;
+    return 1;
+}
+
+$double = function(Box $b): Box { return new Box($b->twice()); };
+$fail += check("class parameter field", $double(new Box(4))->n == 8);
+
+$handlers = [$double, function(Box $b): Box { return new Box($b->n + 1); }];
+$h = $handlers[1];
+$r = $h(new Box(10)) as Box;
+$fail += check("as Class on a closure result", $r->n == 11);
+$fail += check("method on the cast value", $r->twice() == 22);
+
+$num = function(int $x): int { return $x * 3; };
+$m = $handlers[0];
+$fail += check("as int on mixed", ($num(5) as int) == 15);
+$fail += check("chained", (($m(new Box(1)) as Box)->n) == 2);
+if ($fail > 0) {
+    exit(1);
+}

@@ -1,0 +1,34 @@
+<?php
+/* foreach over an `array` value that became a keyed map: the key is the
+ * real key (string or int), not a number read from the key's storage */
+function build(): array {
+    $o = [];
+    $o["name"] = "Ada";
+    $o[7] = "seven";
+    return $o;
+}
+
+$fail = 0;
+$keys = [];
+foreach (build() as $k => $v) {
+    $keys[] = $k;
+}
+if ($keys[0] !== "name") { echo "FAIL string key: " . json_encode($keys); $fail++; }
+if ($keys[1] !== 7) { echo "FAIL int key: " . json_encode($keys); $fail++; }
+
+$list = [10, 20, 30];
+$sum = 0;
+foreach ($list as $i => $x) {
+    $sum = $sum + $i * $x;     /* list keys are still usable as numbers */
+}
+if ($sum != 80) { echo "FAIL list keys: " . $sum; $fail++; }
+
+$joined = "";
+foreach (build() as $k => $v) {
+    $joined = $joined . $k . "=" . $v . ";";
+}
+if ($joined != "name=Ada;7=seven;") { echo "FAIL concat: " . $joined; $fail++; }
+if ($fail > 0) {
+    exit(1);
+}
+echo "foreach keys ok";
