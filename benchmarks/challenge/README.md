@@ -34,12 +34,21 @@ mode.
 
 `server.hphp` differs from the bundle only in what this compiler requires:
 
-- the pointer-returning builtins (`sqlite_*`, `bt_*`, `iarr_data_ptr`, …) are
-  called inside `unsafe { }` blocks;
+- the pointer-returning builtins (`sqlite_*`, `bt_*`, `iarr_*`, `u8_at`,
+  `i64_at`, `sb_take`, …) are called inside `unsafe { }` blocks, each call
+  wrapped on its own;
 - raw byte/word reads use the named accessors (`u8_at`, `i64_at`, `i64_set`)
   instead of `*p` / `*(p + i)`;
 - a few locals are initialised before use (`$db = 0`, `$sp1 = 0`, …) because
-  the checker needs a definite assignment.
+  the checker needs a definite assignment;
+- strings, arrays and objects are reference-counted now, so the server does
+  not free them by hand (`str_free`, `arr_free`, `object_free`, `sb_discard`
+  and the identity `str_persist` calls are gone); the pending-write queue owns
+  its strings;
+- the per-connection maps are probed with `array_key_exists()` instead of
+  `isset($this->out[$fd])`, and the `/posts` route compares its one-character
+  suffix with `str_at_eq()` (see `.agent/REPORT-opencode-6.md` for the
+  compiler reproducers behind both workarounds).
 
 No algorithm, SQL statement or response format was changed. The suite's golden
 files still match byte for byte.
@@ -48,6 +57,21 @@ files still match byte for byte.
 250000 and 500000, the 23 users they reference plus user 1, and all 98 likes
 on those posts. See `fixture/README.md` for the generator, which cuts the same
 rows out of the full seed.
+
+## Load measurement
+
+`scripts/bench-challenge.sh` starts the server through `start.sh` on a fresh
+fixture copy, warms it up and records requests/s, p50/p95/p99 and RSS per run
+with `oha` (Linux, io_uring):
+
+```bash
+bash scripts/bench-challenge.sh --root . --tag new --path /feed
+bash scripts/bench-challenge.sh --root ../hp-main-bench --tag old --path /feed
+```
+
+`--root` points at the checkout whose `hphp` builds the server, so the same
+command measures an older compiler. `.agent/REPORT-opencode-6.md` has the
+reference table (30 s, 256 connections, three fresh-server runs per endpoint).
 
 ## Why this is not in `tests/`
 
