@@ -45,6 +45,7 @@
 #include "sqlite_embed.h"  /* generated: sqlite3.h + this host's libsqlite3.a */
 #include "pkgcore.h"
 #include "pkgnet.h"
+#include "project.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -1208,6 +1209,9 @@ static bool load_import(LoadCtx *ctx, const char *importer, const char *spec) {
         char *idir = path_dir_of(importer);
         if (upwards_lib(ctx, idir, spec)) { free(idir); return true; }
         char *cands[3];
+        /* the importing project's own .hphp/packages/ (hphp install) */
+        char *vend = project_vendor_candidate(idir, spec);
+        if (vend && load_candidate(ctx, vend)) { free(idir); return true; }
         cands[0] = fmt("src/hphpc/std/%s", spec);
         cands[1] = fmt("%s/%s", idir, spec);
         cands[2] = pkg_import_candidate(spec);   /* installed packages */
@@ -1252,7 +1256,7 @@ static Program *load_source_recursive(LoadCtx *ctx, const char *path, const char
         if (!load_import(ctx, path, im->path)) {
             char *dir = path_dir_of(path);
             fatal("%s: cannot import \"%s\"\n"
-                  "  searched: lib/, src/hphpc/std/, %s/, installed packages, $HPHP_PATH, built-in libraries",
+                  "  searched: lib/, the project's .hphp/packages/, src/hphpc/std/, %s/, installed packages, $HPHP_PATH, built-in libraries",
                   path, im->path, dir);
         }
     }
@@ -1290,7 +1294,8 @@ static bool rm_rf_path(const char *path);   /* wrapper over pkgcore helper */
 static void pkg_read_manifest_of(const char *dir, PkgManifest *m) {
     char *mf = fmt("%s/" PKG_MANIFEST, dir);
     char *js = read_file_soft(mf);
-    if (!js) fatal("%s: missing " PKG_MANIFEST, dir);
+    if (!js) js = project_manifest_as_json(dir);   /* hphp.yaml project */
+    if (!js) fatal("%s: missing " PROJECT_MANIFEST " (or " PKG_MANIFEST ")", dir);
     *m = pkg_manifest_parse(js, dir);
     free(js); free(mf);
 }
@@ -1344,22 +1349,22 @@ static char *pkg_registry_url_or_default(void) {
     return xstrdup(PKG_DEFAULT_REGISTRY);
 }
 
-static int pkg_install_registry(const char *name) {
+/* Download <name> from the registry into the cache. Returns the .hpx path,
+ * or NULL (unreachable, missing or an error; *why says which). */
+static char *pkg_registry_hpx(const char *name, const char **why) {
     char *base = pkg_registry_url_or_default();
     char *url = fmt("%s/pkg/%s", base, name);
     size_t n;
     int status = 0;
     char *body = pkgnet_get(url, &n, &status);
-    if (!body) return 2;   /* unreachable — caller may fall back */
-    if (status == 404) {
-        fprintf(stderr, "package not found on registry: %s\n", name);
-        return 2;
-    }
+    free(url);
+    free(base);
+    if (!body) { *why = "registry unreachable"; return NULL; }
     if (status != 200) {
-        fprintf(stderr, "registry error %d for %s\n", status, name);
-        return 2;
+        *why = status == 404 ? "not on the registry" : "registry error";
+        free(body);
+        return NULL;
     }
-    /* save to cache, then install from the file */
     char *cache = pkg_home_file("cache");
     mkdir_p(cache);
     char *out = fmt("%s/%s.hpx", cache, name);
@@ -1368,7 +1373,39 @@ static int pkg_install_registry(const char *name) {
     fwrite(body, 1, n, f);
     fclose(f);
     free(body);
-    return pkg_install_file(out);
+    free(cache);
+    return out;
+}
+
+static int pkg_install_registry(const char *name) {
+    const char *why = NULL;
+    char *hpx = pkg_registry_hpx(name, &why);
+    if (!hpx) {
+        if (strcmp(why, "registry unreachable"))
+            fprintf(stderr, "%s: %s\n", name, why);
+        return 2;   /* caller may fall back to the bundled copy */
+    }
+    return pkg_install_file(hpx);
+}
+
+static char *pkg_embedded_hpx(const char *name);
+
+/* project.h hook: an archive for `name` without installing it anywhere. */
+char *pkg_fetch_hpx(const char *name, char **source) {
+    const char *why = NULL;
+    char *hpx = pkg_registry_hpx(name, &why);
+    if (hpx) {
+        char *base = pkg_registry_url_or_default();
+        *source = fmt("registry %s", base);
+        free(base);
+        return hpx;
+    }
+    hpx = pkg_embedded_hpx(name);
+    if (hpx) {
+        *source = xstrdup("bundled");
+        return hpx;
+    }
+    return NULL;
 }
 
 /* Install a library that ships inside the hphp binary itself (the package
@@ -1378,6 +1415,16 @@ static int pkg_install_registry(const char *name) {
  * it is staged, not just the entry file. Returns 0 on success, 1 when the
  * name is not a bundled library. */
 static int pkg_install_embedded(const char *name) {
+    char *hpx = pkg_embedded_hpx(name);
+    if (!hpx) return 1;
+    int rc = pkg_install_file(hpx);
+    free(hpx);
+    return rc;
+}
+
+/* Pack a bundled library into cache/<name>-bundled.hpx; NULL when `name`
+ * is not bundled. */
+static char *pkg_embedded_hpx(const char *name) {
     /* normalize "websocket.hphp" -> "websocket" */
     char stem[128];
     snprintf(stem, sizeof stem, "%s", name);
@@ -1392,11 +1439,14 @@ static int pkg_install_embedded(const char *name) {
         if (strcmp(hp_embed_libs[i].name, entry) == 0) { known = true; break; }
     }
     free(entry);
-    if (!known) return 1;
+    if (!known) return NULL;
 
     /* stage the sources into a temp dir, then pack it into a real .hpx so
      * the installed layout is identical to a registry install */
     {
+        char *cache = pkg_home_file("cache");
+        mkdir_p(cache);        /* one level on Windows: create cache/ first */
+        free(cache);
         char *stage = pkg_home_file("cache/.embedded");
         FILE *f;
         rm_rf(stage);
@@ -1428,11 +1478,10 @@ static int pkg_install_embedded(const char *name) {
             "  \"author\": \"HolyPHP\"\n"
             "}\n", stem, HPHP_VERSION, stem);
         fclose(f);
-        char *hpx = fmt("%s/%s.hpx", stage, stem);
+        char *hpx = pkg_home_file(fmt("cache/%s-bundled.hpx", stem));
         pkg_pack_dir(stage, hpx);
-        int rc = pkg_install_file(hpx);
         rm_rf(stage);
-        return rc;
+        return hpx;
     }
 }
 
@@ -1682,8 +1731,18 @@ int main(int argc, char **argv) {
         "       hphp build <file.hphp> [-o app]  build a native executable\n"
                 "       hphp check <file.hphp>         type- & borrow-check only\n"
                 "       hphp emit <file.hphp>          inspect the internal representation\n"
+                "\n"
+                "projects (a folder with hphp.yaml):\n"
+                "       hphp create [name]             new project, asks a few questions (--help)\n"
+                "       hphp run | build | check       without a file: the project's entry\n"
+                "       hphp install                   install everything in hphp.yaml (keeps hphp.lock)\n"
+                "       hphp install <pkg>[@version]   add a dependency (--dev for require-dev)\n"
+                "       hphp update [pkg]              move dependencies to the newest allowed version\n"
+                "       hphp remove <pkg>              drop a dependency\n"
+                "       hphp deps                      list the installed dependencies\n"
+                "       hphp test [filter]             run tests/*.hphp\n"
+                "\n"
                 "       hphp pkg <command> [args]      package manager (hphp pkg help)\n"
-                "       hphp install <package>         install a package (shorthand)\n"
                 "       hphp version                   print version\n",
                 HPHP_VERSION);
         return argc < 2 ? 1 : 0;
@@ -1700,9 +1759,34 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "pkg") == 0 || strcmp(cmd, "package") == 0) {
         return pkg_command(argc - 2, argv + 2);   /* consumes argv[2..] */
     }
-    /* hphp install <pkg> — the common case, same as `hphp pkg install` */
-    if (strcmp(cmd, "install") == 0) {
-        return pkg_cmd_install(argc - 2, argv + 2);
+    if (strcmp(cmd, "create") == 0 || strcmp(cmd, "new") == 0) {
+        return project_cmd_create(argc - 2, argv + 2);
+    }
+    /* project commands; `hphp install <pkg>` outside a project keeps the
+     * old meaning (per-user install, same as `hphp pkg install`) */
+    if (strcmp(cmd, "install") == 0 || strcmp(cmd, "update") == 0 ||
+        strcmp(cmd, "remove") == 0 || strcmp(cmd, "deps") == 0 ||
+        strcmp(cmd, "test") == 0) {
+        char *root = project_find_root(".");
+        bool hpx_file = argc > 2 && strstr(argv[2], ".hpx");
+        if (!strcmp(cmd, "install") && (!root || hpx_file)) {
+            if (argc < 3) {
+                fprintf(stderr, "hphp install: no " PROJECT_MANIFEST " here or above.\n"
+                                "  start a project with: hphp create\n"
+                                "  or install for your user: hphp install <package>\n");
+                return 1;
+            }
+            return pkg_cmd_install(argc - 2, argv + 2);
+        }
+        if (!root) {
+            fprintf(stderr, "hphp %s: no " PROJECT_MANIFEST " here or above (start one with: hphp create)\n", cmd);
+            return 1;
+        }
+        if (!strcmp(cmd, "install")) return project_cmd_install(root, argc - 2, argv + 2);
+        if (!strcmp(cmd, "update")) return project_cmd_update(root, argc - 2, argv + 2);
+        if (!strcmp(cmd, "remove")) return project_cmd_remove(root, argc - 2, argv + 2);
+        if (!strcmp(cmd, "deps")) return project_cmd_deps(root);
+        return project_cmd_test(root, argc - 2, argv + 2, find_compiler(argv[0]));
     }
     /* default command is "run" — hphp file.hphp just works */
     if (strcmp(cmd, "run") != 0 && strcmp(cmd, "build") != 0 &&
@@ -1718,7 +1802,15 @@ int main(int argc, char **argv) {
         else if (!file) file = argv[i];
         else ptrvec_push(&prog_args, argv[i]);
     }
-    if (!file) { fprintf(stderr, "hphp: no input file\n"); return 1; }
+    if (!file) {
+        /* inside a project: the entry from hphp.yaml */
+        file = project_default_entry();
+        if (!file) {
+            fprintf(stderr, "hphp: no input file (and no " PROJECT_MANIFEST " here; see: hphp create)\n");
+            return 1;
+        }
+        if (!outname && strcmp(cmd, "build") == 0) outname = project_default_output();
+    }
     bool do_emit = strcmp(cmd, "emit") == 0;
     bool do_check = strcmp(cmd, "check") == 0;
 
@@ -1839,7 +1931,11 @@ int main(int argc, char **argv) {
         const char *cut = slash > bslash ? slash : bslash;
         if (cut) {
             char *dir = xstrndup(file, cut - file);
-            exepath = fmt("%s/%s", dir, stem);
+            /* absolute: the backend builds from inside its own work dir, so
+             * "sub/prog" would land (and be looked for) in the wrong place */
+            bool abs_dir = dir[0] == '/' || dir[0] == '\\' ||
+                           (dir[0] && dir[1] == ':');
+            exepath = abs_dir ? fmt("%s/%s", dir, stem) : fmt("%s/%s/%s", cwd, dir, stem);
 #ifdef _WIN32
             exepath = fmt("%s.exe", exepath);
 #endif

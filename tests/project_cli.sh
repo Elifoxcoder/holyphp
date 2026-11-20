@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# tests/project_cli.sh — hphp create / install / update / remove / deps / test.
+#
+# Offline: the registry points at a closed port, so dependencies come from the
+# libraries bundled in the compiler or from local path: packages. Everything
+# happens in a temporary folder with its own package home.
+#
+#   bash tests/project_cli.sh          (run.sh calls it in the "project" group)
+set -u
+cd "$(dirname "$0")/.." || exit 1
+HPHP=${HPHP:-./hphp.exe}
+[ -x "$HPHP" ] || HPHP=./hphp
+HPHP=$(cd "$(dirname "$HPHP")" && pwd)/$(basename "$HPHP")
+
+T=$(mktemp -d 2>/dev/null || echo "scratch/project-cli.$$")
+mkdir -p "$T"
+trap 'rm -rf "$T"' EXIT
+export HPHP_REGISTRY=http://127.0.0.1:9
+export HPHP_HOME="$T/home"
+
+pass=0
+fail=0
+ok()   { echo "PASS project: $1"; pass=$((pass + 1)); }
+bad()  { echo "FAIL project: $1"; [ -n "${2:-}" ] && printf '%s\n' "$2" | head -8 | sed 's/^/    /'; fail=$((fail + 1)); }
+has() { # name, haystack, needle
+    case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "$2" ;; esac
+}
+
+cd "$T" || exit 1
+
+# --- create: every template type-checks and passes its own tests -------------
+for t in console web lib empty; do
+    out=$("$HPHP" create "app_$t" -t "$t" --yes --no-git --author Tester 2>&1)
+    if [ $? -eq 0 ] && [ -f "app_$t/hphp.yaml" ] && [ -f "app_$t/hphp.lock" ]; then
+        ok "create $t"
+    else
+        bad "create $t" "$out"
+        continue
+    fi
+    out=$(cd "app_$t" && "$HPHP" check 2>&1) && ok "check $t" || bad "check $t" "$out"
+    out=$(cd "app_$t" && "$HPHP" test 2>&1) && ok "test $t" || bad "test $t" "$out"
+done
+
+out=$("$HPHP" create bad-Name! --yes --no-git 2>&1)
+has "create sanitizes names" "$out" 'using "bad_name"'
+out=$("$HPHP" create app_console --yes --no-git 2>&1)
+[ $? -ne 0 ] && ok "create refuses an existing folder" || bad "create refuses an existing folder" "$out"
+
+# --- run / build without a file use the entry from hphp.yaml -----------------
+out=$(cd app_console && echo Ada | "$HPHP" run 2>&1)
+has "run uses the project entry" "$out" "Hello, Ada!"
+out=$(cd app_console && echo Bo | "$HPHP" run src/main.hphp 2>&1)
+has "run src/<file> from the project root" "$out" "Hello, Bo!"
+out=$(cd app_empty && "$HPHP" build 2>&1)
+if [ -f app_empty/build/app_empty.exe ] || [ -f app_empty/build/app_empty ]; then
+    ok "build writes build/<name>"
+else
+    bad "build writes build/<name>" "$out"
+fi
+
+# --- the web template installed its dependency into .hphp/packages ----------
+if [ -f app_web/.hphp/packages/async/async.hphp ] && grep -q "name: async" app_web/hphp.lock; then
+    ok "web template installs async into .hphp/packages and locks it"
+else
+    bad "web template installs async into .hphp/packages and locks it" "$(cat app_web/hphp.lock 2>&1)"
+fi
+
+# --- install a local library, import it, lock it, remove it ------------------
+cd app_console || exit 1
+out=$("$HPHP" install ../app_lib 2>&1)
+has "install a path package" "$out" "+ app_lib"
+grep -q 'app_lib: "path:../app_lib"' hphp.yaml && ok "hphp.yaml records path:" \
+    || bad "hphp.yaml records path:" "$(cat hphp.yaml)"
+printf '<?php\nimport "app_lib";\necho app_lib_slug("Hello Project World");\n' > src/use.hphp
+out=$("$HPHP" run src/use.hphp 2>&1)
+has "import finds .hphp/packages" "$out" "hello-project-world"
+
+out=$("$HPHP" install async 2>&1)
+has "install a bundled library" "$out" "+ async"
+grep -q 'async: "^' hphp.yaml && ok "install pins a ^ range" || bad "install pins a ^ range" "$(cat hphp.yaml)"
+out=$("$HPHP" install 2>&1)
+has "install keeps locked packages" "$out" "1 up to date"
+out=$("$HPHP" deps 2>&1)
+has "deps lists the lock" "$out" "async"
+
+out=$("$HPHP" install async@^99 2>&1)
+[ $? -ne 0 ] && has "an unsatisfiable constraint fails clearly" "$out" 'requires "^99"' \
+    || bad "an unsatisfiable constraint fails clearly" "$out"
+"$HPHP" install async@^1 > /dev/null 2>&1   # restore a working constraint
+
+out=$("$HPHP" remove async 2>&1)
+if [ ! -d .hphp/packages/async ] && ! grep -q "name: async" hphp.lock; then
+    ok "remove drops the package, its folder and its lock entry"
+else
+    bad "remove drops the package, its folder and its lock entry" "$out"
+fi
+out=$("$HPHP" remove nothing_here 2>&1)
+[ $? -ne 0 ] && ok "remove of an unknown package fails" || bad "remove of an unknown package fails" "$out"
+
+out=$("$HPHP" install tooling --dev 2>&1)
+[ $? -ne 0 ] && has "an unknown package fails clearly" "$out" "cannot install" \
+    || bad "an unknown package fails clearly" "$out"
+cd .. || exit 1
+
+# --- packing a hphp.yaml library adds a generated hphp.json ------------------
+out=$(cd app_lib && "$HPHP" pkg pack 2>&1)
+hpx=$(ls "$HPHP_HOME"/hphp/cache/app_lib-0.1.0.hpx 2>/dev/null || ls "$HPHP_HOME"/cache/app_lib-0.1.0.hpx 2>/dev/null)
+if [ -n "$hpx" ] && grep -q '^hphp.json ' "$hpx" && ! grep -q '^\.hphp/' "$hpx"; then
+    ok "pkg pack adds hphp.json and skips .hphp/"
+else
+    bad "pkg pack adds hphp.json and skips .hphp/" "$out"
+fi
+
+# --- outside a project ------------------------------------------------------
+mkdir -p outside && cd outside || exit 1
+out=$("$HPHP" test 2>&1)
+[ $? -ne 0 ] && has "project commands need hphp.yaml" "$out" "hphp create" \
+    || bad "project commands need hphp.yaml" "$out"
+
+echo "== project: $pass passed, $fail failed =="
+[ "$fail" -eq 0 ]

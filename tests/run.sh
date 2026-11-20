@@ -4,6 +4,7 @@
 #   bash tests/run.sh              everything that must pass
 #   bash tests/run.sh positive     only tests/positive
 #   bash tests/run.sh manual       tests that need a window or a port
+#   bash tests/run.sh project      hphp create / install / test in a temp folder
 #   bash tests/run.sh --asan       everything under ASan + UBSan + LeakSanitizer
 #
 #   tests/positive/   must compile AND run to completion (exit 0)
@@ -212,6 +213,15 @@ run_ext() {
     fi
 }
 
+run_project() {
+    echo "== project (hphp create / install / test) =="
+    if HPHP="$HPHP" bash tests/project_cli.sh; then
+        pass=$((pass + 1))
+    else
+        fail=$((fail + 1))
+    fi
+}
+
 run_manual() {
     echo "== manual (window / sockets) =="
     for f in tests/manual/*.hphp; do
@@ -238,9 +248,10 @@ case "$MODE" in
     docs)     run_docs ;;
     diag)     run_diag ;;
     ext)      run_ext ;;
+    project)  run_project ;;
     manual)   run_manual ;;
-    all)      run_positive; run_negative; run_docs; run_diag; run_ext ;;
-    *)        echo "usage: bash tests/run.sh [--asan] [all|positive|negative|docs|diag|ext|manual]"; exit 2 ;;
+    all)      run_positive; run_negative; run_docs; run_diag; run_project; run_ext ;;
+    *)        echo "usage: bash tests/run.sh [--asan] [all|positive|negative|docs|diag|project|ext|manual]"; exit 2 ;;
 esac
 
 if [ "$ASAN" = 1 ]; then
