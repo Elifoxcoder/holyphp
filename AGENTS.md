@@ -50,8 +50,15 @@ die Antwort „nicht fertig, weil …“, nie „erledigt“.
   Commit-Log.
 - **Website und Doku:** Wer Sprachverhalten, CLI oder Bibliotheken ändert,
   passt die zugehörige Seite in `docs/` an (`lang.html`, `cli.html`,
-  `lib-*.html`, `guide/`). Generierte Seiten (`docs/builtin/`,
-  `builtins.html`) nicht von Hand editieren: `ship.sh` erzeugt sie neu.
+  `guide/`). Generierte Seiten (`docs/builtin/`, `builtins.html`,
+  `docs.html`, `docs/libraries/`) nicht von Hand editieren: `ship.sh`
+  erzeugt sie neu (`scripts/gendocs.js`, `scripts/gensite.js`).
+- **Bibliotheken** (`packages/lib/<name>/`) haben je eine Seite auf
+  `hphp.ch/libraries/<name>/`. Quelle: `docs/libraries/src/<name>.html` mit
+  den Abschnitten `overview`, `documentation`, `examples` (der Tab
+  „Installation“ wird erzeugt) plus ein Eintrag in `LIBS` in
+  `scripts/gensite.js` (Kategorie, Kurzbeschreibung, Stichworte, Rang).
+  Ohne beides bricht `gensite.js` ab. Vorschau: `node scripts/gensite.js`.
 - Kleine, einzeln verständliche Commits.
 
 ## 3. Fertig = `ship.sh ok`

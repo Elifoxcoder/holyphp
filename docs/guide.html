@@ -32,7 +32,7 @@
 
 <body>
   <div class="layout">
-    <script src="assets/nav.html.js?v=3"></script>
+    <script src="assets/nav.html.js?v=4"></script>
     <main>
       <h1>Interactive <span class="ph">HolyPHP</span> Guide</h1>
       <p class="lead">Learn HolyPHP one small idea at a time. Read a short explanation, study an editable example, then solve a practice task. Use the Playground to run code in your browser or install the compiler to run it on your computer.</p>
@@ -395,7 +395,7 @@ echo "Read gives: {$result}";</textarea>
         <h3>Built-in Libraries</h3>
         <div class="concept-grid">
           <div class="concept-card">
-            <h4><a href="lib-ui.html">ui</a> - Desktop GUI</h4>
+            <h4><a href="libraries/ui/">ui</a> - Desktop GUI</h4>
             <p>Native Win32 GUI with themes, widgets, and auto-layout</p>
             <pre><code class="hphp">import "ui";
 $app = new App("Hello");
@@ -403,29 +403,29 @@ $app->button("Click", "primary", function(){ echo "Hi!"; });
 $app->run();</code></pre>
           </div>
           <div class="concept-card">
-            <h4><a href="lib-html.html">html</a> - HolyHTML Engine</h4>
+            <h4><a href="libraries/html/">html</a> - HolyHTML Engine</h4>
             <p>HTML/CSS parser, layout engine, and painter</p>
             <p>Render web-like UIs natively without a browser!</p>
           </div>
           <div class="concept-card">
-            <h4><a href="lib-ide.html">ide</a> - HolyIDE</h4>
+            <h4><a href="libraries/ide/">ide</a> - HolyIDE</h4>
             <p>Full IDE for HolyPHP written in HolyPHP itself</p>
             <pre><code class="bash">hphp run holyide/holyide.hphp</code></pre>
           </div>
           <div class="concept-card">
-            <h4><a href="lib-async.html">async</a> - Event Loop</h4>
+            <h4><a href="libraries/async/">async</a> - Event Loop</h4>
             <p>Cooperative async with timers, sockets, HTTP</p>
           </div>
           <div class="concept-card">
-            <h4><a href="lib-thread.html">thread</a> - Concurrency</h4>
+            <h4><a href="libraries/thread/">thread</a> - Concurrency</h4>
             <p>Real OS threads with channels, mutexes, atomics</p>
           </div>
           <div class="concept-card">
-            <h4><a href="lib-websocket.html">websocket</a> - RFC 6455</h4>
+            <h4><a href="libraries/websocket/">websocket</a> - RFC 6455</h4>
             <p>WebSocket server, browser-compatible</p>
           </div>
           <div class="concept-card">
-            <h4><a href="lib-sqlite.html">sqlite</a> - Embedded Database</h4>
+            <h4><a href="docs.html#sqlite">sqlite</a> - Embedded Database</h4>
             <p>Built-in SQLite 3.46.1, WAL and B-tree cursors, no install</p>
           </div>
         </div>

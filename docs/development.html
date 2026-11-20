@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <script>try{document.documentElement.dataset.theme=localStorage.getItem("hphp-theme")==="dark"?"dark":"light"}catch(e){document.documentElement.dataset.theme="light"}</script><meta name="description" content="How HolyPHP is developed: compiler pipeline, runtime, libraries, releases and how to contribute."><title>Development — HolyPHP</title><link rel="stylesheet" href="assets/style.css?v=6"></head>
-<body><script src="assets/nav.html.js?v=3"></script><main>
+<body><script src="assets/nav.html.js?v=4"></script><main>
   <div class="section-kicker">Development</div><h1>One language. <span style="color:var(--ember)">Built all the way down.</span></h1>
   <p class="lead">HolyPHP is an open-source language project with a compiler, runtime, native libraries, package tools and editor support. This page explains how those pieces fit together and where to follow the work.</p>
   <div class="safety-panel" style="margin:30px 0"><div><div class="section-kicker" style="color:#c5a4ee">The pipeline</div><h2>Source in. Native program out.</h2><p>The compiler reads <code>.hphp</code> source, checks it, emits C and invokes the platform toolchain to produce an executable.</p></div><pre><code>hello.hphp

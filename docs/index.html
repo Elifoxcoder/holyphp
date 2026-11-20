@@ -11,9 +11,9 @@
   <meta property="og:url" content="https://hphp.ch/">
   <meta name="twitter:card" content="summary">
   <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"HolyPHP","url":"https://hphp.ch/","applicationCategory":"DeveloperApplication","operatingSystem":"Windows, Linux","description":"A PHP-inspired compiled language with compile-time checks and native executables."}</script>
-  <title>HolyPHP — Familiar code. Native software.</title><link rel="stylesheet" href="assets/style.css?v=6">
+  <title>HolyPHP — Familiar code. Native software.</title><link rel="stylesheet" href="assets/style.css?v=6"><link rel="stylesheet" href="assets/pages.css?v=1">
 </head>
-<body><script src="assets/nav.html.js?v=3"></script>
+<body><script src="assets/nav.html.js?v=4"></script>
 <main class="site-page">
   <section class="home-hero">
     <div class="hero-copy">
@@ -44,8 +44,19 @@
     <div class="proof-item"><span class="proof-icon">04</span><div><b>One command line</b><span>Check, run, build, package</span></div></div>
   </div></section>
 
-  <section class="home-section">
-    <div class="section-head"><div><div class="section-kicker">The workflow</div><h2>From first line to finished program</h2></div><p>Keep the fast feedback loop of a scripting language, with a compiler that can produce a standalone native executable.</p></div>
+  <section class="home-section home-start" id="start">
+    <div class="section-head"><div><div class="section-kicker">Start here</div><h2>Where do you want to go?</h2></div><p>Read what HolyPHP is, learn it step by step, look something up, or add a library to your program.</p></div>
+    <div class="start-grid">
+      <a class="start-card" href="#overview"><span class="start-num">01</span><h3>Overview</h3><p>What the language and the toolchain do, in five minutes.</p><span class="start-go">Read below ↓</span></a>
+      <a class="start-card" href="guide/index.html"><span class="start-num">02</span><h3>Tutorial</h3><p>Nine short chapters from installing to your first real program, then interactive lessons.</p><span class="start-go">Start learning →</span></a>
+      <a class="start-card" href="docs.html"><span class="start-num">03</span><h3>Documentation</h3><p>The language and every built-in by topic: strings, math, arrays, regex, time, files, SQLite.</p><span class="start-go">Open the docs →</span></a>
+      <a class="start-card" href="libraries/"><span class="start-num">04</span><h3>Libraries</h3><p>HTTP router, event loop, testing, command line, threads, .env, WebSockets and desktop UI.</p><span class="start-go">Browse libraries →</span></a>
+    </div>
+    <div class="start-cli"><code>hphp create myapp</code><span>new project with tests in one command — then <code>hphp run</code> and <code>hphp test</code></span></div>
+  </section>
+
+  <section class="home-section" id="overview">
+    <div class="section-head"><div><div class="section-kicker">Overview · the workflow</div><h2>From first line to finished program</h2></div><p>Keep the fast feedback loop of a scripting language, with a compiler that can produce a standalone native executable.</p></div>
     <div class="story-grid">
       <article class="story-card"><h3>Write naturally</h3><p>Start with variables, arrays, functions and classes. Add explicit types where they communicate intent.</p></article>
       <article class="story-card"><h3>Check as you go</h3><p>Use <code>hphp check</code> to surface type and borrow errors without having to run the program.</p></article>
@@ -56,17 +67,17 @@
   <section class="home-section">
     <div class="section-head"><div><div class="section-kicker">Language, runtime, libraries</div><h2>One toolchain. Several ways to build.</h2></div><p>HolyPHP is not PHP running through FPM. Its compiler and runtime power programs written in the language itself.</p></div>
     <div class="capability-grid">
-      <a class="capability" href="docs.html#language"><span class="glyph">$</span><h3>Expressive language</h3><p>Familiar variables, control flow, strings, arrays, classes, closures and typed function signatures.</p></a>
-      <a class="capability" href="docs.html#memory"><span class="glyph">&amp;</span><h3>Ownership and borrowing</h3><p>Compile-time rules help control aliases and mutation. Unsafe pointer operations are marked explicitly.</p></a>
-      <a class="capability" href="docs.html#libraries"><span class="glyph">{ }</span><h3>Native application libraries</h3><p>Explore desktop UI, async I/O, threads, WebSockets, HTML layout and the HolyIDE workbench.</p></a>
-      <a class="capability" href="docs.html#toolchain"><span class="glyph">&gt;_</span><h3>Compiler and CLI</h3><p>Check, run, emit compiler output, build executables and manage packages from <code>hphp</code>.</p></a>
-      <a class="capability" href="docs.html#editor"><span class="glyph">⌘</span><h3>Editor support</h3><p>Use the HolyPHP VS Code extension for syntax highlighting, completions and diagnostics.</p></a>
-      <a class="capability" href="docs.html#packages"><span class="glyph">□</span><h3>Packages and examples</h3><p>Try the package commands and learn from complete programs shipped in the repository.</p></a>
+      <a class="capability" href="docs.html#variables-and-types"><span class="glyph">$</span><h3>Expressive language</h3><p>Familiar variables, control flow, strings, arrays, classes, closures and typed function signatures.</p></a>
+      <a class="capability" href="docs.html#memory-model"><span class="glyph">&amp;</span><h3>Ownership and borrowing</h3><p>Compile-time rules help control aliases and mutation. Unsafe pointer operations are marked explicitly.</p></a>
+      <a class="capability" href="libraries/"><span class="glyph">{ }</span><h3>Libraries</h3><p>Web servers, the terminal, tests, threads and desktop apps — bundled with the compiler, one <code>import</code> away.</p></a>
+      <a class="capability" href="docs.html#command-line"><span class="glyph">&gt;_</span><h3>Compiler and CLI</h3><p>Check, run, emit compiler output, build executables and manage packages from <code>hphp</code>.</p></a>
+      <a class="capability" href="docs.html#command-line"><span class="glyph">⌘</span><h3>Editor support</h3><p>Use the HolyPHP VS Code extension for syntax highlighting, completions and diagnostics.</p></a>
+      <a class="capability" href="docs.html#projects"><span class="glyph">□</span><h3>Projects and packages</h3><p><code>hphp create</code>, dependencies in <code>hphp.yaml</code>, a lock file and <code>hphp test</code>.</p></a>
     </div>
   </section>
 
   <section class="home-section"><div class="safety-panel">
-    <div><div class="section-kicker" style="color:#c5a4ee">Types &amp; memory</div><h2>Safety checks in the compiler</h2><p>HolyPHP offers inferred types for quick scripts and explicit signatures when you need them. Its borrow checker diagnoses supported conflicting uses before code generation.</p><a class="button-link secondary" href="docs.html#memory">How memory safety works →</a></div>
+    <div><div class="section-kicker" style="color:#c5a4ee">Types &amp; memory</div><h2>Safety checks in the compiler</h2><p>HolyPHP offers inferred types for quick scripts and explicit signatures when you need them. Its borrow checker diagnoses supported conflicting uses before code generation.</p><a class="button-link secondary" href="docs.html#memory-model">How memory safety works →</a></div>
     <pre><code><span class="code-comment">// Types can be inferred</span>
 $count = 3;
 
