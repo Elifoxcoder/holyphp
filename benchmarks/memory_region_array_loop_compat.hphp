@@ -1,0 +1,12 @@
+<?php
+function local_array_read(int $n): int {
+    $sum = 0;
+    for ($i = 0; $i < $n; $i++) {
+        let $values: array = [1, 2, 3, 4, 5, 6, 7, 8];
+        $sum += array_sum($values) + $i;
+    }
+    return $sum;
+}
+$start = hrtime(true);
+$sum = local_array_read(200000);
+echo $sum . " " . (hrtime(true) - $start) . "\n";

@@ -156,6 +156,8 @@ typedef enum {
 struct Stmt {
     StmtKind kind;
     Token tok;
+    int region_id;             /* codegen id for loop-local region storage */
+    bool has_region_locals;    /* safety analysis found iteration-local values */
     union {
         struct { Expr *expr; bool discard; } expr;
         struct { const char *name; bool is_mut, is_own; Expr *init; Type *ann; Token name_tok; void *sym; } let;
@@ -231,6 +233,7 @@ struct AstFn {
     bool ret_inferred;         /* sema: no return type written, inferred */
     PtrVec body;               /* Stmt* */
     bool is_method, is_static, is_abstract, is_pub;
+    bool has_body;             /* distinguishes an empty definition from a prototype */
     bool is_closure, is_unsafe, is_ctor;
     bool thread_worker;        /* checker verified this closure for a worker */
     bool enforce_memory_safety;

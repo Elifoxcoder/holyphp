@@ -1,0 +1,11 @@
+function local_string_read(int $n): int {
+    $sum = 0;
+    for ($i = 0; $i < $n; $i++) {
+        let $text: string = "record-" . $i;
+        $sum += strlen($text);
+    }
+    return $sum;
+}
+$start = hrtime(true);
+$sum = local_string_read(200000);
+echo $sum . " " . (hrtime(true) - $start) . "\n";

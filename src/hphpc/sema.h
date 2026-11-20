@@ -41,6 +41,7 @@ typedef struct VarSym {
     bool shared_alias;                  /* mutable heap alias derived from &T */
     bool captured_heap_alias;           /* a closure may retain this object */
     bool region_local;                  /* safety-mode value proven function-local */
+    const Stmt *region_loop;             /* iteration region for proven loop-local value */
     AstFn *owner_fn;                     /* declaration scope for effect propagation */
     bool borrow_mut;
     bool borrow_pending;       /* reference origin awaits a forward-call summary */
@@ -63,6 +64,8 @@ bool sema_type_is_linear(const Type *type); /* contains an own<T> and cannot be 
 void borrow_check_function(AstFn *fn);
 void borrow_check_script(PtrVec stmts);
 void borrow_infer_summaries(PtrVec fns);
+/* True only when every method selected by virtual dispatch borrows this arg. */
+bool sema_method_param_borrow_only(const Expr *call, size_t arg_index);
 
 /* diagnostics */
 void sema_error(const Token *tok, const char *fmt, ...);

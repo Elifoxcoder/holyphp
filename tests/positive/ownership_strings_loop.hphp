@@ -2,9 +2,9 @@
 /* ownership_strings_loop.hphp — the string group's ownership loop.
  *
  * Every builtin returns a value the caller owns. The loop runs 20000 times,
- * releases each result explicitly (this core has no reference counting yet)
- * and must not grow: tests/rss.ps1 checks that. All literals are hoisted
- * because a literal is a fresh heap object per evaluation in this core.
+ * lets the runtime release overwritten results through reference counting
+ * and must not grow: tests/rss.ps1 checks that. Inputs are hoisted to keep
+ * the loop focused on returned-value ownership.
  */
 $fail = 0;
 function check(string $name, bool $ok): bool {

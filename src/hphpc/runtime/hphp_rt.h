@@ -190,10 +190,12 @@ struct harr {
 };
 
 /* Function-local arena used only for values proven not to escape. */
-typedef struct { void *blocks; } hp_region;
+typedef struct { void *blocks, *current, *tail, *active_tail; } hp_region;
 void hp_region_begin(hp_region *region);
+void hp_region_reset(hp_region *region);
 void hp_region_end(hp_region *region);
 harr *hp_region_arr_scalars(hp_region *region, size_t len, const hval *values);
+hstr *hp_region_str_copy(hp_region *region, const hstr *source);
 
 harr *hp_arr_new(void);
 harr *hp_arr_of(int n, const hval *vals);      /* counted hval array */

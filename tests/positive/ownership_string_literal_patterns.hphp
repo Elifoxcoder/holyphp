@@ -1,0 +1,9 @@
+<?php
+/* Regression: html_entity_decode() uses interned literal patterns internally.
+ * Its local cleanup must not free those process-lifetime strings. */
+$input = "<a href='x'>&</a>";
+for ($i = 0; $i < 32; $i++) {
+    $decoded = html_entity_decode($input);
+    if ($decoded != $input) { exit(1); }
+}
+echo "literal replacement patterns survived\n";

@@ -65,25 +65,44 @@ typedef struct hp_region_block {
 } hp_region_block;
 
 void hp_region_begin(hp_region *region) {
-    if (region) region->blocks = NULL;
+    if (region) region->blocks = region->current = region->tail =
+        region->active_tail = NULL;
+}
+
+void hp_region_reset(hp_region *region) {
+    if (!region) return;
+    hp_region_block *active = (hp_region_block *)region->active_tail;
+    if (!active) { region->current = region->blocks; return; }
+    for (hp_region_block *block = (hp_region_block *)region->blocks;
+         block; block = block->next) {
+        block->used = 0;
+        if (block == active) break;
+    }
+    region->current = region->blocks;
+    region->active_tail = NULL;
 }
 
 static void *hp_region_alloc(hp_region *region, size_t size) {
     if (!region) return NULL;
     size_t align = _Alignof(max_align_t);
     size = (size + align - 1) & ~(align - 1);
-    hp_region_block *block = (hp_region_block *)region->blocks;
-    if (!block || block->cap - block->used < size) {
+    hp_region_block *block = (hp_region_block *)region->current;
+    while (block && block->cap - block->used < size) block = block->next;
+    if (!block) {
         size_t cap = size > 4096 ? size : 4096;
         hp_region_block *fresh = (hp_region_block *)malloc(
             offsetof(hp_region_block, data) + cap);
         if (!fresh) { fprintf(stderr, "Fatal error: out of memory\n"); exit(255); }
-        fresh->next = block;
+        fresh->next = NULL;
         fresh->used = 0;
         fresh->cap = cap;
-        region->blocks = fresh;
+        if (region->tail) ((hp_region_block *)region->tail)->next = fresh;
+        else region->blocks = fresh;
+        region->tail = fresh;
         block = fresh;
     }
+    region->current = block;
+    region->active_tail = block;
     void *out = block->data + block->used;
     block->used += size;
     return out;
@@ -97,7 +116,20 @@ void hp_region_end(hp_region *region) {
         free(block);
         block = next;
     }
-    region->blocks = NULL;
+    region->blocks = region->current = region->tail = region->active_tail = NULL;
+}
+
+hstr *hp_region_str_copy(hp_region *region, const hstr *source) {
+    size_t len = source ? source->len : 0;
+    hstr *copy = (hstr *)hp_region_alloc(region, sizeof(*copy) + len + 1);
+    if (!copy) return hp_null_str();
+    copy->len = len;
+    copy->cap = len + 1;
+    copy->hash = 0;
+    copy->rc = UINT32_MAX; /* region lifetime, never individual RC release */
+    if (len) memcpy(copy->data, source->data, len);
+    copy->data[len] = 0;
+    return copy;
 }
 static hp_gc_node *hp_gc_nodes;
 static size_t hp_gc_node_count;
@@ -509,7 +541,12 @@ hstr *hp_str_copy(hstr *s) {
     return hp_str_new(s ? s->data : "", s ? s->len : 0);
 }
 
-void hp_str_free(hstr *s) { free(s); }
+void hp_str_free(hstr *s) {
+    /* Literal-pool and persisted strings use UINT32_MAX as an immortal RC.
+     * Several helpers build temporary replacement patterns with hp_str_lit
+     * and pass them through this low-level disposer. */
+    if (s && s->rc != UINT32_MAX) free(s);
+}
 
 uint32_t hp_str_hash(hstr *s) {
     if (!s) return 0;

@@ -48,6 +48,7 @@ struct Codegen {
 
 static void emit_stmt(Codegen *g, Stmt *s);
 static void emit_expr(Codegen *g, Expr *e, Buf *dst);
+static void emit_block_region(Codegen *g, PtrVec stmts, Stmt *iteration_loop);
 static bool expr_is_borrowed_heap(Expr *e);
 static bool expr_is_fresh_owned(Expr *e);
 static const char *managed_tag_for_type(const Type *t);
@@ -1635,6 +1636,10 @@ static void emit_method(Codegen *g, Expr *e, Buf *dst) {
                 Param *pm = (i < m->params.len) ? m->params.items[i] : NULL;
                 if (pm && pm->by_ref)
                     emit_byref_arg(g, (Expr *)e->u.method.args.items[i], pm, dst);
+                else if (g->prog->enforce_memory_safety && pm &&
+                         sema_method_param_borrow_only(e, i) &&
+                         ((Expr *)e->u.method.args.items[i])->kind == EX_VAR)
+                    emit_arg(g, e->u.method.args.items[i], pm->resolved, dst);
                 else
                     emit_owned_call_arg(g, e->u.method.args.items[i],
                                         pm ? pm->resolved : NULL, dst);
@@ -1668,6 +1673,10 @@ static void emit_method(Codegen *g, Expr *e, Buf *dst) {
             Param *pm = (i < m->params.len) ? m->params.items[i] : NULL;
             if (pm && pm->by_ref)
                 emit_byref_arg(g, (Expr *)e->u.method.args.items[i], pm, dst);
+            else if (g->prog->enforce_memory_safety && pm &&
+                     sema_method_param_borrow_only(e, i) &&
+                     ((Expr *)e->u.method.args.items[i])->kind == EX_VAR)
+                emit_arg(g, e->u.method.args.items[i], pm->resolved, dst);
             else
                 emit_owned_call_arg(g, e->u.method.args.items[i],
                                     pm ? pm->resolved : NULL, dst);
@@ -2261,14 +2270,22 @@ static bool expr_is_fresh_owned(Expr *e) {
         if (e->builtin) {
             const char *name = e->u.call.fn && e->u.call.fn->kind == EX_VAR
                 ? e->u.call.fn->u.var.name : NULL;
-            /* These PHP-style helpers can return the input handle itself.
-             * Builtins otherwise follow the default contract: borrowed
-             * inputs, owned heap result. */
-            if (name && (!strcmp(name, "strval") || !strcmp(name, "str") ||
+            /* Raw pointers and alias-returning unsafe memory helpers are not
+             * reference-counted objects. Treating HV_OBJ as an hobj here
+             * makes a discarded malloc()/memset() result corrupt memory. */
+            if (name && (!strcmp(name, "malloc") || !strcmp(name, "ffi_load") ||
+                         !strcmp(name, "ffi_call") || !strcmp(name, "memset") ||
+                         !strcmp(name, "memcpy") || !strcmp(name, "iarr_data_ptr") ||
+                         !strcmp(name, "sb_data_ptr") || !strcmp(name, "bt_payload_ptr") ||
+                         !strcmp(name, "str_persist") || !strcmp(name, "array_search") ||
+                         !strcmp(name, "array_key_first") || !strcmp(name, "array_key_last") ||
+                         !strcmp(name, "max") || !strcmp(name, "min") ||
                          !strcmp(name, "current") || !strcmp(name, "pos") ||
                          !strcmp(name, "reset") || !strcmp(name, "end") ||
                          !strcmp(name, "next") || !strcmp(name, "prev")))
                 return false;
+            /* Remaining heap-valued builtin calls follow the standard
+             * borrowed-input, owned-result contract. */
             return true;
         }
         if (e->u.call.target) return true;
@@ -3333,12 +3350,38 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
 }
 
 /* ---------------- statements ---------------- */
+static void emit_loop_region_open(Codegen *g, Stmt *loop, int lid) {
+    if (!loop || !loop->has_region_locals) return;
+    loop->region_id = lid + 1;
+    line(g, "void *_hp_loop_region_mark_%d = hp_cleanup_mark();", lid);
+    line(g, "hp_region _hp_iter_region_%d;", loop->region_id);
+    line(g, "hp_region_begin(&_hp_iter_region_%d);", loop->region_id);
+    line(g, "hp_cleanup_register_region(&_hp_iter_region_%d);", loop->region_id);
+}
+
+static void emit_loop_region_close(Codegen *g, Stmt *loop, int lid) {
+    if (loop && loop->has_region_locals)
+        line(g, "hp_cleanup_pop_to(_hp_loop_region_mark_%d);", lid);
+}
+
+static void emit_loop_region_reset(Codegen *g, Stmt *loop) {
+    if (loop && loop->has_region_locals)
+        line(g, "hp_region_reset(&_hp_iter_region_%d);", loop->region_id);
+}
+
 static void emit_block(Codegen *g, PtrVec stmts) {
+    emit_block_region(g, stmts, NULL);
+}
+
+static void emit_block_region(Codegen *g, PtrVec stmts, Stmt *iteration_loop) {
     int sid = g->tmp_id++;
     const char *mark = fmt("_hp_scope_%d", sid);
     line(g, "{");
     g->depth++;
     line(g, "void *%s = hp_cleanup_mark();", mark);
+    if (iteration_loop && iteration_loop->has_region_locals) {
+        emit_loop_region_reset(g, iteration_loop);
+    }
     if (g->pending_loop_cleanup_mark) {
         ptrvec_push(&g->loop_cleanup_marks, (void *)mark);
         ptrvec_push(&g->break_cleanup_marks, (void *)mark);
@@ -3375,6 +3418,8 @@ static void emit_foreach(Codegen *g, Stmt *s) {
      * iterated by the runtime, which throws on non-iterables */
     bool is_dyn = !it_t || it_t->kind == TY_MIXED || it_t->kind == TY_OPTION ||
                   it_t->kind == TY_RESULT;
+    int lid = g->label_id++;
+    emit_loop_region_open(g, s, lid);
     line(g, "{");
     g->depth++;
     if (is_str) {
@@ -3430,16 +3475,16 @@ static void emit_foreach(Codegen *g, Stmt *s) {
     g->depth++;
     g->loop_depth++;
     {
-        int lid = g->label_id++;
         ptrvec_push(&g->loop_labels, (void *)(intptr_t)lid);
         g->pending_loop_cleanup_mark = true;
-        emit_block(g, s->u.foreach.body);
+        emit_block_region(g, s->u.foreach.body, s);
         line(g, "hp_cont_%d: ;", lid);
         g->loop_labels.len--;
     }
     g->loop_depth--;
     g->depth--;
     line(g, "}");
+    emit_loop_region_close(g, s, lid);
     g->depth--;
     line(g, "}");
     free(iter);
@@ -3781,16 +3826,32 @@ static void emit_stmt(Codegen *g, Stmt *s) {
             break;
         }
         if (v && v->region_local && s->u.let.init->kind == EX_ARRAY_LIT) {
-            if (!v->is_auto)
-                line(g, "%s %s = NULL;", ctype_of(t), var_name(v));
+            if (!v->is_auto) line(g, "%s %s = NULL;", ctype_of(t), var_name(v));
             Buf vals; buf_init(&vals);
             for (size_t i = 0; i < s->u.let.init->u.arr.elems.len; i++) {
                 if (i) buf_puts(&vals, ", ");
                 to_hval(g, s->u.let.init->u.arr.elems.items[i], &vals);
             }
-            line(g, "%s = hp_region_arr_scalars(&_hp_region, %zu, (const hval[]){%s});",
-                 var_name(v), s->u.let.init->u.arr.elems.len, buf_take(&vals));
+            const char *region = v->region_loop
+                ? fmt("_hp_iter_region_%d", v->region_loop->region_id) : "_hp_region";
+            line(g, "%s = hp_region_arr_scalars(&%s, %zu, (const hval[]){%s});",
+                 var_name(v), region, s->u.let.init->u.arr.elems.len, buf_take(&vals));
             free(vals.data);
+            break;
+        }
+        if (v && v->region_local && v->region_loop && t &&
+            t->kind == TY_STRING && s->u.let.init->type &&
+            s->u.let.init->type->kind == TY_STRING) {
+            if (!v->is_auto) line(g, "%s %s = NULL;", ctype_of(t), var_name(v));
+            int id = g->tmp_id++;
+            Buf source; buf_init(&source);
+            emit_expr(g, s->u.let.init, &source);
+            line(g, "hstr *_hp_region_source_%d = %s;", id, buf_take(&source));
+            free(source.data);
+            line(g, "%s = hp_region_str_copy(&_hp_iter_region_%d, _hp_region_source_%d);",
+                 var_name(v), v->region_loop->region_id, id);
+            if (expr_is_fresh_owned(s->u.let.init))
+                line(g, "hp_val_rc_dec(hp_of_str(_hp_region_source_%d));", id);
             break;
         }
         bool boxed = v && (v->captured_byref || v->is_program_global);
@@ -3970,29 +4031,32 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         Buf c;
         buf_init(&c);
         emit_cond(g, s->u.while_.cond, &c);
+        int lid = g->label_id++;
+        emit_loop_region_open(g, s, lid);
         line(g, "while (%s) {", buf_take(&c));
         free(c.data);
         g->depth++;
         g->loop_depth++;
-        int lid = g->label_id++;
         ptrvec_push(&g->loop_labels, (void *)(intptr_t)lid);
         g->pending_loop_cleanup_mark = true;
-        emit_block(g, s->u.while_.body);
+        emit_block_region(g, s->u.while_.body, s);
         line(g, "hp_cont_%d: ;", lid);
         g->loop_labels.len--;
         g->loop_depth--;
         g->depth--;
         line(g, "}");
+        emit_loop_region_close(g, s, lid);
         break;
     }
     case ST_DO: {
+        int lid = g->label_id++;
+        emit_loop_region_open(g, s, lid);
         line(g, "do {");
         g->depth++;
         g->loop_depth++;
-        int lid = g->label_id++;
         ptrvec_push(&g->loop_labels, (void *)(intptr_t)lid);
         g->pending_loop_cleanup_mark = true;
-        emit_block(g, s->u.do_.body);
+        emit_block_region(g, s->u.do_.body, s);
         line(g, "hp_cont_%d: ;", lid);
         g->loop_labels.len--;
         g->loop_depth--;
@@ -4002,6 +4066,7 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         emit_expr(g, s->u.do_.cond, &c);
         line(g, "} while (%s);", buf_take(&c));
         free(c.data);
+        emit_loop_region_close(g, s, lid);
         break;
     }
     case ST_SWITCH: {
@@ -4127,6 +4192,8 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         g->depth++;
         for (size_t i = 0; i < s->u.for_.init.len; i++)
             emit_stmt(g, s->u.for_.init.items[i]);
+        int lid = g->label_id++;
+        emit_loop_region_open(g, s, lid);
         Buf c;
         buf_init(&c);
         char *cond = xstrdup("1");
@@ -4141,7 +4208,6 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         /* the step lives inside the body, so 'continue' must jump *past* it
          * to the label below (a plain C continue would skip the step and
          * loop forever) */
-        int lid = g->label_id++;
         ptrvec_push(&g->loop_labels, (void *)(intptr_t)lid);
         g->pending_loop_cleanup_mark = true;
         void *old_array = g->bounds_array_sym;
@@ -4152,7 +4218,7 @@ static void emit_stmt(Codegen *g, Stmt *s) {
             g->bounds_array_sym = proven_array;
             g->bounds_index_sym = proven_index;
         }
-        emit_block(g, s->u.for_.body);
+        emit_block_region(g, s->u.for_.body, s);
         g->bounds_array_sym = old_array;
         g->bounds_index_sym = old_index;
         line(g, "hp_cont_%d: ;", lid);
@@ -4162,6 +4228,7 @@ static void emit_stmt(Codegen *g, Stmt *s) {
         g->loop_depth--;
         g->depth--;
         line(g, "}");
+        emit_loop_region_close(g, s, lid);
         g->depth--;
         line(g, "}");
         break;
@@ -4840,7 +4907,8 @@ static void emit_cleanup_setup(Codegen *g, AstFn *fn) {
     for (size_t i = 0; i < fn->body.len; i++) collect_syms_stmt(&syms, fn->body.items[i]);
     bool has_region = false;
     for (size_t i = 0; i < syms.len; i++)
-        if (((VarSym *)syms.items[i])->region_local) { has_region = true; break; }
+        if (((VarSym *)syms.items[i])->region_local &&
+            !((VarSym *)syms.items[i])->region_loop) { has_region = true; break; }
     if (has_region) {
         line(g, "hp_region _hp_region;");
         line(g, "hp_region_begin(&_hp_region);");

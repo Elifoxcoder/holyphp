@@ -1,0 +1,47 @@
+<?php
+declare(enforce_memory_safety=1);
+
+class RegionBorrowBase {
+    pub function total(array $values): int {
+        return array_sum($values);
+    }
+
+    pub function local_loop(): int {
+        $sum = 0;
+        for ($i = 0; $i < 8; $i++) {
+            let $values: array = [1, 1];
+            $sum += $this->total($values) + $i;
+        }
+        return $sum;
+    }
+}
+class RegionBorrowDerived extends RegionBorrowBase {
+    pub function total(array $values): int {
+        return array_sum($values);
+    }
+}
+class RegionBorrowLeaf extends RegionBorrowDerived {}
+
+function run_virtual_borrow(RegionBorrowBase $probe): int {
+    $sum = 0;
+    for ($i = 0; $i < 8; $i++) {
+        let $values: array = [1, 1];
+        $sum += $probe->total($values) + $i;
+    }
+    return $sum;
+}
+function run_inherited_borrow(RegionBorrowLeaf $probe): int {
+    $sum = 0;
+    for ($i = 0; $i < 8; $i++) {
+        let $values: array = [1, 1];
+        $sum += $probe->total($values) + $i;
+    }
+    return $sum;
+}
+
+$probe = new RegionBorrowBase();
+if (run_virtual_borrow($probe) != 44) { exit(1); }
+if ($probe->local_loop() != 44) { exit(1); }
+$leaf = new RegionBorrowLeaf();
+if (run_inherited_borrow($leaf) != 44) { exit(1); }
+echo "virtual method borrow ok\n";

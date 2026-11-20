@@ -407,6 +407,7 @@ static AstFn *parse_fn_after_name(Parser *p, const Token *name, bool is_method, 
     fn->ret_inferred = fn->ret == NULL;
     skip_nl(p);
     if (ts_match(p->ts, T_LBRACE)) {
+        fn->has_body = true;
         skip_nl(p);
         while (!ts_check(p->ts, T_RBRACE) && !ts_check(p->ts, T_EOF)) {
             if (ts_check(p->ts, T_NEWLINE) || ts_check(p->ts, T_SEMI)) { ts_advance(p->ts); continue; }

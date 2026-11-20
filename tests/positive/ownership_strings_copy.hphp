@@ -55,6 +55,11 @@ $r = str_repeat($plain, 2);
 check("str_repeat value", $r == "HelloHello");
 check("str_repeat left the input intact", $plain == "Hello");
 
+$haystack = "prefix:payload";
+$r = strchr($haystack, ":");
+check("strchr returns the suffix", $r == ":payload");
+check("strchr leaves the input intact", $haystack == "prefix:payload");
+
 $num = 42;
 $r = strval($num);
 check("strval value", $r == "42");

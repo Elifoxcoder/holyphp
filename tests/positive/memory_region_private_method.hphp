@@ -1,0 +1,21 @@
+<?php
+declare(enforce_memory_safety=1);
+
+class RegionMethodProbe {
+    private function sum_values(array $values): int {
+        return array_sum($values);
+    }
+
+    public function run(): int {
+        $total = 0;
+        for ($i = 0; $i < 8; $i++) {
+            let $values: array = [$i, 2, 3];
+            $total += $this->sum_values($values);
+        }
+        return $total;
+    }
+}
+
+$probe = new RegionMethodProbe();
+if ($probe->run() != 68) { exit(1); }
+echo "private method borrow ok\n";

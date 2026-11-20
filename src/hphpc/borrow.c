@@ -848,7 +848,7 @@ static void collect_call_args(BorrowCfg *cfg, BorrowNode *n, PtrVec args,
         }
         bool reference_value = arg && arg->type &&
             (arg->type->kind == TY_REF || arg->type->kind == TY_MUTREF);
-        bool may_mutate_heap_arg = !target || !pm || !target->body.len ||
+        bool may_mutate_heap_arg = !target || !pm || !target->has_body ||
             target->is_method ||
             pm->mutates_heap_alias || pm->captures_heap_alias;
         if (may_mutate_heap_arg && arg && !(pm && pm->by_ref) && !reference_value &&
@@ -969,7 +969,7 @@ static void collect_expr(BorrowCfg *cfg, BorrowNode *n, Expr *e,
                             ? e->u.call.fn->u.var.name : NULL,
                           e->has_borrow_param ? e->borrow_param_index : -1,
                           holder, !e->builtin &&
-                              ((!e->u.call.target && e->u.call.fn && e->u.call.fn->type && e->u.call.fn->type->kind == TY_FN) || (e->u.call.target && !e->u.call.target->body.len)));
+                              ((!e->u.call.target && e->u.call.fn && e->u.call.fn->type && e->u.call.fn->type->kind == TY_FN) || (e->u.call.target && !e->u.call.target->has_body)));
         collect_global_effects(n, e->u.call.target);
         if (!e->u.call.target && !e->builtin) {
             write_unknown_global_effect(n);
@@ -1022,7 +1022,7 @@ static void collect_expr(BorrowCfg *cfg, BorrowNode *n, Expr *e,
                           e->u.method.name,
                           e->has_borrow_param ? e->borrow_param_index : -1,
                           holder, !e->builtin &&
-                              (e->u.method.target && !e->u.method.target->body.len));
+                              (e->u.method.target && !e->u.method.target->has_body));
         /* Receiver and callee effects happen after every argument has been
          * evaluated. Keep nested argument effects at their own positions. */
         for (size_t i = method_effect_start; i < method_effect_end; i++)
@@ -1035,7 +1035,7 @@ static void collect_expr(BorrowCfg *cfg, BorrowNode *n, Expr *e,
                           e->u.staticcall.name,
                           e->has_borrow_param ? e->borrow_param_index : -1,
                           holder, !e->builtin &&
-                              (e->u.staticcall.target && !e->u.staticcall.target->body.len));
+                              (e->u.staticcall.target && !e->u.staticcall.target->has_body));
         collect_global_effects(n, e->u.staticcall.target);
         if (!e->u.staticcall.target && !e->builtin) {
             write_unknown_global_effect(n);
@@ -1046,7 +1046,7 @@ static void collect_expr(BorrowCfg *cfg, BorrowNode *n, Expr *e,
         collect_call_args(cfg, n, e->u.newexpr.args,
                           constructor_of(e->u.newexpr.cls_res), "__construct", -1, NULL,
                           constructor_of(e->u.newexpr.cls_res) &&
-                              !constructor_of(e->u.newexpr.cls_res)->body.len);
+                              !constructor_of(e->u.newexpr.cls_res)->has_body);
         collect_global_effects(n, constructor_of(e->u.newexpr.cls_res));
         break;
     case EX_TPL:

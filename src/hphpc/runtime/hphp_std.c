@@ -2267,19 +2267,23 @@ hval hpbi_hexdec(hval s) { RETI(from_base(hp_val_to_str(s)->data, 16)); }
 /* ---------- unsafe memory ops ---------- */
 hval hpbi_malloc(hval n) {
     void *p = malloc((size_t)hp_val_to_int(n));
-    return hp_of_ptr(p);
+    /* Unsafe raw addresses are integers in the language representation. An
+     * HV_OBJ would enter the managed-object RC path and read an hobj header
+     * from arbitrary malloc'd bytes during local cleanup. */
+    return hp_of_int((int64_t)(intptr_t)p);
 }
 hval hpbi_free(hval p) {
-    if (p.tag == HV_OBJ) free(p.u.p);
+    free(hp_addr_arg(p));
     return hp_null;
 }
 hval hpbi_memcpy(hval dst, hval src, hval n) {
-    if (dst.tag == HV_OBJ && src.tag == HV_OBJ)
-        memcpy(dst.u.p, src.u.p, (size_t)hp_val_to_int(n));
+    void *d = hp_addr_arg(dst), *s = hp_addr_arg(src);
+    if (d && s) memcpy(d, s, (size_t)hp_val_to_int(n));
     return dst;
 }
 hval hpbi_memset(hval dst, hval byte, hval n) {
-    if (dst.tag == HV_OBJ) memset(dst.u.p, (int)hp_val_to_int(byte), (size_t)hp_val_to_int(n));
+    void *d = hp_addr_arg(dst);
+    if (d) memset(d, (int)hp_val_to_int(byte), (size_t)hp_val_to_int(n));
     return dst;
 }
 hval hpbi_ffi_load(hval lib) {

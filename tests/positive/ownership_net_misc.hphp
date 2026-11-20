@@ -24,6 +24,15 @@ check("stream_close on a bad handle is false", stream_close($bad) == false);
 $p = stream_peer($bad);
 check("stream_peer on a bad handle is empty", $p == "");
 
+/* stream_recv is an owned-result builtin. The invalid-handle path returns an
+ * immortal empty literal; releasing each temporary must leave it intact. */
+$recv_ok = true;
+for ($i = 0; $i < 1000; $i++) {
+    $chunk = stream_recv($bad, 64);
+    if ($chunk != "") { $recv_ok = false; break; }
+}
+check("stream_recv temporary release preserves empty result", $recv_ok);
+
 $list = [];
 $ready = stream_ready($list, 0);
 check("stream_ready returns an array", is_array($ready));

@@ -1,0 +1,28 @@
+<?php
+declare(enforce_memory_safety=1);
+
+class RegionDispatchBase {
+    pub function total(array $values): int {
+        return array_sum($values);
+    }
+}
+class RegionDispatchEscape extends RegionDispatchBase {
+    pub array $saved = [];
+    pub function total(array $values): int {
+        $this->saved = $values;
+        return array_sum($values);
+    }
+}
+
+function run_dispatch_escape(RegionDispatchBase $probe): int {
+    $sum = 0;
+    for ($i = 0; $i < 8; $i++) {
+        let $values: array = [1, 1];
+        $sum += $probe->total($values) + $i;
+    }
+    return $sum;
+}
+
+$probe = new RegionDispatchBase();
+if (run_dispatch_escape($probe) != 44) { exit(1); }
+echo "virtual escape keeps owned array\n";

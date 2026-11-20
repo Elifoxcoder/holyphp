@@ -1,0 +1,24 @@
+<?php
+declare(enforce_memory_safety=1);
+
+class RegionEscapeMethod {
+    pub array $saved = [];
+
+    pub function stash(array $values): int {
+        $this->saved = $values;
+        return array_sum($values);
+    }
+
+    pub function run(): int {
+        $sum = 0;
+        for ($i = 0; $i < 8; $i++) {
+            let $values: array = [1, 1];
+            $sum += $this->stash($values) + $i;
+        }
+        return $sum;
+    }
+}
+
+$probe = new RegionEscapeMethod();
+if ($probe->run() != 44 || count($probe->saved) != 2 || array_sum($probe->saved) != 2) { exit(1); }
+echo "escaping method keeps owned array\n";

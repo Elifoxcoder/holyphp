@@ -4314,7 +4314,12 @@ hstr *hp_stream_recv_t(int64_t fd, int64_t want) {
     hp_net_init();
     if ((hp_sock)fd == HP_SOCK_BAD) return hp_str_lit("");
 #ifdef HP_UR_CAN
-    if (hp_uring_active()) return hp_uring_take_recv((hp_sock)fd, (size_t)(want > 0 ? want : 4096));
+    if (hp_uring_active()) {
+        /* The ring owns and reuses its receive buffer. The language result
+         * must own stable bytes after the next receive/re-arm. */
+        return hp_str_copy(hp_uring_take_recv((hp_sock)fd,
+                                               (size_t)(want > 0 ? want : 4096)));
+    }
 #endif
     if (want <= 0) want = 4096;
     if (want > (1 << 20)) want = (1 << 20);
@@ -4514,7 +4519,8 @@ hval hpbi_stream_recv(hval s, hval maxn) {
         g_rbuf_cap = (size_t)want;
     }
 #if defined(__linux__) && defined(SYS_io_uring_setup)
-    if (hp_uring_active()) return hp_of_str(hp_uring_take_recv(fd, (size_t)want));
+    if (hp_uring_active())
+        return hp_of_str(hp_str_copy(hp_uring_take_recv(fd, (size_t)want)));
 #endif
     char *buf = g_rbuf;
     int r = recv(fd, buf, (int)want, 0);

@@ -24,7 +24,7 @@ $r = file_get_contents($path);
 check("append read back", $r == "hello-world");
 
 $path2 = $dir . "/hphp_ownership_parts.txt";
-check("write an array", file_put_contents($path2, ["a", "b"], $append) == true);
+check("write an array", file_put_contents($path2, ["a", "b"]) == true);
 $r = file_get_contents($path2);
 check("array write result", $r == "ab");
 
