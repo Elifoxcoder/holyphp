@@ -1,0 +1,43 @@
+<?php
+/* A file report with a table
+ *
+ * Lists the files of a folder, largest first, as an aligned table.
+ * `cli_table()` pads every column to its widest cell (colors do not
+ * count), so the output stays readable in any terminal.
+ *
+ * try: hphp run 03-file-report.hphp
+ * try: hphp run 03-file-report.hphp ../..
+ */
+import "cli";
+
+$dir = cli_args()->arg(0, ".");
+
+// collect [name, size] for every regular file
+$files = [];
+foreach (scandir($dir) as $name) {
+    $path = $dir . "/" . $name;
+    if ($name != "." && $name != ".." && is_file($path)) {
+        $files[] = [$name, filesize($path)];
+    }
+}
+
+// largest first
+usort($files, function($a, $b) {
+    return $b[1] - $a[1];
+});
+
+// format the rows; big files in yellow
+$rows = [];
+$total = 0;
+foreach ($files as $f) {
+    $size = number_format($f[1]) . " B";
+    if ($f[1] > 100000) {
+        $size = cli_color($size, "yellow");
+    }
+    $rows[] = [$f[0], $size];
+    $total = $total + $f[1];
+}
+
+echo cli_table(["file", "size"], $rows);
+echo "";
+echo count($files) . " files, " . number_format($total) . " bytes";

@@ -1,0 +1,65 @@
+<?php
+/* A key-value store server in one function call
+ *
+ * `async_line_server()` wires up `listen()`, `watch()` and a `LineReader`
+ * for you: your handler gets each complete line and whatever it returns is
+ * sent back as the reply. This one implements a small Redis-like protocol
+ * with SET, GET, DEL, KEYS and QUIT, plus a timer that reports stats.
+ *
+ * try: hphp run 05-kv-store.hphp
+ * try: nc 127.0.0.1 7002      then type: SET color blue / GET color / KEYS
+ */
+
+import "async";
+
+$store = [];
+$commandCount = 0;
+
+// Handle one protocol line; the returned string is the reply.
+$handleLine = function($client, $line, $loop) use (&$store, &$commandCount) {
+    $commandCount = $commandCount + 1;
+    $parts = explode(" ", trim($line));
+    $command = strtoupper($parts[0]);
+
+    if ($command == "SET" && count($parts) >= 3) {
+        $value = implode(" ", array_slice($parts, 2));
+        $store[$parts[1]] = $value;
+        return "OK";
+    }
+    if ($command == "GET" && count($parts) == 2) {
+        if (array_key_exists($parts[1], $store)) {
+            return $store[$parts[1]];
+        }
+        return "(nil)";
+    }
+    if ($command == "DEL" && count($parts) == 2) {
+        unset($store[$parts[1]]);
+        return "OK";
+    }
+    if ($command == "KEYS") {
+        return implode(" ", array_keys($store));
+    }
+    if ($command == "QUIT") {
+        $server = $loop as Loop;
+        $server->unwatch($client);
+        stream_close($client);
+        return null;
+    }
+    return "ERR unknown command: $line";
+};
+
+// Greet every new connection.
+$onConnect = function($client, $peer) {
+    echo "client connected: $peer";
+    stream_send($client, "kv-store ready\r\n");
+};
+
+$loop = async_line_server("tcp://127.0.0.1:7002", $handleLine, $onConnect);
+
+// The returned Loop is an ordinary loop: add a stats timer to it.
+$loop->every(30000, function() use (&$store, &$commandCount) {
+    echo "stats: " . count($store) . " keys, $commandCount commands served";
+});
+
+echo "kv-store listening on 127.0.0.1:7002";
+$loop->run();

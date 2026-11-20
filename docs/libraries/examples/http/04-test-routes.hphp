@@ -1,0 +1,53 @@
+<?php
+/* Testing routes without a server
+ *
+ * Routers do not need sockets: build the app in a function, then call
+ * `dispatch()` with requests made by `http_parse()`. This is how an
+ * app's tests look in a project (put it in tests/ and run `hphp test`).
+ *
+ * try: hphp run 04-test-routes.hphp
+ */
+import "http";
+import "testing";
+
+// the app, as it would live in src/app.hphp
+function make_app(): HttpRouter {
+    $app = new HttpRouter();
+
+    $app->get("/hello/{name}", function(HttpRequest $req): HttpResponse {
+        return http_text("Hello, " . $req->param("name") . "!");
+    });
+
+    $app->post("/sum", function(HttpRequest $req): HttpResponse {
+        $a = intval($req->input("a"));
+        $b = intval($req->input("b"));
+        return http_json(["sum" => $a + $b]);
+    });
+
+    return $app;
+}
+
+// a raw request, as a browser would send it
+function get_request(string $path): HttpRequest {
+    return http_parse("GET " . $path . " HTTP/1.1\r\nHost: test\r\n\r\n");
+}
+
+$app = make_app();
+$t = new Test("routes");
+
+$t->section("GET /hello/{name}");
+$res = $app->dispatch(get_request("/hello/Ada"));
+$t->equal($res->status, 200, "status 200");
+$t->equal($res->body, "Hello, Ada!", "greets by name");
+
+$t->section("POST /sum");
+$form = "a=2&b=40";
+$post = http_parse("POST /sum HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: "
+    . strlen($form) . "\r\n\r\n" . $form);
+$t->equal($app->dispatch($post)->body, "{\"sum\":42}", "adds the fields");
+
+$t->section("errors");
+$t->equal($app->dispatch(get_request("/nope"))->status, 404, "unknown path is 404");
+$t->equal($app->dispatch(get_request("/sum"))->status, 405, "wrong method is 405");
+
+$t->done();

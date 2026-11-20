@@ -137,44 +137,215 @@ watchers to the same <code>Loop</code>.</p>
 </section>
 <section class="tab-panel" data-tab-panel="examples" role="tabpanel" aria-label="Examples">
 <h2 class="tab-title">Examples</h2>
-<h2>JSON API with a form and a 404 page</h2>
-<pre><code class="hphp">import "http";
-
-$todos = ["write docs", "ship it"];
+<p class="example-intro">5 complete programs. Every one is type-checked with the compiler before the site is published; copy one into <code>src/</code> of a project (<code>hphp create</code>) and run it.</p>
+<nav class="example-toc"><a href="#ex-01-hello-server">01 Hello, web</a><a href="#ex-02-json-api">02 A JSON API with route parameters</a><a href="#ex-03-form-and-redirect">03 A guestbook: forms, POST and redirects</a><a href="#ex-04-test-routes">04 Testing routes without a server</a><a href="#ex-05-config-and-logging">05 A configurable service with a health check</a></nav>
+<article class="example" id="ex-01-hello-server">
+<h2><span class="example-num">01</span>Hello, web</h2>
+<p>The smallest useful server: one route that answers with HTML. Start it, open the address in a browser, and stop it with Ctrl-C.</p>
+<div class="example-file">01-hello-server.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;http&quot;;
 
 $app = new HttpRouter();
-$app->get("/todos", function(HttpRequest $req) use ($todos): HttpResponse {
-    return http_json(["todos" => $todos]);
-});
-$app->get("/todos/{n}", function(HttpRequest $req) use ($todos): HttpResponse {
-    $n = intval($req->param("n"));
-    if ($n &lt; 0 || $n &gt;= count($todos)) {
-        return http_json(["error" => "no such todo"], 404);
-    }
-    return http_json(["todo" => $todos[$n]]);
-});
-$app->post("/hello", function(HttpRequest $req): HttpResponse {
-    return http_text("Hello, " . $req->input("name", "stranger") . "!");
-});
-$app->notFound(function(HttpRequest $req): HttpResponse {
-    return http_html("&lt;h1&gt;Nothing at " . $req->path . "&lt;/h1&gt;", 404);
-});
-http_serve($app, "tcp://127.0.0.1:8080");</code></pre>
-<pre><code class="bash">curl http://127.0.0.1:8080/todos/1          # {"todo":"ship it"}
-curl -d "name=Ada" http://127.0.0.1:8080/hello  # Hello, Ada!</code></pre>
 
-<h2>Testing routes with the testing library</h2>
-<pre><code class="hphp">import "testing";
-import "http";
-import "../src/app.hphp";      // defines make_app(): HttpRouter
+// GET / answers with a small HTML page
+$app-&gt;get(&quot;/&quot;, function(HttpRequest $req): HttpResponse {
+    return http_html(&quot;&lt;h1&gt;Hello from HolyPHP&lt;/h1&gt;&quot;);
+});
+
+// serve until the program is stopped
+http_serve($app, &quot;tcp://127.0.0.1:8080&quot;);</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 01-hello-server.hphp
+curl http://127.0.0.1:8080/</code></pre></div>
+</article>
+<article class="example" id="ex-02-json-api">
+<h2><span class="example-num">02</span>A JSON API with route parameters</h2>
+<p>A read-only API over a list of books. <code>{id}</code> in a route becomes <code>$req-&gt;param(&quot;id&quot;)</code>, query strings are read with <code>$req-&gt;input()</code>, and <code>http_json()</code> turns any array into a JSON response.</p>
+<div class="example-file">02-json-api.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;http&quot;;
+
+$books = [
+    [&quot;id&quot; =&gt; 0, &quot;title&quot; =&gt; &quot;The Dispossessed&quot;, &quot;author&quot; =&gt; &quot;Ursula K. Le Guin&quot;],
+    [&quot;id&quot; =&gt; 1, &quot;title&quot; =&gt; &quot;A Wizard of Earthsea&quot;, &quot;author&quot; =&gt; &quot;Ursula K. Le Guin&quot;],
+    [&quot;id&quot; =&gt; 2, &quot;title&quot; =&gt; &quot;Solaris&quot;, &quot;author&quot; =&gt; &quot;Stanislaw Lem&quot;],
+];
+
+$app = new HttpRouter();
+
+// all books, optionally filtered by ?author=
+$app-&gt;get(&quot;/books&quot;, function(HttpRequest $req) use ($books): HttpResponse {
+    $author = $req-&gt;input(&quot;author&quot;);
+    $found = [];
+
+    foreach ($books as $book) {
+        if ($author == &quot;&quot; || $book[&quot;author&quot;] == $author) {
+            $found[] = $book;
+        }
+    }
+
+    return http_json([&quot;count&quot; =&gt; count($found), &quot;books&quot; =&gt; $found]);
+});
+
+// one book by its id, or a JSON error with status 404
+$app-&gt;get(&quot;/books/{id}&quot;, function(HttpRequest $req) use ($books): HttpResponse {
+    $id = intval($req-&gt;param(&quot;id&quot;));
+
+    if ($id &lt; 0 || $id &gt;= count($books)) {
+        return http_json([&quot;error&quot; =&gt; &quot;no book with id &quot; . $id], 404);
+    }
+
+    return http_json($books[$id]);
+});
+
+http_serve($app, &quot;tcp://127.0.0.1:8080&quot;);</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 02-json-api.hphp
+curl http://127.0.0.1:8080/books
+curl &quot;http://127.0.0.1:8080/books?author=Ursula%20K.%20Le%20Guin&quot;
+curl http://127.0.0.1:8080/books/1</code></pre></div>
+</article>
+<article class="example" id="ex-03-form-and-redirect">
+<h2><span class="example-num">03</span>A guestbook: forms, POST and redirects</h2>
+<p>GET / shows the entries and a form. The form posts to /sign, which reads the fields with <code>$req-&gt;input()</code> and redirects back with <code>http_redirect()</code> (the classic POST/redirect/GET pattern). The entries live in memory, shared through a by-reference capture.</p>
+<div class="example-file">03-form-and-redirect.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;http&quot;;
+
+$entries = [];
+
+// escape user input before putting it into HTML
+function html_text(string $s): string {
+    return htmlspecialchars($s);
+}
+
+$app = new HttpRouter();
+
+// the page: the form and every entry so far
+$app-&gt;get(&quot;/&quot;, function(HttpRequest $req) use (&amp;$entries): HttpResponse {
+    $html = &quot;&lt;h1&gt;Guestbook&lt;/h1&gt;&quot;;
+    $html = $html . &quot;&lt;form method='post' action='/sign'&gt;&quot;;
+    $html = $html . &quot;&lt;input name='name' placeholder='Your name'&gt; &quot;;
+    $html = $html . &quot;&lt;input name='message' placeholder='Message'&gt; &quot;;
+    $html = $html . &quot;&lt;button&gt;Sign&lt;/button&gt;&lt;/form&gt;&lt;ul&gt;&quot;;
+
+    foreach ($entries as $entry) {
+        $html = $html . &quot;&lt;li&gt;&lt;b&gt;&quot; . html_text($entry[0]) . &quot;&lt;/b&gt;: &quot; . html_text($entry[1]) . &quot;&lt;/li&gt;&quot;;
+    }
+
+    return http_html($html . &quot;&lt;/ul&gt;&quot;);
+});
+
+// the form target: store the entry, then go back to the page
+$app-&gt;post(&quot;/sign&quot;, function(HttpRequest $req) use (&amp;$entries): HttpResponse {
+    $name = trim($req-&gt;input(&quot;name&quot;));
+    $message = trim($req-&gt;input(&quot;message&quot;));
+
+    if ($name == &quot;&quot; || $message == &quot;&quot;) {
+        return http_text(&quot;name and message are required&quot;, 422);
+    }
+
+    $entries[] = [$name, $message];
+    return http_redirect(&quot;/&quot;, 303);
+});
+
+http_serve($app, &quot;tcp://127.0.0.1:8080&quot;);</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 03-form-and-redirect.hphp
+open http://127.0.0.1:8080/ in a browser</code></pre></div>
+</article>
+<article class="example" id="ex-04-test-routes">
+<h2><span class="example-num">04</span>Testing routes without a server</h2>
+<p>Routers do not need sockets: build the app in a function, then call <code>dispatch()</code> with requests made by <code>http_parse()</code>. This is how an app's tests look in a project (put it in tests/ and run <code>hphp test</code>).</p>
+<div class="example-file">04-test-routes.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;http&quot;;
+import &quot;testing&quot;;
+
+// the app, as it would live in src/app.hphp
+function make_app(): HttpRouter {
+    $app = new HttpRouter();
+
+    $app-&gt;get(&quot;/hello/{name}&quot;, function(HttpRequest $req): HttpResponse {
+        return http_text(&quot;Hello, &quot; . $req-&gt;param(&quot;name&quot;) . &quot;!&quot;);
+    });
+
+    $app-&gt;post(&quot;/sum&quot;, function(HttpRequest $req): HttpResponse {
+        $a = intval($req-&gt;input(&quot;a&quot;));
+        $b = intval($req-&gt;input(&quot;b&quot;));
+        return http_json([&quot;sum&quot; =&gt; $a + $b]);
+    });
+
+    return $app;
+}
+
+// a raw request, as a browser would send it
+function get_request(string $path): HttpRequest {
+    return http_parse(&quot;GET &quot; . $path . &quot; HTTP/1.1\r\nHost: test\r\n\r\n&quot;);
+}
 
 $app = make_app();
-$t = new Test("routes");
-$res = $app->dispatch(http_parse("GET /todos/0 HTTP/1.1\r\n\r\n"));
-$t->equal($res->status, 200, "first todo");
-$t->contains($res->body, "write docs", "body");
-$t->equal($app->dispatch(http_parse("GET /x HTTP/1.1\r\n\r\n"))->status, 404, "unknown path");
-$t->done();</code></pre>
+$t = new Test(&quot;routes&quot;);
+
+$t-&gt;section(&quot;GET /hello/{name}&quot;);
+$res = $app-&gt;dispatch(get_request(&quot;/hello/Ada&quot;));
+$t-&gt;equal($res-&gt;status, 200, &quot;status 200&quot;);
+$t-&gt;equal($res-&gt;body, &quot;Hello, Ada!&quot;, &quot;greets by name&quot;);
+
+$t-&gt;section(&quot;POST /sum&quot;);
+$form = &quot;a=2&amp;b=40&quot;;
+$post = http_parse(&quot;POST /sum HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: &quot;
+    . strlen($form) . &quot;\r\n\r\n&quot; . $form);
+$t-&gt;equal($app-&gt;dispatch($post)-&gt;body, &quot;{\&quot;sum\&quot;:42}&quot;, &quot;adds the fields&quot;);
+
+$t-&gt;section(&quot;errors&quot;);
+$t-&gt;equal($app-&gt;dispatch(get_request(&quot;/nope&quot;))-&gt;status, 404, &quot;unknown path is 404&quot;);
+$t-&gt;equal($app-&gt;dispatch(get_request(&quot;/sum&quot;))-&gt;status, 405, &quot;wrong method is 405&quot;);
+
+$t-&gt;done();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 04-test-routes.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-05-config-and-logging">
+<h2><span class="example-num">05</span>A configurable service with a health check</h2>
+<p>Reads its port and name from the environment with the dotenv library, answers /health for load balancers, and wraps every handler in <code>timed()</code> so each request is logged with its duration.</p>
+<div class="example-file">05-config-and-logging.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;http&quot;;
+import &quot;dotenv&quot;;
+
+env_load();
+$port = env_int(&quot;PORT&quot;, 8080);
+$service = env(&quot;SERVICE_NAME&quot;, &quot;demo-service&quot;);
+$started = time();
+
+// wrap a handler: same response, plus one log line with the duration
+function timed($handler) {
+    return function(HttpRequest $req) use ($handler): HttpResponse {
+        $start = hrtime(true);
+        $res = $handler($req) as HttpResponse;
+        $ms = intval((hrtime(true) - $start) / 1000000);
+        echo $req-&gt;method . &quot; &quot; . $req-&gt;path . &quot; -&gt; &quot; . $res-&gt;status . &quot; (&quot; . $ms . &quot; ms)&quot;;
+        return $res;
+    };
+}
+
+$app = new HttpRouter();
+
+$app-&gt;get(&quot;/health&quot;, timed(function(HttpRequest $req) use ($service, $started): HttpResponse {
+    return http_json([
+        &quot;status&quot; =&gt; &quot;ok&quot;,
+        &quot;service&quot; =&gt; $service,
+        &quot;uptime_seconds&quot; =&gt; time() - $started,
+    ]);
+}));
+
+$app-&gt;get(&quot;/&quot;, timed(function(HttpRequest $req) use ($service): HttpResponse {
+    return http_text($service . &quot; is running. Try /health.&quot;);
+}));
+
+// logging is done by timed(), so the server's own log is off
+http_serve($app, &quot;tcp://127.0.0.1:&quot; . $port, false);</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">PORT=9090 hphp run 05-config-and-logging.hphp
+curl http://127.0.0.1:9090/health</code></pre></div>
+</article>
 </section>
 <aside class="lib-related"><h3>Related libraries</h3><div class="lib-mini-grid"><a href="../async/"><b>async</b><span>One event loop for timers, sockets, TCP servers and HTTP.</span></a><a href="../websocket/"><b>websocket</b><span>WebSocket servers: handshake, frames, chat-style broadcasting.</span></a></div></aside>
 </main>
@@ -190,7 +361,17 @@ $t->done();</code></pre>
   function show(name, push) {
     var found = false;
     panels.forEach(function (p) { var on = p.getAttribute("data-tab-panel") === name; p.hidden = !on; if (on) found = true; });
-    if (!found) return show(panels[0].getAttribute("data-tab-panel"), false);
+    if (!found) {
+      /* an anchor inside a panel (#ex-02-json-api): open that panel, scroll to it */
+      var target = name && document.getElementById(name);
+      var owner = target && target.closest("[data-tab-panel]");
+      if (owner) {
+        show(owner.getAttribute("data-tab-panel"), false);
+        target.scrollIntoView();
+        return;
+      }
+      return show(panels[0].getAttribute("data-tab-panel"), false);
+    }
     buttons.forEach(function (b) { var on = b.getAttribute("data-tab-button") === name; b.setAttribute("aria-selected", on ? "true" : "false"); b.classList.toggle("active", on); });
     if (push) history.replaceState(null, "", "#" + name);
     var side = document.querySelector(".doc-side");

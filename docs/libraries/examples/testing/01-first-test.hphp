@@ -1,0 +1,30 @@
+<?php
+/* Your first test file
+ *
+ * A test is a normal program: make a `Test`, check results with
+ * `equal()`, and finish with `done()`, which exits with 1 when a check
+ * failed. In a project this file lives in tests/ and `hphp test` runs it.
+ *
+ * try: hphp run 01-first-test.hphp
+ */
+import "testing";
+
+// the code under test (normally imported from src/)
+function initials(string $name): string {
+    $out = "";
+    foreach (explode(" ", trim($name)) as $part) {
+        if ($part != "") {
+            $out = $out . strtoupper(substr($part, 0, 1));
+        }
+    }
+    return $out;
+}
+
+$t = new Test("initials");
+
+$t->equal(initials("Ada Lovelace"), "AL", "two names");
+$t->equal(initials("grace brewster hopper"), "GBH", "lowercase input");
+$t->equal(initials("  Linus   Torvalds "), "LT", "extra spaces");
+$t->equal(initials(""), "", "empty name");
+
+$t->done();

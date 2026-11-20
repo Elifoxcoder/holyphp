@@ -1,0 +1,47 @@
+<?php
+/* Testing a class: state, errors and sections
+ *
+ * Tests a small bank account. `section()` groups the checks in the
+ * output, `throws()` checks that invalid operations are rejected, and
+ * `same()` also compares the type.
+ *
+ * try: hphp run 02-testing-a-class.hphp
+ */
+import "testing";
+
+class Account {
+    pub int $balance = 0;
+
+    pub function deposit(int $amount): void {
+        if ($amount <= 0) {
+            throw "deposit must be positive";
+        }
+        $this->balance = $this->balance + $amount;
+    }
+
+    pub function withdraw(int $amount): void {
+        if ($amount > $this->balance) {
+            throw "insufficient funds";
+        }
+        $this->balance = $this->balance - $amount;
+    }
+}
+
+$t = new Test("account");
+
+$t->section("a new account");
+$fresh = new Account();
+$t->same($fresh->balance, 0, "starts empty");
+
+$t->section("deposits and withdrawals");
+$acc = new Account();
+$acc->deposit(100);
+$acc->withdraw(30);
+$t->same($acc->balance, 70, "100 in, 30 out");
+
+$t->section("invalid operations");
+$t->throws(function() use ($acc) { $acc->withdraw(1000); }, "cannot overdraw");
+$t->throws(function() use ($acc) { $acc->deposit(-5); }, "cannot deposit a negative amount");
+$t->same($acc->balance, 70, "a rejected operation changes nothing");
+
+$t->done();

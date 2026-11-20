@@ -1,0 +1,45 @@
+<?php
+/* A configurable service with a health check
+ *
+ * Reads its port and name from the environment with the dotenv library,
+ * answers /health for load balancers, and wraps every handler in
+ * `timed()` so each request is logged with its duration.
+ *
+ * try: PORT=9090 hphp run 05-config-and-logging.hphp
+ * try: curl http://127.0.0.1:9090/health
+ */
+import "http";
+import "dotenv";
+
+env_load();
+$port = env_int("PORT", 8080);
+$service = env("SERVICE_NAME", "demo-service");
+$started = time();
+
+// wrap a handler: same response, plus one log line with the duration
+function timed($handler) {
+    return function(HttpRequest $req) use ($handler): HttpResponse {
+        $start = hrtime(true);
+        $res = $handler($req) as HttpResponse;
+        $ms = intval((hrtime(true) - $start) / 1000000);
+        echo $req->method . " " . $req->path . " -> " . $res->status . " (" . $ms . " ms)";
+        return $res;
+    };
+}
+
+$app = new HttpRouter();
+
+$app->get("/health", timed(function(HttpRequest $req) use ($service, $started): HttpResponse {
+    return http_json([
+        "status" => "ok",
+        "service" => $service,
+        "uptime_seconds" => time() - $started,
+    ]);
+}));
+
+$app->get("/", timed(function(HttpRequest $req) use ($service): HttpResponse {
+    return http_text($service . " is running. Try /health.");
+}));
+
+// logging is done by timed(), so the server's own log is off
+http_serve($app, "tcp://127.0.0.1:" . $port, false);

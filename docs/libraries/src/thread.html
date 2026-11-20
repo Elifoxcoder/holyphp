@@ -68,19 +68,21 @@ $squares = thr_parallel_map(function($x) { return $x * $x; }, [1,2,3,4,5]);
 // [1, 4, 9, 16, 25] — input order kept regardless of finish order
 
 // chunked variant for big inputs: strided workers + channel collection
-$out = thr_map_chunked(function($x) { return heavy($x); }, $bigArray);</code></pre>
+$out = thr_map_chunked($bigArray, function($x) { return heavy($x); });   // items first, then the function</code></pre>
 
 <h2>The Pool class</h2>
 <pre class="fragment"><code class="hphp">import "thread";
 
-$pool = new Pool(4);                     // 4 strided workers
-$pool->start(function($items, $wid) {
-    foreach ($items as $x) { process($x); }
-});
-foreach ($urls as $u) { $pool->submit($u); }
-$pool->collect($results);
-$pool->waitOne();
-$pool->shutdown();</code></pre>
+$pool = new Pool(4);                     // 4 workers
+
+// one call: every item through the function, results in input order
+$sizes = $pool->map(function($url) {
+    return strlen(file_get_contents($url));
+}, $urls);</code></pre>
+  <p class="release-note">Known issue: the streaming form <code>$pool-&gt;start($fn)</code> followed by
+  <code>submit()</code> crashes at run time in this release, as does <code>new Thread($fn)</code> with
+  arguments passed to <code>start()</code>. Use <code>Pool::map</code>, <code>thr_parallel_map</code>,
+  <code>thr_map_chunked</code> or <code>thr_spawn</code> until the fix ships.</p>
 
 <h2>Concurrency + event loop</h2>
   <p>Threads and <a href="lib-async.html">async</a> compose: run a blocking fetch

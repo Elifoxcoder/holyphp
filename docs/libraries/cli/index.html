@@ -113,31 +113,131 @@ program name); <code>cli_parse($list)</code> parses any list, which is handy in 
 </section>
 <section class="tab-panel" data-tab-panel="examples" role="tabpanel" aria-label="Examples">
 <h2 class="tab-title">Examples</h2>
-<h2>An interactive setup</h2>
-<pre><code class="hphp">import "cli";
+<p class="example-intro">4 complete programs. Every one is type-checked with the compiler before the site is published; copy one into <code>src/</code> of a project (<code>hphp create</code>) and run it.</p>
+<nav class="example-toc"><a href="#ex-01-arguments">01 A command with options</a><a href="#ex-02-interactive-setup">02 An interactive setup</a><a href="#ex-03-file-report">03 A file report with a table</a><a href="#ex-04-progress">04 A progress bar</a></nav>
+<article class="example" id="ex-01-arguments">
+<h2><span class="example-num">01</span>A command with options</h2>
+<p><code>cli_args()</code> reads the program's arguments: <code>--name=value</code> options, <code>--flag</code> switches, <code>-abc</code> short flags and plain positional arguments. This tool greets everyone named on the command line.</p>
+<div class="example-file">01-arguments.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;cli&quot;;
 
-$name = cli_ask("Project name", "demo");
-$kind = cli_choose("Template", ["console", "web", "library"], 0);
-if (!cli_confirm("Create " . $name . "?", true)) {
-    echo cli_color("cancelled", "yellow");
+$args = cli_args();
+
+// usage help when nothing was given
+if ($args-&gt;count() == 0 || $args-&gt;has(&quot;help&quot;)) {
+    echo &quot;usage: greet [--greeting=Hello] [--shout] &lt;name&gt;...&quot;;
     exit(1);
 }
-for ($i = 1; $i &lt;= 20; $i++) {
-    echo cli_progress($i, 20);
-    usleep(50000);
-}
-echo cli_color("created " . $name, "green");</code></pre>
 
-<h2>A file listing</h2>
-<pre><code class="hphp">import "cli";
+$greeting = $args-&gt;get(&quot;greeting&quot;, &quot;Hello&quot;);
+$shout = $args-&gt;has(&quot;shout&quot;);
 
-$rows = [];
-foreach (scandir(".") as $f) {
-    if ($f != "." &amp;&amp; $f != "..") {
-        $rows[] = [$f, strval(filesize($f))];
+// one line per positional argument
+for ($i = 0; $i &lt; $args-&gt;count(); $i++) {
+    $line = $greeting . &quot;, &quot; . $args-&gt;arg($i) . &quot;!&quot;;
+    if ($shout) {
+        $line = strtoupper($line);
+    }
+    echo $line;
+}</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 01-arguments.hphp Ada Grace
+hphp run 01-arguments.hphp --greeting=Hi --shout Ada</code></pre></div>
+</article>
+<article class="example" id="ex-02-interactive-setup">
+<h2><span class="example-num">02</span>An interactive setup</h2>
+<p>Asks a few questions like an installer would: free text with a default (<code>cli_ask</code>), a numbered menu (<code>cli_choose</code>) and a yes/no question (<code>cli_confirm</code>). Enter always keeps the value in brackets.</p>
+<div class="example-file">02-interactive-setup.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;cli&quot;;
+
+echo cli_color(&quot;New project&quot;, &quot;bold&quot;);
+echo &quot;&quot;;
+
+// questions
+$name = cli_ask(&quot;Project name&quot;, &quot;my_app&quot;);
+$kinds = [&quot;console app&quot;, &quot;web server&quot;, &quot;library&quot;];
+$kind = cli_choose(&quot;What do you want to build?&quot;, $kinds, 0);
+$tests = cli_confirm(&quot;Add tests?&quot;, true);
+
+// summary
+echo &quot;&quot;;
+echo cli_table([&quot;setting&quot;, &quot;value&quot;], [
+    [&quot;name&quot;, $name],
+    [&quot;kind&quot;, $kinds[$kind]],
+    [&quot;tests&quot;, $tests ? &quot;yes&quot; : &quot;no&quot;],
+]);
+echo &quot;&quot;;
+
+if (cli_confirm(&quot;Create it?&quot;, true)) {
+    echo cli_color(&quot;created &quot; . $name, &quot;green&quot;);
+} else {
+    echo cli_color(&quot;cancelled&quot;, &quot;yellow&quot;);
+}</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 02-interactive-setup.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-03-file-report">
+<h2><span class="example-num">03</span>A file report with a table</h2>
+<p>Lists the files of a folder, largest first, as an aligned table. <code>cli_table()</code> pads every column to its widest cell (colors do not count), so the output stays readable in any terminal.</p>
+<div class="example-file">03-file-report.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;cli&quot;;
+
+$dir = cli_args()-&gt;arg(0, &quot;.&quot;);
+
+// collect [name, size] for every regular file
+$files = [];
+foreach (scandir($dir) as $name) {
+    $path = $dir . &quot;/&quot; . $name;
+    if ($name != &quot;.&quot; &amp;&amp; $name != &quot;..&quot; &amp;&amp; is_file($path)) {
+        $files[] = [$name, filesize($path)];
     }
 }
-echo cli_table(["name", "bytes"], $rows);</code></pre>
+
+// largest first
+usort($files, function($a, $b) {
+    return $b[1] - $a[1];
+});
+
+// format the rows; big files in yellow
+$rows = [];
+$total = 0;
+foreach ($files as $f) {
+    $size = number_format($f[1]) . &quot; B&quot;;
+    if ($f[1] &gt; 100000) {
+        $size = cli_color($size, &quot;yellow&quot;);
+    }
+    $rows[] = [$f[0], $size];
+    $total = $total + $f[1];
+}
+
+echo cli_table([&quot;file&quot;, &quot;size&quot;], $rows);
+echo &quot;&quot;;
+echo count($files) . &quot; files, &quot; . number_format($total) . &quot; bytes&quot;;</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 03-file-report.hphp
+hphp run 03-file-report.hphp ../..</code></pre></div>
+</article>
+<article class="example" id="ex-04-progress">
+<h2><span class="example-num">04</span>A progress bar</h2>
+<p><code>cli_progress()</code> returns the bar as a string; print it with a carriage return (<code>\r</code>) through <code>printf</code> so it redraws in place instead of adding a line each step.</p>
+<div class="example-file">04-progress.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;cli&quot;;
+
+$steps = 40;
+
+for ($i = 1; $i &lt;= $steps; $i++) {
+    // pretend to work
+    usleep(50000);
+
+    // redraw the same line
+    printf(&quot;\r%s  step %d/%d&quot;, cli_progress($i, $steps), $i, $steps);
+}
+
+echo &quot;&quot;;
+echo cli_color(&quot;done&quot;, &quot;green&quot;);</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 04-progress.hphp</code></pre></div>
+</article>
 </section>
 <aside class="lib-related"><h3>Related libraries</h3><div class="lib-mini-grid"><a href="../testing/"><b>testing</b><span>Assertions for hphp test with readable failure messages.</span></a><a href="../dotenv/"><b>dotenv</b><span>Configuration from .env files and the environment.</span></a></div></aside>
 </main>
@@ -153,7 +253,17 @@ echo cli_table(["name", "bytes"], $rows);</code></pre>
   function show(name, push) {
     var found = false;
     panels.forEach(function (p) { var on = p.getAttribute("data-tab-panel") === name; p.hidden = !on; if (on) found = true; });
-    if (!found) return show(panels[0].getAttribute("data-tab-panel"), false);
+    if (!found) {
+      /* an anchor inside a panel (#ex-02-json-api): open that panel, scroll to it */
+      var target = name && document.getElementById(name);
+      var owner = target && target.closest("[data-tab-panel]");
+      if (owner) {
+        show(owner.getAttribute("data-tab-panel"), false);
+        target.scrollIntoView();
+        return;
+      }
+      return show(panels[0].getAttribute("data-tab-panel"), false);
+    }
     buttons.forEach(function (b) { var on = b.getAttribute("data-tab-button") === name; b.setAttribute("aria-selected", on ? "true" : "false"); b.classList.toggle("active", on); });
     if (push) history.replaceState(null, "", "#" + name);
     var side = document.querySelector(".doc-side");

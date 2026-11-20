@@ -156,35 +156,242 @@ ws.send("hello");</code></pre>
 </section>
 <section class="tab-panel" data-tab-panel="examples" role="tabpanel" aria-label="Examples">
 <h2 class="tab-title">Examples</h2>
-<h2>Event-driven chat server (full example)</h2>
-<pre><code class="hphp">import "websocket";
+<p class="example-intro">5 complete programs. Every one is type-checked with the compiler before the site is published; copy one into <code>src/</code> of a project (<code>hphp create</code>) and run it.</p>
+<nav class="example-toc"><a href="#ex-01-echo-server">01 WebSocket echo server</a><a href="#ex-02-chat-room">02 Chat room with nicknames</a><a href="#ex-03-live-ticker">03 Pushing live updates from your own loop</a><a href="#ex-04-live-poll">04 A live poll with JSON messages</a><a href="#ex-05-wire-format">05 Under the hood: handshake and frames</a></nav>
+<article class="example" id="ex-01-echo-server">
+<h2><span class="example-num">01</span>WebSocket echo server</h2>
+<p>The &quot;hello world&quot; of WebSockets: every text message a browser sends is sent straight back. <code>WebSocketServer</code> does the HTTP upgrade handshake and the framing; you only assign closures to <code>onOpen</code>, <code>onMessage</code> and <code>onClose</code>, and call <code>run()</code>.</p>
+<p>To test it, open a browser console and run <code>ws = new WebSocket(&quot;ws://127.0.0.1:9001&quot;)</code>, then <code>ws.send(&quot;hello&quot;)</code>; <code>ws.onmessage = (e) =&gt; console.log(e.data)</code> prints the replies.</p>
+<div class="example-file">01-echo-server.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;websocket&quot;;
 
-$server = new WebSocketServer("tcp://127.0.0.1:9500");
-$server-&gt;verbose = true;
-if (!$server-&gt;listen()) { exit(1); }
+$server = new WebSocketServer(&quot;tcp://127.0.0.1:9001&quot;);
+
+// A browser finished the handshake.
+$server-&gt;onOpen = function(int $client) use ($server): void {
+    echo &quot;client $client connected from &quot; . $server-&gt;peerOf($client);
+    $server-&gt;send($client, &quot;welcome, you are client $client&quot;);
+};
+
+// A text message arrived: send it back, upper-cased so you can tell.
+$server-&gt;onMessage = function(int $client, string $message) use ($server): void {
+    echo &quot;client $client says: $message&quot;;
+    $server-&gt;send($client, &quot;echo: &quot; . strtoupper($message));
+};
+
+// The browser tab closed or navigated away.
+$server-&gt;onClose = function(int $client, int $code): void {
+    echo &quot;client $client left (close code $code)&quot;;
+};
+
+echo &quot;echo server on ws://127.0.0.1:9001&quot;;
+$server-&gt;run();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 01-echo-server.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-02-chat-room">
+<h2><span class="example-num">02</span>Chat room with nicknames</h2>
+<p>A complete chat backend. <code>broadcast()</code> sends a message to every open client, and its second argument skips one client - handy for &quot;everyone but the sender&quot;. Users pick a name with <code>/nick NAME</code>, list the room with <code>/who</code>, and everyone hears about joins and departures.</p>
+<div class="example-file">02-chat-room.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;websocket&quot;;
+
+$server = new WebSocketServer(&quot;tcp://127.0.0.1:9002&quot;);
+$names = [];   // client id =&gt; nickname
+
+// Someone joined: give them a default name and tell the others.
+$server-&gt;onOpen = function(int $client) use ($server, &amp;$names): void {
+    $names[$client] = &quot;guest$client&quot;;
+    $server-&gt;send($client, &quot;Welcome! Type /nick NAME to choose a name, /who to list users.&quot;);
+    $server-&gt;broadcast(&quot;* guest$client joined&quot;, $client);
+};
+
+// A message: either a command or a line of chat.
+$server-&gt;onMessage = function(int $client, string $message) use ($server, &amp;$names): void {
+    $text = trim($message);
+    if ($text == &quot;&quot;) {
+        return;
+    }
+
+    if (str_starts_with($text, &quot;/nick &quot;)) {
+        $old = $names[$client];
+        $names[$client] = trim(substr($text, 6));
+        $server-&gt;broadcast(&quot;* $old is now &quot; . $names[$client]);
+        return;
+    }
+
+    if ($text == &quot;/who&quot;) {
+        $count = $server-&gt;clientCount();
+        $server-&gt;send($client, &quot;$count online: &quot; . implode(&quot;, &quot;, $names));
+        return;
+    }
+
+    // Plain chat: everyone else sees it with the sender's name.
+    $server-&gt;broadcast($names[$client] . &quot;: &quot; . $text, $client);
+};
+
+// Someone left: forget their name and tell the room. (A connection
+// that never finished the handshake has no name and is skipped.)
+$server-&gt;onClose = function(int $client, int $code) use ($server, &amp;$names): void {
+    if (!array_key_exists($client, $names)) {
+        return;
+    }
+    $name = $names[$client];
+    unset($names[$client]);
+    $server-&gt;broadcast(&quot;* $name left&quot;);
+};
+
+if (!$server-&gt;listen()) {
+    echo &quot;could not listen on port 9002&quot;;
+    exit(1);
+}
+echo &quot;chat room on ws://127.0.0.1:9002&quot;;
+$server-&gt;run();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 02-chat-room.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-03-live-ticker">
+<h2><span class="example-num">03</span>Pushing live updates from your own loop</h2>
+<p>Servers do not have to wait for clients to speak. Instead of the blocking <code>run()</code>, this program drives the server with <code>tick()</code> from its own loop, and once a second pushes a fake stock price to every open client. Every ten seconds it also <code>ping()</code>s each client so dead connections are noticed, and prints <code>clientCount()</code>.</p>
+<div class="example-file">03-live-ticker.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;websocket&quot;;
+
+$server = new WebSocketServer(&quot;tcp://127.0.0.1:9003&quot;);
+if (!$server-&gt;listen()) {
+    echo &quot;could not listen on port 9003&quot;;
+    exit(1);
+}
 
 $server-&gt;onOpen = function(int $client) use ($server): void {
-    $server-&gt;broadcast("user " . $client . " joined the chat");
+    $server-&gt;send($client, &quot;subscribed to HPHP quotes&quot;);
 };
 
-$server-&gt;onMessage = function(int $client, string $msg) use ($server): void {
-    $server-&gt;broadcast("user " . $client . ": " . $msg);
-};
+$price = 100.0;
+$lastQuote = 0;
+$lastPing = 0;
+echo &quot;ticker on ws://127.0.0.1:9003&quot;;
 
-$server-&gt;onClose = function(int $client, int $code) use ($server): void {
-    $server-&gt;broadcast("user " . $client . " left the chat");
-};
+while (true) {
+    // Accept new clients and read incoming frames (waits at most 50 ms).
+    $server-&gt;tick(50);
+    $now = time();
 
-while ($server-&gt;tick()) {
-    usleep(10000);    // 10 ms loop; the library multiplexes I/O
+    // Once a second: move the price a little and push it to everyone.
+    if ($now != $lastQuote) {
+        $lastQuote = $now;
+        $price = $price + (rand(-100, 100) / 100);
+        $quote = &quot;HPHP &quot; . number_format($price, 2) . &quot; at &quot; . date(&quot;H:i:s&quot;);
+        $server-&gt;broadcast($quote);
+    }
+
+    // Every ten seconds: ping each client and report the audience.
+    if ($now - $lastPing &gt;= 10) {
+        $lastPing = $now;
+        foreach ($server-&gt;clients() as $client) {
+            $server-&gt;ping($client);
+        }
+        echo &quot;listeners: &quot; . $server-&gt;clientCount();
+    }
 }</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 03-live-ticker.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-04-live-poll">
+<h2><span class="example-num">04</span>A live poll with JSON messages</h2>
+<p>Real apps rarely send bare strings: here every message is JSON. A client votes with <code>{&quot;vote&quot;: &quot;tabs&quot;}</code>, may change its mind, and every connected client receives the new tally as <code>{&quot;type&quot;: &quot;tally&quot;, ...}</code> the moment it changes. Bad input gets an <code>{&quot;type&quot;: &quot;error&quot;}</code> reply only to the sender.</p>
+<div class="example-file">04-live-poll.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;websocket&quot;;
 
-<h2>Browser-side starter</h2>
-  <p>A complete HTML client ships at <code>examples/ws_chat.html</code> — dark themed chat UI,
-  auto-reconnect, Enter to send. Open it directly from disk; no web server needed.</p>
-<pre><code class="hphp">hphp build examples/ws_chat.hphp -o wschat.exe
-./wschat.exe
-# then open examples/ws_chat.html in Chrome</code></pre>
+$options = [&quot;tabs&quot;, &quot;spaces&quot;, &quot;both&quot;];
+$votes = [];   // client id =&gt; chosen option
+
+// Count the votes per option and build the message everyone receives.
+function tally_message(array $options, array $votes): string {
+    $counts = [];
+    foreach ($options as $option) {
+        $counts[$option] = 0;
+    }
+    foreach ($votes as $choice) {
+        $counts[$choice] = $counts[$choice] + 1;
+    }
+    return json_encode([&quot;type&quot; =&gt; &quot;tally&quot;, &quot;counts&quot; =&gt; $counts, &quot;voters&quot; =&gt; count($votes)]);
+}
+
+$server = new WebSocketServer(&quot;tcp://127.0.0.1:9004&quot;);
+
+// New client: show the question and the current standings.
+$server-&gt;onOpen = function(int $client) use ($server, $options, &amp;$votes): void {
+    $question = [&quot;type&quot; =&gt; &quot;question&quot;, &quot;text&quot; =&gt; &quot;Tabs or spaces?&quot;, &quot;options&quot; =&gt; $options];
+    $server-&gt;send($client, json_encode($question));
+    $server-&gt;send($client, tally_message($options, $votes));
+};
+
+// A vote: validate it, record it, broadcast the new tally.
+$server-&gt;onMessage = function(int $client, string $message) use ($server, $options, &amp;$votes): void {
+    $data = json_decode($message);
+    if (!is_array($data) || !array_key_exists(&quot;vote&quot;, $data)) {
+        $server-&gt;send($client, json_encode([&quot;type&quot; =&gt; &quot;error&quot;, &quot;text&quot; =&gt; &quot;send {\&quot;vote\&quot;: \&quot;...\&quot;}&quot;]));
+        return;
+    }
+    $choice = $data[&quot;vote&quot;];
+    if (!in_array($choice, $options)) {
+        $server-&gt;send($client, json_encode([&quot;type&quot; =&gt; &quot;error&quot;, &quot;text&quot; =&gt; &quot;unknown option&quot;]));
+        return;
+    }
+    $votes[$client] = $choice;
+    $server-&gt;broadcast(tally_message($options, $votes));
+};
+
+// A voter left: their vote leaves with them.
+$server-&gt;onClose = function(int $client, int $code) use ($server, $options, &amp;$votes): void {
+    unset($votes[$client]);
+    $server-&gt;broadcast(tally_message($options, $votes));
+};
+
+echo &quot;poll running on ws://127.0.0.1:9004&quot;;
+$server-&gt;run();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 04-live-poll.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-05-wire-format">
+<h2><span class="example-num">05</span>Under the hood: handshake and frames</h2>
+<p>The server is built from small exported functions you can use on their own - for tests, a custom server, or just to learn the protocol. This program needs no network: it checks the handshake against the example in RFC 6455, encodes a frame with <code>ws_frame()</code>, and decodes a masked client frame with <code>ws_decode()</code>, including a frame that is not complete yet.</p>
+<div class="example-file">05-wire-format.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;websocket&quot;;
+
+// 1. The handshake: pull the key out of a request, compute the answer.
+$request = &quot;GET /chat HTTP/1.1\r\n&quot;
+    . &quot;Host: server.example.com\r\n&quot;
+    . &quot;Upgrade: websocket\r\n&quot;
+    . &quot;Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n&quot;
+    . &quot;\r\n&quot;;
+$key = ws_request_key($request);
+echo &quot;client key:    $key&quot;;
+echo &quot;accept key:    &quot; . ws_accept_key($key);
+echo &quot;RFC expects:   s3pPLMBiTxaQ9kYGzzhZRbK+xOo=&quot;;
+
+// 2. A server frame: FIN + text opcode, length, then the payload.
+$frame = ws_frame(&quot;Hello&quot;);
+echo &quot;server frame:  &quot; . bin2hex($frame);
+
+// 3. A client frame (from RFC 6455 section 5.7): masked &quot;Hello&quot;.
+$clientFrame = hex2bin(&quot;818537fa213d7f9f4d5158&quot;);
+$decoded = ws_decode($clientFrame);
+echo &quot;decoded:       opcode &quot; . $decoded[&quot;opcode&quot;]
+    . &quot;, payload '&quot; . $decoded[&quot;payload&quot;] . &quot;'&quot;
+    . &quot;, &quot; . $decoded[&quot;consumed&quot;] . &quot; bytes used&quot;;
+
+// 4. Only half a frame has arrived: ws_decode asks for more bytes.
+$half = substr($clientFrame, 0, 6);
+if (ws_decode($half) == null) {
+    echo &quot;half a frame:  incomplete, wait for more data&quot;;
+}
+
+// 5. Close frames carry a 2-byte status code (1000 = normal closure).
+$close = ws_frame(ws_close_payload(1000), 8);
+echo &quot;close frame:   &quot; . bin2hex($close);</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 05-wire-format.hphp</code></pre></div>
+</article>
 </section>
 <aside class="lib-related"><h3>Related libraries</h3><div class="lib-mini-grid"><a href="../http/"><b>http</b><span>Router, requests and responses, and a small HTTP server.</span></a><a href="../async/"><b>async</b><span>One event loop for timers, sockets, TCP servers and HTTP.</span></a></div></aside>
 </main>
@@ -200,7 +407,17 @@ while ($server-&gt;tick()) {
   function show(name, push) {
     var found = false;
     panels.forEach(function (p) { var on = p.getAttribute("data-tab-panel") === name; p.hidden = !on; if (on) found = true; });
-    if (!found) return show(panels[0].getAttribute("data-tab-panel"), false);
+    if (!found) {
+      /* an anchor inside a panel (#ex-02-json-api): open that panel, scroll to it */
+      var target = name && document.getElementById(name);
+      var owner = target && target.closest("[data-tab-panel]");
+      if (owner) {
+        show(owner.getAttribute("data-tab-panel"), false);
+        target.scrollIntoView();
+        return;
+      }
+      return show(panels[0].getAttribute("data-tab-panel"), false);
+    }
     buttons.forEach(function (b) { var on = b.getAttribute("data-tab-button") === name; b.setAttribute("aria-selected", on ? "true" : "false"); b.classList.toggle("active", on); });
     if (push) history.replaceState(null, "", "#" + name);
     var side = document.querySelector(".doc-side");

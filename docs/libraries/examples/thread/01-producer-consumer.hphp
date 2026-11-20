@@ -1,0 +1,45 @@
+<?php
+/* Producer and consumer over a channel
+ *
+ * Two threads, one channel between them. The producer thread sends work
+ * items and closes the channel when it is done; the main thread receives
+ * until `chan_recv()` returns `false`, which means "closed and fully
+ * drained". This is the Go pattern, and the safest way to share data:
+ * nothing is shared, values are copied through the channel.
+ *
+ * A thread closure may only capture plain values, so threads talk through
+ * the channel id returned by `chan_new()`.
+ *
+ * try: hphp run 01-producer-consumer.hphp
+ */
+
+import "thread";
+
+// A buffered channel: the producer can run up to 3 orders ahead.
+$orders = chan_new(3);
+
+// The producer runs on its own OS thread.
+$producer = thr_spawn(function() use ($orders) {
+    $menu = ["espresso", "latte", "cappuccino", "flat white", "mocha"];
+    foreach ($menu as $index => $drink) {
+        thr_sleep_ms(100);
+        chan_send($orders, ["number" => $index + 1, "drink" => $drink]);
+        echo "  [producer] queued order " . ($index + 1);
+    }
+    chan_close($orders);
+});
+
+// The consumer (main thread) handles orders until the channel is drained.
+$served = 0;
+while (true) {
+    $order = chan_recv($orders);
+    if ($order === false) {
+        break;
+    }
+    thr_sleep_ms(150);
+    echo "[barista] order " . $order["number"] . ": one " . $order["drink"];
+    $served = $served + 1;
+}
+
+thr_join($producer);
+echo "all done - served $served orders";

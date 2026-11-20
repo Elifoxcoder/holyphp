@@ -1,0 +1,61 @@
+<?php
+/* A live poll with JSON messages
+ *
+ * Real apps rarely send bare strings: here every message is JSON. A client
+ * votes with `{"vote": "tabs"}`, may change its mind, and every connected
+ * client receives the new tally as `{"type": "tally", ...}` the moment it
+ * changes. Bad input gets an `{"type": "error"}` reply only to the sender.
+ *
+ * try: hphp run 04-live-poll.hphp
+ */
+
+import "websocket";
+
+$options = ["tabs", "spaces", "both"];
+$votes = [];   // client id => chosen option
+
+// Count the votes per option and build the message everyone receives.
+function tally_message(array $options, array $votes): string {
+    $counts = [];
+    foreach ($options as $option) {
+        $counts[$option] = 0;
+    }
+    foreach ($votes as $choice) {
+        $counts[$choice] = $counts[$choice] + 1;
+    }
+    return json_encode(["type" => "tally", "counts" => $counts, "voters" => count($votes)]);
+}
+
+$server = new WebSocketServer("tcp://127.0.0.1:9004");
+
+// New client: show the question and the current standings.
+$server->onOpen = function(int $client) use ($server, $options, &$votes): void {
+    $question = ["type" => "question", "text" => "Tabs or spaces?", "options" => $options];
+    $server->send($client, json_encode($question));
+    $server->send($client, tally_message($options, $votes));
+};
+
+// A vote: validate it, record it, broadcast the new tally.
+$server->onMessage = function(int $client, string $message) use ($server, $options, &$votes): void {
+    $data = json_decode($message);
+    if (!is_array($data) || !array_key_exists("vote", $data)) {
+        $server->send($client, json_encode(["type" => "error", "text" => "send {\"vote\": \"...\"}"]));
+        return;
+    }
+    $choice = $data["vote"];
+    if (!in_array($choice, $options)) {
+        $server->send($client, json_encode(["type" => "error", "text" => "unknown option"]));
+        return;
+    }
+    $votes[$client] = $choice;
+    $server->broadcast(tally_message($options, $votes));
+};
+
+// A voter left: their vote leaves with them.
+$server->onClose = function(int $client, int $code) use ($server, $options, &$votes): void {
+    unset($votes[$client]);
+    $server->broadcast(tally_message($options, $votes));
+};
+
+echo "poll running on ws://127.0.0.1:9004";
+$server->run();

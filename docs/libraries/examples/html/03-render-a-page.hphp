@@ -1,0 +1,55 @@
+<?php
+/* Render a styled page in a window
+ *
+ * The window holds a single canvas control (`ui_add` type 18), and an
+ * `HtmlView` paints the whole page into it: backgrounds, borders, rounded
+ * corners, flex rows and wrapped text all come from the stylesheet. This
+ * is a small weather dashboard; change the CSS and run it again to
+ * restyle it.
+ *
+ * try: hphp run 03-render-a-page.hphp
+ */
+
+import "html";
+
+$width = 560;
+$height = 340;
+
+$html = "<div class='app'>
+  <div class='title'>Weather in Zurich</div>
+  <div class='now'>
+    <div class='temp'>18 C</div>
+    <div class='desc'>Partly cloudy. A light breeze from the west, dry until the evening.</div>
+  </div>
+  <div class='days'>
+    <div class='day'><div class='name'>Tue</div><div class='hi'>21 C</div></div>
+    <div class='day'><div class='name'>Wed</div><div class='hi'>17 C</div></div>
+    <div class='day today'><div class='name'>Thu</div><div class='hi'>23 C</div></div>
+    <div class='day'><div class='name'>Fri</div><div class='hi'>19 C</div></div>
+  </div>
+</div>";
+
+$css = "
+.app   { padding: 20px; }
+.title { font-size: 20px; font-weight: bold; color: #ffffff; height: 32px; }
+.now   { display: flex; gap: 16px; align-items: center; margin-bottom: 16px; }
+.temp  { font-size: 48px; color: #4ec9b0; width: 110px; flex: none; }
+.desc  { flex: 1; color: #b8b8b8; }
+.days  { display: flex; gap: 10px; }
+.day   { flex: 1; padding: 10px; border-radius: 8px;
+         background-color: #252526; border: 1px solid #3c3c3c; }
+.day.today { border: 1px solid #007acc; }
+.name  { color: #8b8b8b; font-size: 11px; height: 18px; }
+.hi    { color: #ffffff; font-size: 18px; height: 26px; }
+";
+
+// A window with one canvas filling it.
+$window = ui_window("HolyHTML weather", -1, -1, $width, $height);
+$canvas = ui_add($window, 18, "", 0, 0, $width, $height);
+
+// Parse, style, lay out and paint the page onto the canvas.
+$view = new HtmlView($canvas, $width, $height, html_theme_dark());
+$view->load($html, $css);
+$view->paint();
+
+ui_run_main();

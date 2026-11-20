@@ -1,0 +1,46 @@
+<?php
+/* Under the hood: handshake and frames
+ *
+ * The server is built from small exported functions you can use on their
+ * own - for tests, a custom server, or just to learn the protocol. This
+ * program needs no network: it checks the handshake against the example
+ * in RFC 6455, encodes a frame with `ws_frame()`, and decodes a masked
+ * client frame with `ws_decode()`, including a frame that is not complete
+ * yet.
+ *
+ * try: hphp run 05-wire-format.hphp
+ */
+
+import "websocket";
+
+// 1. The handshake: pull the key out of a request, compute the answer.
+$request = "GET /chat HTTP/1.1\r\n"
+    . "Host: server.example.com\r\n"
+    . "Upgrade: websocket\r\n"
+    . "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+    . "\r\n";
+$key = ws_request_key($request);
+echo "client key:    $key";
+echo "accept key:    " . ws_accept_key($key);
+echo "RFC expects:   s3pPLMBiTxaQ9kYGzzhZRbK+xOo=";
+
+// 2. A server frame: FIN + text opcode, length, then the payload.
+$frame = ws_frame("Hello");
+echo "server frame:  " . bin2hex($frame);
+
+// 3. A client frame (from RFC 6455 section 5.7): masked "Hello".
+$clientFrame = hex2bin("818537fa213d7f9f4d5158");
+$decoded = ws_decode($clientFrame);
+echo "decoded:       opcode " . $decoded["opcode"]
+    . ", payload '" . $decoded["payload"] . "'"
+    . ", " . $decoded["consumed"] . " bytes used";
+
+// 4. Only half a frame has arrived: ws_decode asks for more bytes.
+$half = substr($clientFrame, 0, 6);
+if (ws_decode($half) == null) {
+    echo "half a frame:  incomplete, wait for more data";
+}
+
+// 5. Close frames carry a 2-byte status code (1000 = normal closure).
+$close = ws_frame(ws_close_payload(1000), 8);
+echo "close frame:   " . bin2hex($close);

@@ -1,0 +1,70 @@
+<?php
+/* A to-do list with a menu
+ *
+ * A `list()` box holds the tasks. Type a task and press Enter or click
+ * "Add"; select one and click "Done" to remove it. A menu bar adds
+ * File > Save, which writes the tasks to a file picked with `saveFile()`.
+ *
+ * try: hphp run 04-todo-list.hphp
+ */
+
+import "ui";
+
+$app = new App("To-do", 420, 480);
+$app->heading("Things to do");
+
+// Input and "Add" button side by side.
+$entry = $app->row();
+$newTask = $entry->input("");
+$add = $entry->button("Add", "primary");
+
+// The list, the "Done" button and a status line.
+$tasks = $app->list(["Water the plants", "Write the report"]);
+$done = $app->button("Done", "success");
+$status = $app->sub("");
+
+$updateStatus = function() use ($tasks, $status) {
+    $status->text($tasks->count() . " task(s) left");
+};
+$updateStatus();
+
+// Add the typed task, then clear the input for the next one.
+$addTask = function() use ($newTask, $tasks, $updateStatus) {
+    $text = trim($newTask->content());
+    if ($text == "") {
+        return;
+    }
+    $tasks->add($text);
+    $newTask->text("");
+    $updateStatus();
+};
+$add->onClick($addTask);
+$newTask->onKey(function($key, $char, $mods) use ($addTask) {
+    if ($key == 13) {
+        $addTask();
+    }
+});
+
+// Remove the selected task (selected() is -1 when nothing is selected).
+$done->onClick(function() use ($tasks, $updateStatus) {
+    $index = $tasks->selected();
+    if ($index >= 0) {
+        $tasks->remove($index);
+        $updateStatus();
+    }
+});
+
+// File menu: save the list to disk, or quit.
+$file = $app->menu("File");
+$file->item("Save...", function() use ($app, $tasks) {
+    $path = $app->saveFile("Text files|*.txt");
+    if ($path != "") {
+        file_put_contents($path, implode("\n", $tasks->items()) . "\n");
+        $app->msg("Saved " . $tasks->count() . " tasks to " . $path);
+    }
+});
+$file->item("Quit", function() use ($app) {
+    $app->close();
+});
+
+$app->run();

@@ -1,0 +1,70 @@
+<?php
+/* A worker pool from channels
+ *
+ * The classic pool: a fixed number of workers pull jobs from a shared
+ * `jobs` channel and push answers onto a `results` channel. Closing the
+ * jobs channel is the "no more work" signal - each worker's `chan_recv()`
+ * then returns `false` and the worker exits. Results come back in finish
+ * order, so every result carries the id of its job.
+ *
+ * try: hphp run 03-worker-pool.hphp
+ */
+
+import "thread";
+
+// The job: count the words of one document and find the longest one.
+function analyse(string $text) {
+    $words = preg_split("/[^a-z]+/", strtolower($text));
+    $total = 0;
+    $longest = "";
+    foreach ($words as $word) {
+        if ($word == "") {
+            continue;
+        }
+        $total = $total + 1;
+        if (strlen($word) > strlen($longest)) {
+            $longest = $word;
+        }
+    }
+    return ["words" => $total, "longest" => $longest];
+}
+
+$documents = [
+    "The quick brown fox jumps over the lazy dog, and the fox runs away.",
+    "Threads share nothing here: every message is copied through a channel.",
+    "Workers pull jobs, workers push results, workers stop when closed.",
+    "Buffered channels let the sender run ahead of a slow receiver.",
+];
+
+// Both channels are big enough to hold every job, so sends never block.
+$jobs = chan_new(count($documents));
+$results = chan_new(count($documents));
+
+// Start three workers. Each one loops until the jobs channel is closed.
+$workerCount = 3;
+for ($w = 1; $w <= $workerCount; $w++) {
+    thr_spawn(function() use ($w, $jobs, $results) {
+        while (true) {
+            $job = chan_recv($jobs);
+            if ($job === false) {
+                break;
+            }
+            $stats = analyse($job["text"]);
+            chan_send($results, ["id" => $job["id"], "worker" => $w, "stats" => $stats]);
+        }
+    });
+}
+
+// Queue every document, then announce that no more jobs will come.
+foreach ($documents as $id => $text) {
+    chan_send($jobs, ["id" => $id, "text" => $text]);
+}
+chan_close($jobs);
+
+// Collect exactly one result per document.
+for ($i = 0; $i < count($documents); $i++) {
+    $result = chan_recv($results);
+    $stats = $result["stats"];
+    echo "doc " . $result["id"] . " (worker " . $result["worker"] . "): "
+        . $stats["words"] . " words, longest word: " . $stats["longest"];
+}

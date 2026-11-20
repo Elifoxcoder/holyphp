@@ -1,0 +1,61 @@
+<?php
+/* A foot race: barrier, atomic and mutex
+ *
+ * Four runner threads line up at a `Barrier`, so they all start at the same
+ * instant. Each runs for a random time, then takes the next place from an
+ * `Atomic` counter - an increment that is exact even when threads finish at
+ * the same moment. A `Mutex` keeps their console lines from interleaving,
+ * and the results travel back to the main thread over a channel.
+ *
+ * The objects are created on the main thread; a thread closure captures
+ * only their integer ids and uses the matching `barrier_`, `atomic_` and
+ * `mutex_` functions.
+ *
+ * try: hphp run 04-race.hphp
+ */
+
+import "thread";
+
+$runners = ["Ada", "Grace", "Linus", "Margaret"];
+
+// Shared synchronisation objects, passed to threads by id.
+$startLine = new Barrier(count($runners));
+$places = new Atomic(0);
+$console = new Mutex();
+$barrierId = $startLine->id;
+$placeId = $places->id;
+$consoleId = $console->id;
+$finished = chan_new(count($runners));
+
+// One thread per runner.
+foreach ($runners as $name) {
+    thr_spawn(function() use ($name, $barrierId, $placeId, $consoleId, $finished) {
+        // Wait until every runner is at the start line.
+        barrier_wait($barrierId);
+
+        // Run! Then claim the next place; atomic_add returns the old value.
+        thr_sleep_ms(rand(100, 400));
+        $place = atomic_add($placeId, 1) + 1;
+
+        // Only one thread prints at a time.
+        mutex_lock($consoleId);
+        echo "  $name crosses the line";
+        mutex_unlock($consoleId);
+
+        chan_send($finished, [$place, $name]);
+    });
+}
+
+// Collect every runner, then print the podium in order.
+$board = [];
+for ($i = 0; $i < count($runners); $i++) {
+    $result = chan_recv($finished);
+    $board[$result[0]] = $result[1];
+}
+ksort($board);
+
+echo "Results:";
+foreach ($board as $place => $name) {
+    echo "  $place. $name";
+}
+echo "places handed out: " . $places->get();

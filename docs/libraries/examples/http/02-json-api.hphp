@@ -1,0 +1,48 @@
+<?php
+/* A JSON API with route parameters
+ *
+ * A read-only API over a list of books. `{id}` in a route becomes
+ * `$req->param("id")`, query strings are read with `$req->input()`, and
+ * `http_json()` turns any array into a JSON response.
+ *
+ * try: hphp run 02-json-api.hphp
+ * try: curl http://127.0.0.1:8080/books
+ * try: curl "http://127.0.0.1:8080/books?author=Ursula%20K.%20Le%20Guin"
+ * try: curl http://127.0.0.1:8080/books/1
+ */
+import "http";
+
+$books = [
+    ["id" => 0, "title" => "The Dispossessed", "author" => "Ursula K. Le Guin"],
+    ["id" => 1, "title" => "A Wizard of Earthsea", "author" => "Ursula K. Le Guin"],
+    ["id" => 2, "title" => "Solaris", "author" => "Stanislaw Lem"],
+];
+
+$app = new HttpRouter();
+
+// all books, optionally filtered by ?author=
+$app->get("/books", function(HttpRequest $req) use ($books): HttpResponse {
+    $author = $req->input("author");
+    $found = [];
+
+    foreach ($books as $book) {
+        if ($author == "" || $book["author"] == $author) {
+            $found[] = $book;
+        }
+    }
+
+    return http_json(["count" => count($found), "books" => $found]);
+});
+
+// one book by its id, or a JSON error with status 404
+$app->get("/books/{id}", function(HttpRequest $req) use ($books): HttpResponse {
+    $id = intval($req->param("id"));
+
+    if ($id < 0 || $id >= count($books)) {
+        return http_json(["error" => "no book with id " . $id], 404);
+    }
+
+    return http_json($books[$id]);
+});
+
+http_serve($app, "tcp://127.0.0.1:8080");

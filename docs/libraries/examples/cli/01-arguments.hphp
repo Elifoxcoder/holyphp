@@ -1,0 +1,31 @@
+<?php
+/* A command with options
+ *
+ * `cli_args()` reads the program's arguments: `--name=value` options,
+ * `--flag` switches, `-abc` short flags and plain positional arguments.
+ * This tool greets everyone named on the command line.
+ *
+ * try: hphp run 01-arguments.hphp Ada Grace
+ * try: hphp run 01-arguments.hphp --greeting=Hi --shout Ada
+ */
+import "cli";
+
+$args = cli_args();
+
+// usage help when nothing was given
+if ($args->count() == 0 || $args->has("help")) {
+    echo "usage: greet [--greeting=Hello] [--shout] <name>...";
+    exit(1);
+}
+
+$greeting = $args->get("greeting", "Hello");
+$shout = $args->has("shout");
+
+// one line per positional argument
+for ($i = 0; $i < $args->count(); $i++) {
+    $line = $greeting . ", " . $args->arg($i) . "!";
+    if ($shout) {
+        $line = strtoupper($line);
+    }
+    echo $line;
+}

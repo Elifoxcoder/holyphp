@@ -1,0 +1,29 @@
+<?php
+/* Development, test and production
+ *
+ * A common layout: `.env` holds the defaults for everyone, `.env.<mode>`
+ * the values for one environment, and `.env.local` personal overrides
+ * that are never committed. Later files override earlier ones.
+ *
+ * try: printf "MODE=test\nLOG_LEVEL=info\n" > .env
+ * try: printf "LOG_LEVEL=debug\n" > .env.test
+ * try: hphp run 03-environments.hphp
+ */
+import "dotenv";
+
+// 1. shared defaults
+env_load(".env");
+
+// 2. the environment's own file, chosen by MODE
+$mode = env("MODE", "development");
+env_load(".env." . $mode, true);
+
+// 3. personal overrides, highest priority
+env_load(".env.local", true);
+
+echo "mode:      " . $mode;
+echo "log level: " . env("LOG_LEVEL", "warning");
+
+// ${VAR} inside values is expanded when the file is read
+$parsed = env_parse("HOST=localhost\nURL=http://\${HOST}:8080/api\n");
+echo "expanded:  " . $parsed["URL"];

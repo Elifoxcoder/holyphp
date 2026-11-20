@@ -1,0 +1,39 @@
+<?php
+/* Timers: a launch countdown
+ *
+ * The smallest useful event loop. `every()` schedules a repeating timer,
+ * `after()` a one-shot one, and `cancelTimer()` stops a repeating timer by
+ * the id it returned. When no timers or sockets are left, `run()` returns
+ * on its own - no explicit exit needed.
+ *
+ * try: hphp run 01-timers.hphp
+ */
+
+import "async";
+
+$loop = new Loop();
+$remaining = 5;
+
+// A repeating timer: count down once per second.
+$countdownId = $loop->every(1000, function() use (&$remaining) {
+    echo "T-minus $remaining";
+    $remaining = $remaining - 1;
+});
+
+// A one-shot timer that fires in between the countdown steps.
+$loop->after(2500, function() {
+    echo "  (all systems go)";
+});
+
+// A one-shot timer: after 5.5 seconds, cancel the repeating timer.
+$loop->after(5500, function() use ($loop, $countdownId) {
+    $loop->cancelTimer($countdownId);
+    echo "Liftoff!";
+});
+
+// Runs until every timer is gone, then returns.
+$started = now_ms();
+$loop->run();
+
+$elapsed = now_ms() - $started;
+echo "loop finished after $elapsed ms";

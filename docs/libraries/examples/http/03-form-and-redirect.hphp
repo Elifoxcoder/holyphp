@@ -1,0 +1,51 @@
+<?php
+/* A guestbook: forms, POST and redirects
+ *
+ * GET / shows the entries and a form. The form posts to /sign, which reads
+ * the fields with `$req->input()` and redirects back with
+ * `http_redirect()` (the classic POST/redirect/GET pattern). The entries
+ * live in memory, shared through a by-reference capture.
+ *
+ * try: hphp run 03-form-and-redirect.hphp
+ * try: open http://127.0.0.1:8080/ in a browser
+ */
+import "http";
+
+$entries = [];
+
+// escape user input before putting it into HTML
+function html_text(string $s): string {
+    return htmlspecialchars($s);
+}
+
+$app = new HttpRouter();
+
+// the page: the form and every entry so far
+$app->get("/", function(HttpRequest $req) use (&$entries): HttpResponse {
+    $html = "<h1>Guestbook</h1>";
+    $html = $html . "<form method='post' action='/sign'>";
+    $html = $html . "<input name='name' placeholder='Your name'> ";
+    $html = $html . "<input name='message' placeholder='Message'> ";
+    $html = $html . "<button>Sign</button></form><ul>";
+
+    foreach ($entries as $entry) {
+        $html = $html . "<li><b>" . html_text($entry[0]) . "</b>: " . html_text($entry[1]) . "</li>";
+    }
+
+    return http_html($html . "</ul>");
+});
+
+// the form target: store the entry, then go back to the page
+$app->post("/sign", function(HttpRequest $req) use (&$entries): HttpResponse {
+    $name = trim($req->input("name"));
+    $message = trim($req->input("message"));
+
+    if ($name == "" || $message == "") {
+        return http_text("name and message are required", 422);
+    }
+
+    $entries[] = [$name, $message];
+    return http_redirect("/", 303);
+});
+
+http_serve($app, "tcp://127.0.0.1:8080");

@@ -1,0 +1,64 @@
+<?php
+/* Parse a page and query it with CSS selectors
+ *
+ * A headless `HtmlView` (canvas handle 0, no window) parses markup into a
+ * tree of `HNode`s and answers real CSS selectors through `find()` and
+ * `find_all()`: classes, ids, descendants and attributes. This program
+ * reads a small shop page, prints its element outline, then pulls out the
+ * products, their prices and the links.
+ *
+ * try: hphp run 01-parse-and-query.hphp
+ */
+
+import "html";
+
+$page = "<div class='shop'>
+  <h1 id='top'>Today's offers</h1>
+  <ul class='products'>
+    <li class='product' data-sale='yes'><span class='name'>Teapot</span> <span class='price'>24.00</span></li>
+    <li class='product'><span class='name'>Mug</span> <span class='price'>8.50</span></li>
+    <li class='product' data-sale='yes'><span class='name'>Kettle</span> <span class='price'>39.90</span></li>
+  </ul>
+  <p>See <a href='/about'>about us</a> or <a href='/contact'>contact</a>.</p>
+</div>";
+
+// Print every element, indented by its depth in the tree.
+function outline(HNode $node, int $depth) {
+    if ($node->isText()) {
+        return;
+    }
+    $label = $node->tag;
+    if ($node->id != "") {
+        $label = $label . "#" . $node->id;
+    }
+    foreach ($node->classes as $class) {
+        $label = $label . "." . $class;
+    }
+    echo str_repeat("  ", $depth) . $label;
+    for ($i = 0; $i < count($node->kids); $i++) {
+        outline($node->kids[$i], $depth + 1);
+    }
+}
+
+// A headless view: no window, just the document and its selectors.
+$view = new HtmlView(0, 800, 600, html_theme_light());
+$view->load($page, "");
+
+// The tree. The parser wraps a fragment in an implicit <html> root.
+echo "heading: " . html_text_of($view->find("#top"));
+outline($view->doc->root, 0);
+
+// Descendant selectors: the name and price inside each product.
+// (Typed node lists are walked with an index loop.)
+$names = $view->find_all(".product .name");
+$prices = $view->find_all(".product .price");
+for ($i = 0; $i < count($names); $i++) {
+    echo str_pad(html_text_of($names[$i]), 8) . " " . html_text_of($prices[$i]);
+}
+
+// Attribute selectors and attribute values.
+echo "on sale: " . count($view->find_all("li[data-sale=yes]")) . " products";
+$links = $view->find_all("a");
+for ($i = 0; $i < count($links); $i++) {
+    echo "link: " . $links[$i]->attr("href") . " (" . html_text_of($links[$i]) . ")";
+}

@@ -1,0 +1,41 @@
+<?php
+/* TCP echo server
+ *
+ * A classic echo server: every byte a client sends comes straight back.
+ * `listen()` accepts connections without blocking, and `watch()` calls a
+ * handler with `($socket, $chunk, $eof)` whenever a client has data. Many
+ * clients are served at once by a single thread.
+ *
+ * try: hphp run 02-echo-server.hphp
+ * try: telnet 127.0.0.1 7000      (or: nc 127.0.0.1 7000)
+ */
+
+import "async";
+
+$address = "tcp://127.0.0.1:7000";
+$loop = new Loop();
+$connections = 0;
+
+// Called once for every new client connection.
+$loop->listen($address, function($client, $peer) use ($loop, &$connections) {
+    $connections = $connections + 1;
+    echo "[$peer] connected ($connections so far)";
+    stream_send($client, "Welcome! Everything you type is echoed back.\r\n");
+
+    // Called whenever this client has sent something (or hung up).
+    $loop->watch($client, function($socket, $chunk, $eof) use ($peer) {
+        if ($eof) {
+            echo "[$peer] disconnected";
+            return;
+        }
+        stream_send($socket, $chunk);
+    });
+});
+
+// Print a heartbeat so you can see the loop never blocks.
+$loop->every(10000, function() use (&$connections) {
+    echo "still serving - $connections connection(s) total";
+});
+
+echo "echo server listening on $address";
+$loop->run();

@@ -1,0 +1,20 @@
+<?php
+/* Hello, web
+ *
+ * The smallest useful server: one route that answers with HTML. Start it,
+ * open the address in a browser, and stop it with Ctrl-C.
+ *
+ * try: hphp run 01-hello-server.hphp
+ * try: curl http://127.0.0.1:8080/
+ */
+import "http";
+
+$app = new HttpRouter();
+
+// GET / answers with a small HTML page
+$app->get("/", function(HttpRequest $req): HttpResponse {
+    return http_html("<h1>Hello from HolyPHP</h1>");
+});
+
+// serve until the program is stopped
+http_serve($app, "tcp://127.0.0.1:8080");

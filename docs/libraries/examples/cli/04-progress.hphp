@@ -1,0 +1,23 @@
+<?php
+/* A progress bar
+ *
+ * `cli_progress()` returns the bar as a string; print it with a carriage
+ * return (`\r`) through `printf` so it redraws in place instead of adding
+ * a line each step.
+ *
+ * try: hphp run 04-progress.hphp
+ */
+import "cli";
+
+$steps = 40;
+
+for ($i = 1; $i <= $steps; $i++) {
+    // pretend to work
+    usleep(50000);
+
+    // redraw the same line
+    printf("\r%s  step %d/%d", cli_progress($i, $steps), $i, $steps);
+}
+
+echo "";
+echo cli_color("done", "green");

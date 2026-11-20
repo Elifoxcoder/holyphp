@@ -222,6 +222,18 @@ run_project() {
     fi
 }
 
+run_examples() {
+    echo "== examples (docs/libraries/examples, type-checked) =="
+    for f in docs/libraries/examples/*/*.hphp; do
+        [ -e "$f" ] || continue
+        if out=$("$HPHP" check "$f" 2>&1); then
+            echo "PASS $f"; pass=$((pass + 1))
+        else
+            echo "FAIL $f"; echo "$out" | head -6 | sed "s/^/    /"; fail=$((fail + 1))
+        fi
+    done
+}
+
 run_manual() {
     echo "== manual (window / sockets) =="
     for f in tests/manual/*.hphp; do
@@ -249,9 +261,10 @@ case "$MODE" in
     diag)     run_diag ;;
     ext)      run_ext ;;
     project)  run_project ;;
+    examples) run_examples ;;
     manual)   run_manual ;;
-    all)      run_positive; run_negative; run_docs; run_diag; run_project; run_ext ;;
-    *)        echo "usage: bash tests/run.sh [--asan] [all|positive|negative|docs|diag|project|ext|manual]"; exit 2 ;;
+    all)      run_positive; run_negative; run_docs; run_diag; run_project; run_examples; run_ext ;;
+    *)        echo "usage: bash tests/run.sh [--asan] [all|positive|negative|docs|diag|project|examples|ext|manual]"; exit 2 ;;
 esac
 
 if [ "$ASAN" = 1 ]; then

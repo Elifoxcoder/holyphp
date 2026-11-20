@@ -1,0 +1,40 @@
+<?php
+/* Table-driven tests
+ *
+ * When many inputs share one rule, list them as rows and loop. Each row
+ * is its own check with its own name, so a failure points at the exact
+ * case. `near()` compares floats with a tolerance.
+ *
+ * try: hphp run 03-table-driven.hphp
+ */
+import "testing";
+
+// the code under test
+function celsius_to_fahrenheit(float $c): float {
+    return $c * 9 / 5 + 32;
+}
+
+function is_leap_year(int $year): bool {
+    return ($year % 4 == 0 && $year % 100 != 0) || $year % 400 == 0;
+}
+
+$t = new Test("tables");
+
+$t->section("temperature");
+$temperatures = [
+    [0.0, 32.0],
+    [100.0, 212.0],
+    [-40.0, -40.0],
+    [36.6, 97.88],
+];
+foreach ($temperatures as $row) {
+    $t->near(celsius_to_fahrenheit($row[0]), $row[1], 0.001, $row[0] . " C");
+}
+
+$t->section("leap years");
+$years = [[2000, true], [1900, false], [2024, true], [2023, false]];
+foreach ($years as $row) {
+    $t->equal(is_leap_year($row[0]), $row[1], strval($row[0]));
+}
+
+$t->done();

@@ -1,0 +1,65 @@
+<?php
+/* Clickable tabs: events are data
+ *
+ * HolyHTML does not attach callbacks to elements. Instead the canvas
+ * events are handed to `mouse()`, which updates hover and focus and
+ * returns an `HtmlEvent` naming the node under the pointer - the program
+ * decides what a click means. Here a click on a tab moves the `active`
+ * class with `add_class()` / `remove_class()` and swaps the panel text
+ * with `set_text()`. Hover colours come from `:hover` in the CSS alone.
+ *
+ * try: hphp run 04-clickable-tabs.hphp
+ */
+
+import "html";
+
+$html = "<div class='tabs'>
+  <div class='tab active' id='home'>Home</div>
+  <div class='tab' id='files'>Files</div>
+  <div class='tab' id='help'>Help</div>
+</div>
+<div class='panel' id='panel'>Welcome home.</div>";
+
+$css = "
+.tabs { display: flex; background-color: #252526; height: 34px; }
+.tab  { padding: 0 18px; height: 34px; color: #969696; border-bottom: 2px solid #252526; }
+.tab:hover  { color: #ffffff; }
+.tab.active { color: #ffffff; border-bottom: 2px solid #007acc; }
+.panel { padding: 20px; color: #cccccc; }
+";
+
+$texts = ["home" => "Welcome home.", "files" => "No files yet.", "help" => "Click a tab to switch."];
+
+$window = ui_window("Tabs", -1, -1, 480, 240);
+$canvas = ui_add($window, 18, "", 0, 0, 480, 240);
+$view = new HtmlView($canvas, 480, 240, html_theme_dark());
+$view->load($html, $css);
+
+// Pointer moved (canvas event 8): repaint only if the hover changed.
+ui_on($canvas, 8, function($x, $y, $button) use ($view) {
+    $event = $view->mouse("move", $x, $y, 0, 0);
+    if ($event->state) {
+        $view->paint();
+    }
+});
+
+// Button released (canvas event 7): find the tab that was clicked.
+ui_on($canvas, 7, function($x, $y, $button) use ($view, $texts) {
+    $event = $view->mouse("up", $x, $y, $button, 0);
+    $node = $event->node;
+    while ($node != null && !$node->hasClass("tab")) {
+        $node = $node->up;
+    }
+    if ($node == null) {
+        return;
+    }
+
+    // Move the "active" class to the clicked tab and update the panel.
+    $view->remove_class($view->find(".tab.active"), "active");
+    $view->add_class($node, "active");
+    $view->set_text($view->find("#panel"), $texts[$node->id]);
+    $view->paint();
+});
+
+$view->paint();
+ui_run_main();

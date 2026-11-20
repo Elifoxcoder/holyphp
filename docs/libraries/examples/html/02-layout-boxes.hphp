@@ -1,0 +1,55 @@
+<?php
+/* Lay out a page and measure the boxes
+ *
+ * The layout engine works without a window: `ensure()` runs style and
+ * layout, and `box_of()` returns the `Box` the engine placed for a node,
+ * with its position and size in pixels. This page uses a flex column for
+ * header / body / footer and a flex row for sidebar / content; resizing
+ * the view shows the fixed sidebar keeping its width while `flex: 1` and
+ * percentages absorb the change.
+ *
+ * try: hphp run 02-layout-boxes.hphp
+ */
+
+import "html";
+
+$html = "<div class='page'>
+  <div class='header'>My App</div>
+  <div class='body'>
+    <div class='sidebar'>Menu</div>
+    <div class='content'><div class='banner'>Half as wide as the content</div></div>
+  </div>
+  <div class='footer'>status</div>
+</div>";
+
+$css = "
+.page    { display: flex; flex-direction: column; height: 100%; }
+.header  { height: 48px; padding: 0 16px; }
+.body    { display: flex; flex: 1; gap: 8px; }
+.sidebar { width: 180px; flex: none; }
+.content { flex: 1; padding: 12px; }
+.banner  { width: 50%; height: 40px; }
+.footer  { height: 24px; flex: none; }
+";
+
+// Print x, y, width and height of each interesting box.
+function report(HtmlView $view, string $title) {
+    echo "== $title";
+    $selectors = [".header", ".sidebar", ".content", ".banner", ".footer"];
+    foreach ($selectors as $selector) {
+        $box = $view->box_of($view->find($selector));
+        echo str_pad($selector, 10) . " x=" . $box->x . " y=" . $box->y
+            . "  " . $box->w . " x " . $box->h;
+    }
+}
+
+// Lay the page out at 800 x 500 ...
+$view = new HtmlView(0, 800, 500, html_theme_dark());
+$view->load($html, $css);
+$view->ensure();
+report($view, "800 x 500");
+
+// ... and again in a bigger window. Only the flexible boxes grow.
+$view->resize(1200, 700);
+$view->ensure();
+report($view, "1200 x 700");

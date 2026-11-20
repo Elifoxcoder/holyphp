@@ -1,0 +1,38 @@
+<?php
+/* WebSocket echo server
+ *
+ * The "hello world" of WebSockets: every text message a browser sends is
+ * sent straight back. `WebSocketServer` does the HTTP upgrade handshake
+ * and the framing; you only assign closures to `onOpen`, `onMessage` and
+ * `onClose`, and call `run()`.
+ *
+ * To test it, open a browser console and run
+ * `ws = new WebSocket("ws://127.0.0.1:9001")`, then `ws.send("hello")`;
+ * `ws.onmessage = (e) => console.log(e.data)` prints the replies.
+ *
+ * try: hphp run 01-echo-server.hphp
+ */
+
+import "websocket";
+
+$server = new WebSocketServer("tcp://127.0.0.1:9001");
+
+// A browser finished the handshake.
+$server->onOpen = function(int $client) use ($server): void {
+    echo "client $client connected from " . $server->peerOf($client);
+    $server->send($client, "welcome, you are client $client");
+};
+
+// A text message arrived: send it back, upper-cased so you can tell.
+$server->onMessage = function(int $client, string $message) use ($server): void {
+    echo "client $client says: $message";
+    $server->send($client, "echo: " . strtoupper($message));
+};
+
+// The browser tab closed or navigated away.
+$server->onClose = function(int $client, int $code): void {
+    echo "client $client left (close code $code)";
+};
+
+echo "echo server on ws://127.0.0.1:9001";
+$server->run();

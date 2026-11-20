@@ -171,11 +171,261 @@ async_get("http://127.0.0.1:8934/x", function($resp) {
 </section>
 <section class="tab-panel" data-tab-panel="examples" role="tabpanel" aria-label="Examples">
 <h2 class="tab-title">Examples</h2>
-<h2>Try it</h2>
-<pre><code class="bash">hphp pkg install async
-hphp run examples/async_demo.hphp</code></pre>
-  <p class="small muted">Ships embedded in the compiler — <code>import "async"</code>
-  works offline, no install needed. Source: <code>lib/async/async.hphp</code>.</p>
+<p class="example-intro">5 complete programs. Every one is type-checked with the compiler before the site is published; copy one into <code>src/</code> of a project (<code>hphp create</code>) and run it.</p>
+<nav class="example-toc"><a href="#ex-01-timers">01 Timers: a launch countdown</a><a href="#ex-02-echo-server">02 TCP echo server</a><a href="#ex-03-chat-server">03 Line-based chat server</a><a href="#ex-04-fetch-url">04 Fetching a URL without blocking</a><a href="#ex-05-kv-store">05 A key-value store server in one function call</a></nav>
+<article class="example" id="ex-01-timers">
+<h2><span class="example-num">01</span>Timers: a launch countdown</h2>
+<p>The smallest useful event loop. <code>every()</code> schedules a repeating timer, <code>after()</code> a one-shot one, and <code>cancelTimer()</code> stops a repeating timer by the id it returned. When no timers or sockets are left, <code>run()</code> returns on its own - no explicit exit needed.</p>
+<div class="example-file">01-timers.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;async&quot;;
+
+$loop = new Loop();
+$remaining = 5;
+
+// A repeating timer: count down once per second.
+$countdownId = $loop-&gt;every(1000, function() use (&amp;$remaining) {
+    echo &quot;T-minus $remaining&quot;;
+    $remaining = $remaining - 1;
+});
+
+// A one-shot timer that fires in between the countdown steps.
+$loop-&gt;after(2500, function() {
+    echo &quot;  (all systems go)&quot;;
+});
+
+// A one-shot timer: after 5.5 seconds, cancel the repeating timer.
+$loop-&gt;after(5500, function() use ($loop, $countdownId) {
+    $loop-&gt;cancelTimer($countdownId);
+    echo &quot;Liftoff!&quot;;
+});
+
+// Runs until every timer is gone, then returns.
+$started = now_ms();
+$loop-&gt;run();
+
+$elapsed = now_ms() - $started;
+echo &quot;loop finished after $elapsed ms&quot;;</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 01-timers.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-02-echo-server">
+<h2><span class="example-num">02</span>TCP echo server</h2>
+<p>A classic echo server: every byte a client sends comes straight back. <code>listen()</code> accepts connections without blocking, and <code>watch()</code> calls a handler with <code>($socket, $chunk, $eof)</code> whenever a client has data. Many clients are served at once by a single thread.</p>
+<div class="example-file">02-echo-server.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;async&quot;;
+
+$address = &quot;tcp://127.0.0.1:7000&quot;;
+$loop = new Loop();
+$connections = 0;
+
+// Called once for every new client connection.
+$loop-&gt;listen($address, function($client, $peer) use ($loop, &amp;$connections) {
+    $connections = $connections + 1;
+    echo &quot;[$peer] connected ($connections so far)&quot;;
+    stream_send($client, &quot;Welcome! Everything you type is echoed back.\r\n&quot;);
+
+    // Called whenever this client has sent something (or hung up).
+    $loop-&gt;watch($client, function($socket, $chunk, $eof) use ($peer) {
+        if ($eof) {
+            echo &quot;[$peer] disconnected&quot;;
+            return;
+        }
+        stream_send($socket, $chunk);
+    });
+});
+
+// Print a heartbeat so you can see the loop never blocks.
+$loop-&gt;every(10000, function() use (&amp;$connections) {
+    echo &quot;still serving - $connections connection(s) total&quot;;
+});
+
+echo &quot;echo server listening on $address&quot;;
+$loop-&gt;run();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 02-echo-server.hphp
+telnet 127.0.0.1 7000      (or: nc 127.0.0.1 7000)</code></pre></div>
+</article>
+<article class="example" id="ex-03-chat-server">
+<h2><span class="example-num">03</span>Line-based chat server</h2>
+<p>A tiny multi-user chat room over plain TCP. Each connection gets a <code>LineReader</code>, which turns the raw chunks from <code>watch()</code> into complete lines. Every line is broadcast to the other users; <code>/nick NAME</code> renames you and <code>/who</code> lists everyone in the room.</p>
+<div class="example-file">03-chat-server.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;async&quot;;
+
+$loop = new Loop();
+$sockets = [];   // client id =&gt; socket handle
+$names = [];     // client id =&gt; nickname
+
+// Send one line to everyone except the client with id $skip.
+function broadcast(array $sockets, int $skip, string $text) {
+    foreach ($sockets as $id =&gt; $socket) {
+        if ($id != $skip) {
+            stream_send($socket, $text . &quot;\r\n&quot;);
+        }
+    }
+}
+
+$loop-&gt;listen(&quot;tcp://127.0.0.1:7001&quot;, function($client, $peer) use ($loop, &amp;$sockets, &amp;$names) {
+    // Register the newcomer under a default nickname.
+    $id = intval($client);
+    $sockets[$id] = $client;
+    $names[$id] = &quot;guest$id&quot;;
+    stream_send($client, &quot;Welcome, guest$id! Commands: /nick NAME, /who\r\n&quot;);
+    broadcast($sockets, $id, &quot;* guest$id joined from $peer&quot;);
+
+    // Turn incoming bytes into whole lines and handle each one.
+    $reader = new LineReader(function($line) use ($id, $client, &amp;$sockets, &amp;$names) {
+        $text = trim($line);
+        if ($text == &quot;&quot;) {
+            return;
+        }
+        if (str_starts_with($text, &quot;/nick &quot;)) {
+            $old = $names[$id];
+            $names[$id] = trim(substr($text, 6));
+            broadcast($sockets, 0, &quot;* $old is now known as &quot; . $names[$id]);
+        } elseif ($text == &quot;/who&quot;) {
+            stream_send($client, &quot;In the room: &quot; . implode(&quot;, &quot;, $names) . &quot;\r\n&quot;);
+        } else {
+            broadcast($sockets, $id, &quot;&lt;&quot; . $names[$id] . &quot;&gt; &quot; . $text);
+        }
+    });
+
+    // Feed the reader; on hang-up, forget the client and tell the room.
+    $loop-&gt;watch($client, function($socket, $chunk, $eof) use ($id, $reader, &amp;$sockets, &amp;$names) {
+        if ($eof) {
+            $name = $names[$id];
+            unset($sockets[$id]);
+            unset($names[$id]);
+            broadcast($sockets, 0, &quot;* $name left&quot;);
+            return;
+        }
+        $reader-&gt;feed($chunk);
+    });
+});
+
+echo &quot;chat server on 127.0.0.1:7001&quot;;
+$loop-&gt;run();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 03-chat-server.hphp
+nc 127.0.0.1 7001      (open two or three terminals)</code></pre></div>
+</article>
+<article class="example" id="ex-04-fetch-url">
+<h2><span class="example-num">04</span>Fetching a URL without blocking</h2>
+<p><code>httpGet()</code> runs an HTTP/1.1 GET on the loop itself, so timers keep firing while the response streams in - here a progress timer prints how long we have been waiting. The callback receives the raw response (status line, headers and body), which we split up and summarise.</p>
+<p><code>httpGet()</code> speaks plain <code>http://</code> only and gives up after 10 seconds.</p>
+<div class="example-file">04-fetch-url.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;async&quot;;
+
+$url = &quot;http://example.com/&quot;;
+$loop = new Loop();
+$started = now_ms();
+
+// Show that the loop stays responsive while the request is in flight.
+$waitTimer = $loop-&gt;every(100, function() use ($started) {
+    $waited = now_ms() - $started;
+    echo &quot;waiting... $waited ms&quot;;
+});
+
+// Success: split the raw response into head and body and report on both.
+$onDone = function($response) use ($loop, $waitTimer, $started) {
+    $loop-&gt;cancelTimer($waitTimer);
+    $split = strpos($response, &quot;\r\n\r\n&quot;);
+    if ($split === false) {
+        echo &quot;malformed response&quot;;
+        return;
+    }
+    $head = substr($response, 0, $split);
+    $body = substr($response, $split + 4);
+    $headerLines = explode(&quot;\r\n&quot;, $head);
+
+    echo &quot;status:  &quot; . $headerLines[0];
+    foreach ($headerLines as $line) {
+        if (str_starts_with(strtolower($line), &quot;content-type:&quot;)) {
+            echo &quot;type:    &quot; . trim(substr($line, 13));
+        }
+    }
+    echo &quot;body:    &quot; . strlen($body) . &quot; bytes&quot;;
+
+    // Pull the &lt;title&gt; out of the page, if it has one.
+    $match = [];
+    if (preg_match(&quot;/&lt;title&gt;(.*?)&lt;\/title&gt;/is&quot;, $body, $match) === 1) {
+        echo &quot;title:   &quot; . trim($match[1]);
+    }
+    echo &quot;took:    &quot; . (now_ms() - $started) . &quot; ms&quot;;
+};
+
+// Failure: connection refused, DNS trouble or the 10 s timeout.
+$onError = function($reason) use ($loop, $waitTimer) {
+    $loop-&gt;cancelTimer($waitTimer);
+    echo &quot;request failed: $reason&quot;;
+};
+
+echo &quot;GET $url&quot;;
+$loop-&gt;httpGet($url, $onDone, $onError);
+$loop-&gt;run();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 04-fetch-url.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-05-kv-store">
+<h2><span class="example-num">05</span>A key-value store server in one function call</h2>
+<p><code>async_line_server()</code> wires up <code>listen()</code>, <code>watch()</code> and a <code>LineReader</code> for you: your handler gets each complete line and whatever it returns is sent back as the reply. This one implements a small Redis-like protocol with SET, GET, DEL, KEYS and QUIT, plus a timer that reports stats.</p>
+<div class="example-file">05-kv-store.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;async&quot;;
+
+$store = [];
+$commandCount = 0;
+
+// Handle one protocol line; the returned string is the reply.
+$handleLine = function($client, $line, $loop) use (&amp;$store, &amp;$commandCount) {
+    $commandCount = $commandCount + 1;
+    $parts = explode(&quot; &quot;, trim($line));
+    $command = strtoupper($parts[0]);
+
+    if ($command == &quot;SET&quot; &amp;&amp; count($parts) &gt;= 3) {
+        $value = implode(&quot; &quot;, array_slice($parts, 2));
+        $store[$parts[1]] = $value;
+        return &quot;OK&quot;;
+    }
+    if ($command == &quot;GET&quot; &amp;&amp; count($parts) == 2) {
+        if (array_key_exists($parts[1], $store)) {
+            return $store[$parts[1]];
+        }
+        return &quot;(nil)&quot;;
+    }
+    if ($command == &quot;DEL&quot; &amp;&amp; count($parts) == 2) {
+        unset($store[$parts[1]]);
+        return &quot;OK&quot;;
+    }
+    if ($command == &quot;KEYS&quot;) {
+        return implode(&quot; &quot;, array_keys($store));
+    }
+    if ($command == &quot;QUIT&quot;) {
+        $server = $loop as Loop;
+        $server-&gt;unwatch($client);
+        stream_close($client);
+        return null;
+    }
+    return &quot;ERR unknown command: $line&quot;;
+};
+
+// Greet every new connection.
+$onConnect = function($client, $peer) {
+    echo &quot;client connected: $peer&quot;;
+    stream_send($client, &quot;kv-store ready\r\n&quot;);
+};
+
+$loop = async_line_server(&quot;tcp://127.0.0.1:7002&quot;, $handleLine, $onConnect);
+
+// The returned Loop is an ordinary loop: add a stats timer to it.
+$loop-&gt;every(30000, function() use (&amp;$store, &amp;$commandCount) {
+    echo &quot;stats: &quot; . count($store) . &quot; keys, $commandCount commands served&quot;;
+});
+
+echo &quot;kv-store listening on 127.0.0.1:7002&quot;;
+$loop-&gt;run();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 05-kv-store.hphp
+nc 127.0.0.1 7002      then type: SET color blue / GET color / KEYS</code></pre></div>
+</article>
 </section>
 <aside class="lib-related"><h3>Related libraries</h3><div class="lib-mini-grid"><a href="../http/"><b>http</b><span>Router, requests and responses, and a small HTTP server.</span></a><a href="../websocket/"><b>websocket</b><span>WebSocket servers: handshake, frames, chat-style broadcasting.</span></a></div></aside>
 </main>
@@ -191,7 +441,17 @@ hphp run examples/async_demo.hphp</code></pre>
   function show(name, push) {
     var found = false;
     panels.forEach(function (p) { var on = p.getAttribute("data-tab-panel") === name; p.hidden = !on; if (on) found = true; });
-    if (!found) return show(panels[0].getAttribute("data-tab-panel"), false);
+    if (!found) {
+      /* an anchor inside a panel (#ex-02-json-api): open that panel, scroll to it */
+      var target = name && document.getElementById(name);
+      var owner = target && target.closest("[data-tab-panel]");
+      if (owner) {
+        show(owner.getAttribute("data-tab-panel"), false);
+        target.scrollIntoView();
+        return;
+      }
+      return show(panels[0].getAttribute("data-tab-panel"), false);
+    }
     buttons.forEach(function (b) { var on = b.getAttribute("data-tab-button") === name; b.setAttribute("aria-selected", on ? "true" : "false"); b.classList.toggle("active", on); });
     if (push) history.replaceState(null, "", "#" + name);
     var side = document.querySelector(".doc-side");

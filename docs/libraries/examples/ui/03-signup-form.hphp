@@ -1,0 +1,61 @@
+<?php
+/* A sign-up form with validation
+ *
+ * A small form inside a `card()`: text inputs, a `combo()` drop-down and a
+ * `checkbox()`. Clicking "Create account" reads every field with
+ * `content()`, `selectedText()` and `checked()`, validates them, and shows
+ * either the first problem in a red label or a summary in a message box.
+ *
+ * try: hphp run 03-signup-form.hphp
+ */
+
+import "ui";
+
+$app = new App("Create account", 460, 560);
+$app->theme("light");
+$app->heading("Create your account");
+
+// The form fields, inside a rounded card.
+$form = $app->card(400);
+$form->label("Name");
+$name = $form->input("");
+$form->label("Email");
+$email = $form->input("");
+$form->label("Plan");
+$plan = $form->combo(["Free", "Pro", "Team"]);
+$plan->select(0);
+$terms = $form->checkbox("I accept the terms");
+
+// Where validation errors appear (empty until needed).
+$errors = $form->label("")->color(0xD32F2F);
+
+// Read the fields, find the first problem, then report.
+$submit = function() use ($app, $name, $email, $plan, $terms, $errors) {
+    $problem = "";
+    if (trim($name->content()) == "") {
+        $problem = "Please enter your name.";
+    } elseif (!str_contains($email->content(), "@")) {
+        $problem = "That email address looks wrong.";
+    } elseif (!$terms->checked()) {
+        $problem = "You need to accept the terms.";
+    }
+
+    $errors->text($problem);
+    if ($problem != "") {
+        return;
+    }
+    $app->msg("Welcome, " . trim($name->content()) . "!\n"
+        . "Plan: " . $plan->selectedText() . "\n"
+        . "We sent a confirmation to " . $email->content() . ".", "Account created");
+};
+
+$form->button("Create account", "primary", $submit);
+
+// Pressing Enter in the email field submits too (13 = the Enter key).
+$email->onKey(function($key, $char, $mods) use ($submit) {
+    if ($key == 13) {
+        $submit();
+    }
+});
+
+$app->run();

@@ -1,0 +1,34 @@
+<?php
+/* An interactive setup
+ *
+ * Asks a few questions like an installer would: free text with a default
+ * (`cli_ask`), a numbered menu (`cli_choose`) and a yes/no question
+ * (`cli_confirm`). Enter always keeps the value in brackets.
+ *
+ * try: hphp run 02-interactive-setup.hphp
+ */
+import "cli";
+
+echo cli_color("New project", "bold");
+echo "";
+
+// questions
+$name = cli_ask("Project name", "my_app");
+$kinds = ["console app", "web server", "library"];
+$kind = cli_choose("What do you want to build?", $kinds, 0);
+$tests = cli_confirm("Add tests?", true);
+
+// summary
+echo "";
+echo cli_table(["setting", "value"], [
+    ["name", $name],
+    ["kind", $kinds[$kind]],
+    ["tests", $tests ? "yes" : "no"],
+]);
+echo "";
+
+if (cli_confirm("Create it?", true)) {
+    echo cli_color("created " . $name, "green");
+} else {
+    echo cli_color("cancelled", "yellow");
+}

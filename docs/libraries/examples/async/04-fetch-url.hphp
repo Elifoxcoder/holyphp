@@ -1,0 +1,62 @@
+<?php
+/* Fetching a URL without blocking
+ *
+ * `httpGet()` runs an HTTP/1.1 GET on the loop itself, so timers keep
+ * firing while the response streams in - here a progress timer prints how
+ * long we have been waiting. The callback receives the raw response
+ * (status line, headers and body), which we split up and summarise.
+ *
+ * `httpGet()` speaks plain `http://` only and gives up after 10 seconds.
+ *
+ * try: hphp run 04-fetch-url.hphp
+ */
+
+import "async";
+
+$url = "http://example.com/";
+$loop = new Loop();
+$started = now_ms();
+
+// Show that the loop stays responsive while the request is in flight.
+$waitTimer = $loop->every(100, function() use ($started) {
+    $waited = now_ms() - $started;
+    echo "waiting... $waited ms";
+});
+
+// Success: split the raw response into head and body and report on both.
+$onDone = function($response) use ($loop, $waitTimer, $started) {
+    $loop->cancelTimer($waitTimer);
+    $split = strpos($response, "\r\n\r\n");
+    if ($split === false) {
+        echo "malformed response";
+        return;
+    }
+    $head = substr($response, 0, $split);
+    $body = substr($response, $split + 4);
+    $headerLines = explode("\r\n", $head);
+
+    echo "status:  " . $headerLines[0];
+    foreach ($headerLines as $line) {
+        if (str_starts_with(strtolower($line), "content-type:")) {
+            echo "type:    " . trim(substr($line, 13));
+        }
+    }
+    echo "body:    " . strlen($body) . " bytes";
+
+    // Pull the <title> out of the page, if it has one.
+    $match = [];
+    if (preg_match("/<title>(.*?)<\/title>/is", $body, $match) === 1) {
+        echo "title:   " . trim($match[1]);
+    }
+    echo "took:    " . (now_ms() - $started) . " ms";
+};
+
+// Failure: connection refused, DNS trouble or the 10 s timeout.
+$onError = function($reason) use ($loop, $waitTimer) {
+    $loop->cancelTimer($waitTimer);
+    echo "request failed: $reason";
+};
+
+echo "GET $url";
+$loop->httpGet($url, $onDone, $onError);
+$loop->run();

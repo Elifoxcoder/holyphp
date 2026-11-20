@@ -1,0 +1,60 @@
+<?php
+/* Heavy work off the event loop
+ *
+ * An async `Loop` must never block, so CPU-heavy jobs go to threads. Each
+ * job runs on its own thread and reports back on a channel; the loop polls
+ * that channel with the non-blocking `chan_try_recv()` from a timer, while
+ * a second timer shows the loop stays responsive the whole time. When the
+ * last job is in, `stop()` ends the loop.
+ *
+ * try: hphp run 05-offload-from-event-loop.hphp
+ */
+
+import "async";
+import "thread";
+
+// CPU-bound work: hash a string over and over.
+function stretch_key(string $password, int $rounds): string {
+    $hash = $password;
+    for ($i = 0; $i < $rounds; $i++) {
+        $hash = sha256($hash);
+    }
+    return $hash;
+}
+
+$jobs = ["alice" => 12000, "bob" => 4000, "carol" => 8000];
+$done = chan_new(count($jobs));
+
+// Start one background thread per job.
+foreach ($jobs as $user => $rounds) {
+    thr_spawn(function() use ($user, $rounds, $done) {
+        $key = stretch_key("secret-of-$user", $rounds);
+        chan_send($done, [$user, $rounds, substr($key, 0, 16)]);
+    });
+}
+
+$loop = new Loop();
+$started = now_ms();
+$remaining = count($jobs);
+
+// Heartbeat: proves the loop keeps running while threads work.
+$loop->every(250, function() use ($started) {
+    echo "  ...loop alive at " . (now_ms() - $started) . " ms";
+});
+
+// Poll for finished jobs without ever blocking the loop.
+$loop->every(20, function() use ($loop, $done, $started, &$remaining) {
+    $result = chan_try_recv($done);
+    if ($result === false) {
+        return;
+    }
+    $elapsed = now_ms() - $started;
+    echo $result[0] . ": " . $result[1] . " rounds -> " . $result[2] . "... ($elapsed ms)";
+    $remaining = $remaining - 1;
+    if ($remaining == 0) {
+        $loop->stop();
+    }
+});
+
+$loop->run();
+echo "all keys derived";

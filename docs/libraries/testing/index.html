@@ -112,25 +112,119 @@ failures at once. <code>hphp test -v</code> prints the output of every test file
 </section>
 <section class="tab-panel" data-tab-panel="examples" role="tabpanel" aria-label="Examples">
 <h2 class="tab-title">Examples</h2>
-<h2>Sections, exceptions and floats</h2>
-<pre><code class="hphp">import "testing";
+<p class="example-intro">3 complete programs. Every one is type-checked with the compiler before the site is published; copy one into <code>src/</code> of a project (<code>hphp create</code>) and run it.</p>
+<nav class="example-toc"><a href="#ex-01-first-test">01 Your first test file</a><a href="#ex-02-testing-a-class">02 Testing a class: state, errors and sections</a><a href="#ex-03-table-driven">03 Table-driven tests</a></nav>
+<article class="example" id="ex-01-first-test">
+<h2><span class="example-num">01</span>Your first test file</h2>
+<p>A test is a normal program: make a <code>Test</code>, check results with <code>equal()</code>, and finish with <code>done()</code>, which exits with 1 when a check failed. In a project this file lives in tests/ and <code>hphp test</code> runs it.</p>
+<div class="example-file">01-first-test.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;testing&quot;;
 
-function parse_age(string $s): int {
-    if (!is_numeric($s)) { throw "not a number: " . $s; }
-    return intval($s);
+// the code under test (normally imported from src/)
+function initials(string $name): string {
+    $out = &quot;&quot;;
+    foreach (explode(&quot; &quot;, trim($name)) as $part) {
+        if ($part != &quot;&quot;) {
+            $out = $out . strtoupper(substr($part, 0, 1));
+        }
+    }
+    return $out;
 }
 
-$t = new Test("parsing");
-$t->section("valid input");
-$t->same(parse_age("42"), 42, "plain number");
-$t->noThrow(function() { parse_age("7"); }, "small numbers");
+$t = new Test(&quot;initials&quot;);
 
-$t->section("invalid input");
-$t->throws(function() { parse_age("x"); }, "letters are rejected");
+$t-&gt;equal(initials(&quot;Ada Lovelace&quot;), &quot;AL&quot;, &quot;two names&quot;);
+$t-&gt;equal(initials(&quot;grace brewster hopper&quot;), &quot;GBH&quot;, &quot;lowercase input&quot;);
+$t-&gt;equal(initials(&quot;  Linus   Torvalds &quot;), &quot;LT&quot;, &quot;extra spaces&quot;);
+$t-&gt;equal(initials(&quot;&quot;), &quot;&quot;, &quot;empty name&quot;);
 
-$t->section("math");
-$t->near(0.1 + 0.2, 0.3, 0.000001, "floating point");
-$t->done();</code></pre>
+$t-&gt;done();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 01-first-test.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-02-testing-a-class">
+<h2><span class="example-num">02</span>Testing a class: state, errors and sections</h2>
+<p>Tests a small bank account. <code>section()</code> groups the checks in the output, <code>throws()</code> checks that invalid operations are rejected, and <code>same()</code> also compares the type.</p>
+<div class="example-file">02-testing-a-class.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;testing&quot;;
+
+class Account {
+    pub int $balance = 0;
+
+    pub function deposit(int $amount): void {
+        if ($amount &lt;= 0) {
+            throw &quot;deposit must be positive&quot;;
+        }
+        $this-&gt;balance = $this-&gt;balance + $amount;
+    }
+
+    pub function withdraw(int $amount): void {
+        if ($amount &gt; $this-&gt;balance) {
+            throw &quot;insufficient funds&quot;;
+        }
+        $this-&gt;balance = $this-&gt;balance - $amount;
+    }
+}
+
+$t = new Test(&quot;account&quot;);
+
+$t-&gt;section(&quot;a new account&quot;);
+$fresh = new Account();
+$t-&gt;same($fresh-&gt;balance, 0, &quot;starts empty&quot;);
+
+$t-&gt;section(&quot;deposits and withdrawals&quot;);
+$acc = new Account();
+$acc-&gt;deposit(100);
+$acc-&gt;withdraw(30);
+$t-&gt;same($acc-&gt;balance, 70, &quot;100 in, 30 out&quot;);
+
+$t-&gt;section(&quot;invalid operations&quot;);
+$t-&gt;throws(function() use ($acc) { $acc-&gt;withdraw(1000); }, &quot;cannot overdraw&quot;);
+$t-&gt;throws(function() use ($acc) { $acc-&gt;deposit(-5); }, &quot;cannot deposit a negative amount&quot;);
+$t-&gt;same($acc-&gt;balance, 70, &quot;a rejected operation changes nothing&quot;);
+
+$t-&gt;done();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 02-testing-a-class.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-03-table-driven">
+<h2><span class="example-num">03</span>Table-driven tests</h2>
+<p>When many inputs share one rule, list them as rows and loop. Each row is its own check with its own name, so a failure points at the exact case. <code>near()</code> compares floats with a tolerance.</p>
+<div class="example-file">03-table-driven.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;testing&quot;;
+
+// the code under test
+function celsius_to_fahrenheit(float $c): float {
+    return $c * 9 / 5 + 32;
+}
+
+function is_leap_year(int $year): bool {
+    return ($year % 4 == 0 &amp;&amp; $year % 100 != 0) || $year % 400 == 0;
+}
+
+$t = new Test(&quot;tables&quot;);
+
+$t-&gt;section(&quot;temperature&quot;);
+$temperatures = [
+    [0.0, 32.0],
+    [100.0, 212.0],
+    [-40.0, -40.0],
+    [36.6, 97.88],
+];
+foreach ($temperatures as $row) {
+    $t-&gt;near(celsius_to_fahrenheit($row[0]), $row[1], 0.001, $row[0] . &quot; C&quot;);
+}
+
+$t-&gt;section(&quot;leap years&quot;);
+$years = [[2000, true], [1900, false], [2024, true], [2023, false]];
+foreach ($years as $row) {
+    $t-&gt;equal(is_leap_year($row[0]), $row[1], strval($row[0]));
+}
+
+$t-&gt;done();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 03-table-driven.hphp</code></pre></div>
+</article>
 </section>
 <aside class="lib-related"><h3>Related libraries</h3><div class="lib-mini-grid"><a href="../cli/"><b>cli</b><span>Arguments, questions, tables, progress bars and colors.</span></a><a href="../dotenv/"><b>dotenv</b><span>Configuration from .env files and the environment.</span></a></div></aside>
 </main>
@@ -146,7 +240,17 @@ $t->done();</code></pre>
   function show(name, push) {
     var found = false;
     panels.forEach(function (p) { var on = p.getAttribute("data-tab-panel") === name; p.hidden = !on; if (on) found = true; });
-    if (!found) return show(panels[0].getAttribute("data-tab-panel"), false);
+    if (!found) {
+      /* an anchor inside a panel (#ex-02-json-api): open that panel, scroll to it */
+      var target = name && document.getElementById(name);
+      var owner = target && target.closest("[data-tab-panel]");
+      if (owner) {
+        show(owner.getAttribute("data-tab-panel"), false);
+        target.scrollIntoView();
+        return;
+      }
+      return show(panels[0].getAttribute("data-tab-panel"), false);
+    }
     buttons.forEach(function (b) { var on = b.getAttribute("data-tab-button") === name; b.setAttribute("aria-selected", on ? "true" : "false"); b.classList.toggle("active", on); });
     if (push) history.replaceState(null, "", "#" + name);
     var side = document.querySelector(".doc-side");

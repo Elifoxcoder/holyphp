@@ -1,0 +1,23 @@
+<?php
+/* Load configuration from .env
+ *
+ * Put settings in a `.env` file next to the program (and keep it out of
+ * git). `env_load()` reads it; the typed getters return a default when a
+ * value is missing. Real environment variables win over the file.
+ *
+ * try: printf "APP_NAME=Shop\nPORT=9000\nDEBUG=yes\n" > .env
+ * try: hphp run 01-load-config.hphp
+ * try: PORT=7000 hphp run 01-load-config.hphp
+ */
+import "dotenv";
+
+$loaded = env_load();
+echo "read " . $loaded . " settings from .env";
+
+$name = env("APP_NAME", "my app");
+$port = env_int("PORT", 8080);
+$debug = env_bool("DEBUG", false);
+
+echo "app:   " . $name;
+echo "port:  " . $port;
+echo "debug: " . ($debug ? "on" : "off");

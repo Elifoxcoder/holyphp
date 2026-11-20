@@ -1,0 +1,70 @@
+<?php
+/* A focus timer with themes
+ *
+ * A Pomodoro timer: a `slider()` sets the minutes, `every()` ticks once a
+ * second, a `progress()` bar fills up, and a `combo()` of `ui_theme_names()`
+ * restyles the whole window live with `theme()`.
+ *
+ * try: hphp run 05-focus-timer.hphp
+ */
+
+import "ui";
+
+$app = new App("Focus timer", 420, 420);
+
+// Settings: session length (1-60 minutes) and theme.
+$settings = $app->section("Settings", 360);
+$length = $settings->slider(25);
+$length->range(1, 60);
+$themes = $settings->combo(ui_theme_names());
+
+// The clock: time left, a progress bar and the start button.
+$clock = $app->heading("25:00");
+$bar = $app->progress(0);
+$startStop = $app->button("Start", "primary");
+
+// Timer state, shared by the handlers below.
+$total = 25 * 60;
+$left = $total;
+$running = false;
+
+// Show the remaining time as mm:ss and fill the bar as time passes.
+$show = function() use (&$total, &$left, $clock, $bar) {
+    $clock->text(sprintf("%02d:%02d", intdiv($left, 60), $left % 60));
+    $bar->progress(intdiv(($total - $left) * 100, $total));
+};
+
+// Moving the slider resets the timer to the new length.
+$length->onChange(function($minutes) use (&$total, &$left, $show) {
+    $total = $minutes * 60;
+    $left = $total;
+    $show();
+});
+
+// Picking a theme restyles every widget at once.
+$themes->onChange(function($index, $name) use ($app) {
+    $app->theme($name);
+});
+
+// Start / pause toggles one flag; the timer below checks it.
+$startStop->onClick(function() use (&$running, $startStop) {
+    $running = !$running;
+    $startStop->text($running ? "Pause" : "Start");
+});
+
+// Once a second: count down while running; at zero, announce and reset.
+$app->every(1000, function() use ($app, &$running, &$left, &$total, $startStop, $show) {
+    if (!$running) {
+        return;
+    }
+    $left = $left - 1;
+    if ($left == 0) {
+        $running = false;
+        $startStop->text("Start");
+        $app->msg("Time is up - take a break!");
+        $left = $total;
+    }
+    $show();
+});
+
+$app->run();

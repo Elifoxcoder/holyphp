@@ -119,19 +119,21 @@ $squares = thr_parallel_map(function($x) { return $x * $x; }, [1,2,3,4,5]);
 // [1, 4, 9, 16, 25] — input order kept regardless of finish order
 
 // chunked variant for big inputs: strided workers + channel collection
-$out = thr_map_chunked(function($x) { return heavy($x); }, $bigArray);</code></pre>
+$out = thr_map_chunked($bigArray, function($x) { return heavy($x); });   // items first, then the function</code></pre>
 
 <h2>The Pool class</h2>
 <pre class="fragment"><code class="hphp">import "thread";
 
-$pool = new Pool(4);                     // 4 strided workers
-$pool->start(function($items, $wid) {
-    foreach ($items as $x) { process($x); }
-});
-foreach ($urls as $u) { $pool->submit($u); }
-$pool->collect($results);
-$pool->waitOne();
-$pool->shutdown();</code></pre>
+$pool = new Pool(4);                     // 4 workers
+
+// one call: every item through the function, results in input order
+$sizes = $pool->map(function($url) {
+    return strlen(file_get_contents($url));
+}, $urls);</code></pre>
+  <p class="release-note">Known issue: the streaming form <code>$pool-&gt;start($fn)</code> followed by
+  <code>submit()</code> crashes at run time in this release, as does <code>new Thread($fn)</code> with
+  arguments passed to <code>start()</code>. Use <code>Pool::map</code>, <code>thr_parallel_map</code>,
+  <code>thr_map_chunked</code> or <code>thr_spawn</code> until the fix ships.</p>
 
 <h2>Concurrency + event loop</h2>
   <p>Threads and <a href="lib-async.html">async</a> compose: run a blocking fetch
@@ -156,11 +158,277 @@ $lp->run();</code></pre>
 </section>
 <section class="tab-panel" data-tab-panel="examples" role="tabpanel" aria-label="Examples">
 <h2 class="tab-title">Examples</h2>
-<h2>Try it</h2>
-<pre><code class="bash">hphp pkg install thread
-hphp run examples/thr_demo.hphp</code></pre>
-  <p class="small muted">Ships embedded in the compiler — <code>import "thread"</code>
-  works offline. Source: <code>lib/thread/thread.hphp</code>.</p>
+<p class="example-intro">5 complete programs. Every one is type-checked with the compiler before the site is published; copy one into <code>src/</code> of a project (<code>hphp create</code>) and run it.</p>
+<nav class="example-toc"><a href="#ex-01-producer-consumer">01 Producer and consumer over a channel</a><a href="#ex-02-parallel-map">02 Counting primes on every core</a><a href="#ex-03-worker-pool">03 A worker pool from channels</a><a href="#ex-04-race">04 A foot race: barrier, atomic and mutex</a><a href="#ex-05-offload-from-event-loop">05 Heavy work off the event loop</a></nav>
+<article class="example" id="ex-01-producer-consumer">
+<h2><span class="example-num">01</span>Producer and consumer over a channel</h2>
+<p>Two threads, one channel between them. The producer thread sends work items and closes the channel when it is done; the main thread receives until <code>chan_recv()</code> returns <code>false</code>, which means &quot;closed and fully drained&quot;. This is the Go pattern, and the safest way to share data: nothing is shared, values are copied through the channel.</p>
+<p>A thread closure may only capture plain values, so threads talk through the channel id returned by <code>chan_new()</code>.</p>
+<div class="example-file">01-producer-consumer.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;thread&quot;;
+
+// A buffered channel: the producer can run up to 3 orders ahead.
+$orders = chan_new(3);
+
+// The producer runs on its own OS thread.
+$producer = thr_spawn(function() use ($orders) {
+    $menu = [&quot;espresso&quot;, &quot;latte&quot;, &quot;cappuccino&quot;, &quot;flat white&quot;, &quot;mocha&quot;];
+    foreach ($menu as $index =&gt; $drink) {
+        thr_sleep_ms(100);
+        chan_send($orders, [&quot;number&quot; =&gt; $index + 1, &quot;drink&quot; =&gt; $drink]);
+        echo &quot;  [producer] queued order &quot; . ($index + 1);
+    }
+    chan_close($orders);
+});
+
+// The consumer (main thread) handles orders until the channel is drained.
+$served = 0;
+while (true) {
+    $order = chan_recv($orders);
+    if ($order === false) {
+        break;
+    }
+    thr_sleep_ms(150);
+    echo &quot;[barista] order &quot; . $order[&quot;number&quot;] . &quot;: one &quot; . $order[&quot;drink&quot;];
+    $served = $served + 1;
+}
+
+thr_join($producer);
+echo &quot;all done - served $served orders&quot;;</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 01-producer-consumer.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-02-parallel-map">
+<h2><span class="example-num">02</span>Counting primes on every core</h2>
+<p><code>Pool::map()</code> runs a function over an array on several OS threads and returns the results in input order, whatever order the threads finish in. Here the range 1..2,000,000 is cut into eight slices, the slices are counted on worker threads, and the time is compared with doing the same work on one thread.</p>
+<div class="example-file">02-parallel-map.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;thread&quot;;
+
+// Plain, deliberately slow trial division: good CPU-bound work.
+function count_primes(int $from, int $to): int {
+    $found = 0;
+    for ($n = $from; $n &lt;= $to; $n++) {
+        if ($n &lt; 2) {
+            continue;
+        }
+        $isPrime = true;
+        for ($d = 2; $d * $d &lt;= $n; $d++) {
+            if ($n % $d == 0) {
+                $isPrime = false;
+                break;
+            }
+        }
+        if ($isPrime) {
+            $found = $found + 1;
+        }
+    }
+    return $found;
+}
+
+// Cut the range into 8 equal slices.
+$limit = 2000000;
+$sliceCount = 8;
+$sliceSize = intdiv($limit, $sliceCount);
+$slices = [];
+for ($start = 1; $start &lt;= $limit; $start += $sliceSize) {
+    $slices[] = [$start, min($start + $sliceSize - 1, $limit)];
+}
+
+// Parallel: up to one worker thread per core, one slice per job.
+$workers = min(thr_cpu_count(), $sliceCount);
+$pool = new Pool($workers);
+$t0 = microtime();
+$counts = $pool-&gt;map(function($slice) {
+    return count_primes($slice[0], $slice[1]);
+}, $slices);
+$parallelMs = intval((microtime() - $t0) * 1000);
+
+foreach ($slices as $i =&gt; $slice) {
+    echo &quot;slice &quot; . $slice[0] . &quot;..&quot; . $slice[1] . &quot;: &quot; . $counts[$i] . &quot; primes&quot;;
+}
+echo &quot;parallel:   &quot; . array_sum($counts) . &quot; primes in $parallelMs ms on $workers threads&quot;;
+
+// Sequential: the same work on the main thread, for comparison.
+$t1 = microtime();
+$total = count_primes(1, $limit);
+$sequentialMs = intval((microtime() - $t1) * 1000);
+echo &quot;sequential: $total primes in $sequentialMs ms on 1 thread&quot;;</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 02-parallel-map.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-03-worker-pool">
+<h2><span class="example-num">03</span>A worker pool from channels</h2>
+<p>The classic pool: a fixed number of workers pull jobs from a shared <code>jobs</code> channel and push answers onto a <code>results</code> channel. Closing the jobs channel is the &quot;no more work&quot; signal - each worker's <code>chan_recv()</code> then returns <code>false</code> and the worker exits. Results come back in finish order, so every result carries the id of its job.</p>
+<div class="example-file">03-worker-pool.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;thread&quot;;
+
+// The job: count the words of one document and find the longest one.
+function analyse(string $text) {
+    $words = preg_split(&quot;/[^a-z]+/&quot;, strtolower($text));
+    $total = 0;
+    $longest = &quot;&quot;;
+    foreach ($words as $word) {
+        if ($word == &quot;&quot;) {
+            continue;
+        }
+        $total = $total + 1;
+        if (strlen($word) &gt; strlen($longest)) {
+            $longest = $word;
+        }
+    }
+    return [&quot;words&quot; =&gt; $total, &quot;longest&quot; =&gt; $longest];
+}
+
+$documents = [
+    &quot;The quick brown fox jumps over the lazy dog, and the fox runs away.&quot;,
+    &quot;Threads share nothing here: every message is copied through a channel.&quot;,
+    &quot;Workers pull jobs, workers push results, workers stop when closed.&quot;,
+    &quot;Buffered channels let the sender run ahead of a slow receiver.&quot;,
+];
+
+// Both channels are big enough to hold every job, so sends never block.
+$jobs = chan_new(count($documents));
+$results = chan_new(count($documents));
+
+// Start three workers. Each one loops until the jobs channel is closed.
+$workerCount = 3;
+for ($w = 1; $w &lt;= $workerCount; $w++) {
+    thr_spawn(function() use ($w, $jobs, $results) {
+        while (true) {
+            $job = chan_recv($jobs);
+            if ($job === false) {
+                break;
+            }
+            $stats = analyse($job[&quot;text&quot;]);
+            chan_send($results, [&quot;id&quot; =&gt; $job[&quot;id&quot;], &quot;worker&quot; =&gt; $w, &quot;stats&quot; =&gt; $stats]);
+        }
+    });
+}
+
+// Queue every document, then announce that no more jobs will come.
+foreach ($documents as $id =&gt; $text) {
+    chan_send($jobs, [&quot;id&quot; =&gt; $id, &quot;text&quot; =&gt; $text]);
+}
+chan_close($jobs);
+
+// Collect exactly one result per document.
+for ($i = 0; $i &lt; count($documents); $i++) {
+    $result = chan_recv($results);
+    $stats = $result[&quot;stats&quot;];
+    echo &quot;doc &quot; . $result[&quot;id&quot;] . &quot; (worker &quot; . $result[&quot;worker&quot;] . &quot;): &quot;
+        . $stats[&quot;words&quot;] . &quot; words, longest word: &quot; . $stats[&quot;longest&quot;];
+}</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 03-worker-pool.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-04-race">
+<h2><span class="example-num">04</span>A foot race: barrier, atomic and mutex</h2>
+<p>Four runner threads line up at a <code>Barrier</code>, so they all start at the same instant. Each runs for a random time, then takes the next place from an <code>Atomic</code> counter - an increment that is exact even when threads finish at the same moment. A <code>Mutex</code> keeps their console lines from interleaving, and the results travel back to the main thread over a channel.</p>
+<p>The objects are created on the main thread; a thread closure captures only their integer ids and uses the matching <code>barrier_</code>, <code>atomic_</code> and <code>mutex_</code> functions.</p>
+<div class="example-file">04-race.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;thread&quot;;
+
+$runners = [&quot;Ada&quot;, &quot;Grace&quot;, &quot;Linus&quot;, &quot;Margaret&quot;];
+
+// Shared synchronisation objects, passed to threads by id.
+$startLine = new Barrier(count($runners));
+$places = new Atomic(0);
+$console = new Mutex();
+$barrierId = $startLine-&gt;id;
+$placeId = $places-&gt;id;
+$consoleId = $console-&gt;id;
+$finished = chan_new(count($runners));
+
+// One thread per runner.
+foreach ($runners as $name) {
+    thr_spawn(function() use ($name, $barrierId, $placeId, $consoleId, $finished) {
+        // Wait until every runner is at the start line.
+        barrier_wait($barrierId);
+
+        // Run! Then claim the next place; atomic_add returns the old value.
+        thr_sleep_ms(rand(100, 400));
+        $place = atomic_add($placeId, 1) + 1;
+
+        // Only one thread prints at a time.
+        mutex_lock($consoleId);
+        echo &quot;  $name crosses the line&quot;;
+        mutex_unlock($consoleId);
+
+        chan_send($finished, [$place, $name]);
+    });
+}
+
+// Collect every runner, then print the podium in order.
+$board = [];
+for ($i = 0; $i &lt; count($runners); $i++) {
+    $result = chan_recv($finished);
+    $board[$result[0]] = $result[1];
+}
+ksort($board);
+
+echo &quot;Results:&quot;;
+foreach ($board as $place =&gt; $name) {
+    echo &quot;  $place. $name&quot;;
+}
+echo &quot;places handed out: &quot; . $places-&gt;get();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 04-race.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-05-offload-from-event-loop">
+<h2><span class="example-num">05</span>Heavy work off the event loop</h2>
+<p>An async <code>Loop</code> must never block, so CPU-heavy jobs go to threads. Each job runs on its own thread and reports back on a channel; the loop polls that channel with the non-blocking <code>chan_try_recv()</code> from a timer, while a second timer shows the loop stays responsive the whole time. When the last job is in, <code>stop()</code> ends the loop.</p>
+<div class="example-file">05-offload-from-event-loop.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;async&quot;;
+import &quot;thread&quot;;
+
+// CPU-bound work: hash a string over and over.
+function stretch_key(string $password, int $rounds): string {
+    $hash = $password;
+    for ($i = 0; $i &lt; $rounds; $i++) {
+        $hash = sha256($hash);
+    }
+    return $hash;
+}
+
+$jobs = [&quot;alice&quot; =&gt; 12000, &quot;bob&quot; =&gt; 4000, &quot;carol&quot; =&gt; 8000];
+$done = chan_new(count($jobs));
+
+// Start one background thread per job.
+foreach ($jobs as $user =&gt; $rounds) {
+    thr_spawn(function() use ($user, $rounds, $done) {
+        $key = stretch_key(&quot;secret-of-$user&quot;, $rounds);
+        chan_send($done, [$user, $rounds, substr($key, 0, 16)]);
+    });
+}
+
+$loop = new Loop();
+$started = now_ms();
+$remaining = count($jobs);
+
+// Heartbeat: proves the loop keeps running while threads work.
+$loop-&gt;every(250, function() use ($started) {
+    echo &quot;  ...loop alive at &quot; . (now_ms() - $started) . &quot; ms&quot;;
+});
+
+// Poll for finished jobs without ever blocking the loop.
+$loop-&gt;every(20, function() use ($loop, $done, $started, &amp;$remaining) {
+    $result = chan_try_recv($done);
+    if ($result === false) {
+        return;
+    }
+    $elapsed = now_ms() - $started;
+    echo $result[0] . &quot;: &quot; . $result[1] . &quot; rounds -&gt; &quot; . $result[2] . &quot;... ($elapsed ms)&quot;;
+    $remaining = $remaining - 1;
+    if ($remaining == 0) {
+        $loop-&gt;stop();
+    }
+});
+
+$loop-&gt;run();
+echo &quot;all keys derived&quot;;</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 05-offload-from-event-loop.hphp</code></pre></div>
+</article>
 </section>
 
 </main>
@@ -176,7 +444,17 @@ hphp run examples/thr_demo.hphp</code></pre>
   function show(name, push) {
     var found = false;
     panels.forEach(function (p) { var on = p.getAttribute("data-tab-panel") === name; p.hidden = !on; if (on) found = true; });
-    if (!found) return show(panels[0].getAttribute("data-tab-panel"), false);
+    if (!found) {
+      /* an anchor inside a panel (#ex-02-json-api): open that panel, scroll to it */
+      var target = name && document.getElementById(name);
+      var owner = target && target.closest("[data-tab-panel]");
+      if (owner) {
+        show(owner.getAttribute("data-tab-panel"), false);
+        target.scrollIntoView();
+        return;
+      }
+      return show(panels[0].getAttribute("data-tab-panel"), false);
+    }
     buttons.forEach(function (b) { var on = b.getAttribute("data-tab-button") === name; b.setAttribute("aria-selected", on ? "true" : "false"); b.classList.toggle("active", on); });
     if (push) history.replaceState(null, "", "#" + name);
     var side = document.querySelector(".doc-side");

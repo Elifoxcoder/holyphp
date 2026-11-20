@@ -1,0 +1,64 @@
+<?php
+/* Chat room with nicknames
+ *
+ * A complete chat backend. `broadcast()` sends a message to every open
+ * client, and its second argument skips one client - handy for "everyone
+ * but the sender". Users pick a name with `/nick NAME`, list the room with
+ * `/who`, and everyone hears about joins and departures.
+ *
+ * try: hphp run 02-chat-room.hphp
+ */
+
+import "websocket";
+
+$server = new WebSocketServer("tcp://127.0.0.1:9002");
+$names = [];   // client id => nickname
+
+// Someone joined: give them a default name and tell the others.
+$server->onOpen = function(int $client) use ($server, &$names): void {
+    $names[$client] = "guest$client";
+    $server->send($client, "Welcome! Type /nick NAME to choose a name, /who to list users.");
+    $server->broadcast("* guest$client joined", $client);
+};
+
+// A message: either a command or a line of chat.
+$server->onMessage = function(int $client, string $message) use ($server, &$names): void {
+    $text = trim($message);
+    if ($text == "") {
+        return;
+    }
+
+    if (str_starts_with($text, "/nick ")) {
+        $old = $names[$client];
+        $names[$client] = trim(substr($text, 6));
+        $server->broadcast("* $old is now " . $names[$client]);
+        return;
+    }
+
+    if ($text == "/who") {
+        $count = $server->clientCount();
+        $server->send($client, "$count online: " . implode(", ", $names));
+        return;
+    }
+
+    // Plain chat: everyone else sees it with the sender's name.
+    $server->broadcast($names[$client] . ": " . $text, $client);
+};
+
+// Someone left: forget their name and tell the room. (A connection
+// that never finished the handshake has no name and is skipped.)
+$server->onClose = function(int $client, int $code) use ($server, &$names): void {
+    if (!array_key_exists($client, $names)) {
+        return;
+    }
+    $name = $names[$client];
+    unset($names[$client]);
+    $server->broadcast("* $name left");
+};
+
+if (!$server->listen()) {
+    echo "could not listen on port 9002";
+    exit(1);
+}
+echo "chat room on ws://127.0.0.1:9002";
+$server->run();

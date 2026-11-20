@@ -97,20 +97,88 @@ URL=http://localhost:${PORT}/api  # expansion also works without quotes</code></
 </section>
 <section class="tab-panel" data-tab-panel="examples" role="tabpanel" aria-label="Examples">
 <h2 class="tab-title">Examples</h2>
-<h2>Local file, production variables</h2>
-<pre><code class="hphp">import "dotenv";
-import "http";
+<p class="example-intro">3 complete programs. Every one is type-checked with the compiler before the site is published; copy one into <code>src/</code> of a project (<code>hphp create</code>) and run it.</p>
+<nav class="example-toc"><a href="#ex-01-load-config">01 Load configuration from .env</a><a href="#ex-02-required-settings">02 Fail early on missing settings</a><a href="#ex-03-environments">03 Development, test and production</a></nav>
+<article class="example" id="ex-01-load-config">
+<h2><span class="example-num">01</span>Load configuration from .env</h2>
+<p>Put settings in a <code>.env</code> file next to the program (and keep it out of git). <code>env_load()</code> reads it; the typed getters return a default when a value is missing. Real environment variables win over the file.</p>
+<div class="example-file">01-load-config.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;dotenv&quot;;
 
-env_load();                       // .env for development
-env_load(".env.local", true);     // personal overrides, not committed
+$loaded = env_load();
+echo &quot;read &quot; . $loaded . &quot; settings from .env&quot;;
 
-$app = new HttpRouter();
-$app->get("/", function(HttpRequest $r): HttpResponse {
-    return http_text("running in " . env("APP_ENV", "development"));
-});
-http_serve($app, "tcp://127.0.0.1:" . env_int("PORT", 8080));</code></pre>
-<p>In production, set <code>APP_ENV</code> and <code>PORT</code> as real environment variables;
-they take precedence over the file.</p>
+$name = env(&quot;APP_NAME&quot;, &quot;my app&quot;);
+$port = env_int(&quot;PORT&quot;, 8080);
+$debug = env_bool(&quot;DEBUG&quot;, false);
+
+echo &quot;app:   &quot; . $name;
+echo &quot;port:  &quot; . $port;
+echo &quot;debug: &quot; . ($debug ? &quot;on&quot; : &quot;off&quot;);</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">printf &quot;APP_NAME=Shop\nPORT=9000\nDEBUG=yes\n&quot; &gt; .env
+hphp run 01-load-config.hphp
+PORT=7000 hphp run 01-load-config.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-02-required-settings">
+<h2><span class="example-num">02</span>Fail early on missing settings</h2>
+<p>Settings without a sensible default (an API key, a database URL) should stop the program at start with a clear message, not crash later. <code>env_required()</code> throws when a variable is missing; catching it once gives a friendly error.</p>
+<div class="example-file">02-required-settings.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;dotenv&quot;;
+
+env_load();
+
+// everything the program cannot run without, checked in one place
+function load_settings(): array {
+    $settings = [];
+    $settings[&quot;api_key&quot;] = env_required(&quot;API_KEY&quot;);
+    $settings[&quot;database&quot;] = env_required(&quot;DATABASE_URL&quot;);
+    $settings[&quot;timeout&quot;] = env_int(&quot;TIMEOUT_SECONDS&quot;, 30);
+    return $settings;
+}
+
+try {
+    $settings = load_settings();
+} catch (string $e) {
+    echo &quot;configuration error: &quot; . $e;
+    echo &quot;set it in .env or in the environment, then start again&quot;;
+    exit(1);
+}
+
+echo &quot;database: &quot; . $settings[&quot;database&quot;];
+echo &quot;timeout:  &quot; . $settings[&quot;timeout&quot;] . &quot; s&quot;;
+echo &quot;api key:  &quot; . substr($settings[&quot;api_key&quot;], 0, 3) . &quot;...&quot;;</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 02-required-settings.hphp
+API_KEY=abc123 DATABASE_URL=sqlite:app.db hphp run 02-required-settings.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-03-environments">
+<h2><span class="example-num">03</span>Development, test and production</h2>
+<p>A common layout: <code>.env</code> holds the defaults for everyone, <code>.env.&lt;mode&gt;</code> the values for one environment, and <code>.env.local</code> personal overrides that are never committed. Later files override earlier ones.</p>
+<div class="example-file">03-environments.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;dotenv&quot;;
+
+// 1. shared defaults
+env_load(&quot;.env&quot;);
+
+// 2. the environment's own file, chosen by MODE
+$mode = env(&quot;MODE&quot;, &quot;development&quot;);
+env_load(&quot;.env.&quot; . $mode, true);
+
+// 3. personal overrides, highest priority
+env_load(&quot;.env.local&quot;, true);
+
+echo &quot;mode:      &quot; . $mode;
+echo &quot;log level: &quot; . env(&quot;LOG_LEVEL&quot;, &quot;warning&quot;);
+
+// ${VAR} inside values is expanded when the file is read
+$parsed = env_parse(&quot;HOST=localhost\nURL=http://\${HOST}:8080/api\n&quot;);
+echo &quot;expanded:  &quot; . $parsed[&quot;URL&quot;];</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">printf &quot;MODE=test\nLOG_LEVEL=info\n&quot; &gt; .env
+printf &quot;LOG_LEVEL=debug\n&quot; &gt; .env.test
+hphp run 03-environments.hphp</code></pre></div>
+</article>
 </section>
 <aside class="lib-related"><h3>Related libraries</h3><div class="lib-mini-grid"><a href="../testing/"><b>testing</b><span>Assertions for hphp test with readable failure messages.</span></a><a href="../cli/"><b>cli</b><span>Arguments, questions, tables, progress bars and colors.</span></a></div></aside>
 </main>
@@ -126,7 +194,17 @@ they take precedence over the file.</p>
   function show(name, push) {
     var found = false;
     panels.forEach(function (p) { var on = p.getAttribute("data-tab-panel") === name; p.hidden = !on; if (on) found = true; });
-    if (!found) return show(panels[0].getAttribute("data-tab-panel"), false);
+    if (!found) {
+      /* an anchor inside a panel (#ex-02-json-api): open that panel, scroll to it */
+      var target = name && document.getElementById(name);
+      var owner = target && target.closest("[data-tab-panel]");
+      if (owner) {
+        show(owner.getAttribute("data-tab-panel"), false);
+        target.scrollIntoView();
+        return;
+      }
+      return show(panels[0].getAttribute("data-tab-panel"), false);
+    }
     buttons.forEach(function (b) { var on = b.getAttribute("data-tab-button") === name; b.setAttribute("aria-selected", on ? "true" : "false"); b.classList.toggle("active", on); });
     if (push) history.replaceState(null, "", "#" + name);
     var side = document.querySelector(".doc-side");

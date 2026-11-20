@@ -1,0 +1,50 @@
+<?php
+/* A counter with buttons
+ *
+ * State in a GUI program is just a variable that the click handlers share.
+ * The handlers capture it by reference (`use (&$count)`) so every button
+ * sees the same number, and `text()` updates the label. Buttons sit side
+ * by side inside a `row()`, and the minus button is disabled at zero.
+ *
+ * try: hphp run 02-counter.hphp
+ */
+
+import "ui";
+
+$app = new App("Counter", 360, 260);
+$app->theme("ocean");
+
+$count = 0;
+
+// The number itself, shown as a heading.
+$app->sub("Clicks so far");
+$display = $app->heading("0");
+
+// Three buttons next to each other.
+$buttons = $app->row();
+$minus = $buttons->button("-1");
+$plus = $buttons->button("+1", "primary");
+$reset = $buttons->button("Reset", "ghost");
+
+// Redraw the label and enable or disable "-1" to match the count.
+$refresh = function() use (&$count, $display, $minus) {
+    $display->text("$count");
+    $minus->enable($count > 0);
+};
+$refresh();
+
+// Each handler changes the shared count, then refreshes the view.
+$plus->onClick(function() use (&$count, $refresh) {
+    $count = $count + 1;
+    $refresh();
+});
+$minus->onClick(function() use (&$count, $refresh) {
+    $count = $count - 1;
+    $refresh();
+});
+$reset->onClick(function() use (&$count, $refresh) {
+    $count = 0;
+    $refresh();
+});
+
+$app->run();

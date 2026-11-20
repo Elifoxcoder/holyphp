@@ -90,7 +90,17 @@ const TABS_JS = `
   function show(name, push) {
     var found = false;
     panels.forEach(function (p) { var on = p.getAttribute("data-tab-panel") === name; p.hidden = !on; if (on) found = true; });
-    if (!found) return show(panels[0].getAttribute("data-tab-panel"), false);
+    if (!found) {
+      /* an anchor inside a panel (#ex-02-json-api): open that panel, scroll to it */
+      var target = name && document.getElementById(name);
+      var owner = target && target.closest("[data-tab-panel]");
+      if (owner) {
+        show(owner.getAttribute("data-tab-panel"), false);
+        target.scrollIntoView();
+        return;
+      }
+      return show(panels[0].getAttribute("data-tab-panel"), false);
+    }
     buttons.forEach(function (b) { var on = b.getAttribute("data-tab-button") === name; b.setAttribute("aria-selected", on ? "true" : "false"); b.classList.toggle("active", on); });
     if (push) history.replaceState(null, "", "#" + name);
     var side = document.querySelector(".doc-side");
@@ -154,12 +164,66 @@ hphp create myapp                 # or start a project, then: hphp install ${lib
 </table>`;
 }
 
+/* Examples are real programs: docs/libraries/examples/<lib>/NN-name.hphp,
+ * type-checked by tests/run.sh (group "examples"). Each file starts with
+ *
+ *   /* Title of the example
+ *    *
+ *    * One or more paragraphs that explain it.
+ *    *
+ *    * try: hphp run 01-hello.hphp
+ *    * try: curl http://127.0.0.1:8080/
+ *    * /
+ */
+function examplesOf(name) {
+  const dir = path.join(DOCS, "libraries", "examples", name);
+  if (!fs.existsSync(dir)) return null;
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".hphp")).sort();
+  if (!files.length) return null;
+  const out = files.map((f, i) => {
+    const src = read(path.join(dir, f)).replace(/\r\n/g, "\n");
+    const m = src.match(/^<\?php\s*\n\/\*([\s\S]*?)\*\/\n?/);
+    let title = f.replace(/^\d+-|\.hphp$/g, "").replace(/-/g, " ");
+    let paras = [], tries = [];
+    let code = src;
+    if (m) {
+      const lines = m[1].split("\n").map((l) => l.replace(/^\s*\* ?/, "").replace(/\s+$/, ""));
+      while (lines.length && !lines[0].trim()) lines.shift();
+      title = lines.shift().trim();
+      let cur = [];
+      for (const l of lines) {
+        if (/^try:\s*/.test(l)) { tries.push(l.replace(/^try:\s*/, "")); continue; }
+        if (!l.trim()) { if (cur.length) paras.push(cur.join(" ")); cur = []; continue; }
+        cur.push(l.trim());
+      }
+      if (cur.length) paras.push(cur.join(" "));
+      code = "<?php\n" + src.slice(m[0].length).replace(/^\n+/, "");
+    }
+    const inline = (s) => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>");
+    const id = `ex-${f.replace(/\.hphp$/, "")}`;
+    return `<article class="example" id="${id}">
+<h2><span class="example-num">${String(i + 1).padStart(2, "0")}</span>${esc(title)}</h2>
+${paras.map((p) => `<p>${inline(p)}</p>`).join("\n")}
+<div class="example-file">${esc(f)}</div>
+<pre><code class="hphp">${esc(code.trimEnd())}</code></pre>
+${tries.length ? `<div class="example-try"><span>Try it</span><pre><code class="bash">${esc(tries.join("\n"))}</code></pre></div>` : ""}
+</article>`;
+  });
+  const toc = files.length > 2 ? `<nav class="example-toc">${files.map((f, i) => {
+    const t = (read(path.join(dir, f)).match(/^<\?php\s*\n\/\*\s*\n?\s*\*?\s*([^\n]+)/) || [, f])[1].replace(/^\*\s*/, "");
+    return `<a href="#ex-${f.replace(/\.hphp$/, "")}">${String(i + 1).padStart(2, "0")} ${esc(t.trim())}</a>`;
+  }).join("")}</nav>` : "";
+  return `<p class="example-intro">${files.length} complete programs. Every one is type-checked with the compiler before the site is published; copy one into <code>src/</code> of a project (<code>hphp create</code>) and run it.</p>
+${toc}
+${out.join("\n")}`;
+}
+
 function libraryPage(lib, all) {
   const tabs = [
     ["overview", "Overview", lib.tabs.overview],
     ["installation", "Installation", installTab(lib)],
     ["documentation", "Documentation", lib.tabs.documentation],
-    ["examples", "Examples", lib.tabs.examples],
+    ["examples", "Examples", examplesOf(lib.name) || lib.tabs.examples],
   ];
   const related = all.filter((l) => l.cat === lib.cat && l.name !== lib.name).slice(0, 3);
   const body = `<main class="site-page lib-page" data-tabs>

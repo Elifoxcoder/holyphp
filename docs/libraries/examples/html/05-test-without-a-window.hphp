@@ -1,0 +1,65 @@
+<?php
+/* Testing a UI without a window
+ *
+ * Because events are data, a whole interaction can be driven headless: lay
+ * the page out, ask `box_of()` where an element is, feed `mouse()` a click
+ * at that spot and assert on the result. `draw_list()` records what would
+ * be painted as plain strings, so even the paint step can be checked.
+ * This is how you would unit-test a checklist widget in CI.
+ *
+ * try: hphp run 05-test-without-a-window.hphp
+ */
+
+import "html";
+
+$html = "<div class='list'>
+  <div class='item' id='milk'>Buy milk</div>
+  <div class='item' id='bread'>Buy bread</div>
+  <div class='item' id='eggs'>Buy eggs</div>
+</div>";
+$css = ".item { height: 24px; padding: 0 8px; } .item.done { color: #6a9955; }";
+
+$view = new HtmlView(0, 300, 120, html_theme_dark());
+$view->load($html, $css);
+$view->ensure();
+
+// The application logic under test: a click toggles "done" on an item.
+function click_item(HtmlView $view, int $x, int $y) {
+    $node = $view->mouse("up", $x, $y, 1, 0)->node;
+    while ($node != null && !$node->hasClass("item")) {
+        $node = $node->up;
+    }
+    if ($node == null) {
+        return;
+    }
+    if ($node->hasClass("done")) {
+        $view->remove_class($node, "done");
+    } else {
+        $view->add_class($node, "done");
+    }
+}
+
+// Click the middle of an element, wherever the layout put it.
+function click_on(HtmlView $view, string $selector) {
+    $box = $view->box_of($view->find($selector));
+    click_item($view, $box->x + intdiv($box->w, 2), $box->y + intdiv($box->h, 2));
+}
+
+function expect(string $what, bool $ok) {
+    echo ($ok ? "PASS  " : "FAIL  ") . $what;
+}
+
+// The tests.
+click_on($view, "#bread");
+expect("clicking an item marks it done", $view->find("#bread")->hasClass("done"));
+expect("other items are untouched", !$view->find("#milk")->hasClass("done"));
+
+click_on($view, "#bread");
+expect("a second click un-marks it", !$view->find("#bread")->hasClass("done"));
+
+click_on($view, "#milk");
+click_on($view, "#eggs");
+expect("two items done", count($view->find_all(".item.done")) == 2);
+
+$commands = $view->draw_list();
+expect("the frame paints something (" . count($commands) . " draw calls)", count($commands) > 0);

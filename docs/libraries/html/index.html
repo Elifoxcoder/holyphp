@@ -199,7 +199,285 @@ $view->load("<div class='card'>red accent</div>", ".card { padding: 8px; }");</c
 </section>
 <section class="tab-panel" data-tab-panel="examples" role="tabpanel" aria-label="Examples">
 <h2 class="tab-title">Examples</h2>
-<p>See the Documentation tab for annotated examples.</p>
+<p class="example-intro">5 complete programs. Every one is type-checked with the compiler before the site is published; copy one into <code>src/</code> of a project (<code>hphp create</code>) and run it.</p>
+<nav class="example-toc"><a href="#ex-01-parse-and-query">01 Parse a page and query it with CSS selectors</a><a href="#ex-02-layout-boxes">02 Lay out a page and measure the boxes</a><a href="#ex-03-render-a-page">03 Render a styled page in a window</a><a href="#ex-04-clickable-tabs">04 Clickable tabs: events are data</a><a href="#ex-05-test-without-a-window">05 Testing a UI without a window</a></nav>
+<article class="example" id="ex-01-parse-and-query">
+<h2><span class="example-num">01</span>Parse a page and query it with CSS selectors</h2>
+<p>A headless <code>HtmlView</code> (canvas handle 0, no window) parses markup into a tree of <code>HNode</code>s and answers real CSS selectors through <code>find()</code> and <code>find_all()</code>: classes, ids, descendants and attributes. This program reads a small shop page, prints its element outline, then pulls out the products, their prices and the links.</p>
+<div class="example-file">01-parse-and-query.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;html&quot;;
+
+$page = &quot;&lt;div class='shop'&gt;
+  &lt;h1 id='top'&gt;Today's offers&lt;/h1&gt;
+  &lt;ul class='products'&gt;
+    &lt;li class='product' data-sale='yes'&gt;&lt;span class='name'&gt;Teapot&lt;/span&gt; &lt;span class='price'&gt;24.00&lt;/span&gt;&lt;/li&gt;
+    &lt;li class='product'&gt;&lt;span class='name'&gt;Mug&lt;/span&gt; &lt;span class='price'&gt;8.50&lt;/span&gt;&lt;/li&gt;
+    &lt;li class='product' data-sale='yes'&gt;&lt;span class='name'&gt;Kettle&lt;/span&gt; &lt;span class='price'&gt;39.90&lt;/span&gt;&lt;/li&gt;
+  &lt;/ul&gt;
+  &lt;p&gt;See &lt;a href='/about'&gt;about us&lt;/a&gt; or &lt;a href='/contact'&gt;contact&lt;/a&gt;.&lt;/p&gt;
+&lt;/div&gt;&quot;;
+
+// Print every element, indented by its depth in the tree.
+function outline(HNode $node, int $depth) {
+    if ($node-&gt;isText()) {
+        return;
+    }
+    $label = $node-&gt;tag;
+    if ($node-&gt;id != &quot;&quot;) {
+        $label = $label . &quot;#&quot; . $node-&gt;id;
+    }
+    foreach ($node-&gt;classes as $class) {
+        $label = $label . &quot;.&quot; . $class;
+    }
+    echo str_repeat(&quot;  &quot;, $depth) . $label;
+    for ($i = 0; $i &lt; count($node-&gt;kids); $i++) {
+        outline($node-&gt;kids[$i], $depth + 1);
+    }
+}
+
+// A headless view: no window, just the document and its selectors.
+$view = new HtmlView(0, 800, 600, html_theme_light());
+$view-&gt;load($page, &quot;&quot;);
+
+// The tree. The parser wraps a fragment in an implicit &lt;html&gt; root.
+echo &quot;heading: &quot; . html_text_of($view-&gt;find(&quot;#top&quot;));
+outline($view-&gt;doc-&gt;root, 0);
+
+// Descendant selectors: the name and price inside each product.
+// (Typed node lists are walked with an index loop.)
+$names = $view-&gt;find_all(&quot;.product .name&quot;);
+$prices = $view-&gt;find_all(&quot;.product .price&quot;);
+for ($i = 0; $i &lt; count($names); $i++) {
+    echo str_pad(html_text_of($names[$i]), 8) . &quot; &quot; . html_text_of($prices[$i]);
+}
+
+// Attribute selectors and attribute values.
+echo &quot;on sale: &quot; . count($view-&gt;find_all(&quot;li[data-sale=yes]&quot;)) . &quot; products&quot;;
+$links = $view-&gt;find_all(&quot;a&quot;);
+for ($i = 0; $i &lt; count($links); $i++) {
+    echo &quot;link: &quot; . $links[$i]-&gt;attr(&quot;href&quot;) . &quot; (&quot; . html_text_of($links[$i]) . &quot;)&quot;;
+}</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 01-parse-and-query.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-02-layout-boxes">
+<h2><span class="example-num">02</span>Lay out a page and measure the boxes</h2>
+<p>The layout engine works without a window: <code>ensure()</code> runs style and layout, and <code>box_of()</code> returns the <code>Box</code> the engine placed for a node, with its position and size in pixels. This page uses a flex column for header / body / footer and a flex row for sidebar / content; resizing the view shows the fixed sidebar keeping its width while <code>flex: 1</code> and percentages absorb the change.</p>
+<div class="example-file">02-layout-boxes.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;html&quot;;
+
+$html = &quot;&lt;div class='page'&gt;
+  &lt;div class='header'&gt;My App&lt;/div&gt;
+  &lt;div class='body'&gt;
+    &lt;div class='sidebar'&gt;Menu&lt;/div&gt;
+    &lt;div class='content'&gt;&lt;div class='banner'&gt;Half as wide as the content&lt;/div&gt;&lt;/div&gt;
+  &lt;/div&gt;
+  &lt;div class='footer'&gt;status&lt;/div&gt;
+&lt;/div&gt;&quot;;
+
+$css = &quot;
+.page    { display: flex; flex-direction: column; height: 100%; }
+.header  { height: 48px; padding: 0 16px; }
+.body    { display: flex; flex: 1; gap: 8px; }
+.sidebar { width: 180px; flex: none; }
+.content { flex: 1; padding: 12px; }
+.banner  { width: 50%; height: 40px; }
+.footer  { height: 24px; flex: none; }
+&quot;;
+
+// Print x, y, width and height of each interesting box.
+function report(HtmlView $view, string $title) {
+    echo &quot;== $title&quot;;
+    $selectors = [&quot;.header&quot;, &quot;.sidebar&quot;, &quot;.content&quot;, &quot;.banner&quot;, &quot;.footer&quot;];
+    foreach ($selectors as $selector) {
+        $box = $view-&gt;box_of($view-&gt;find($selector));
+        echo str_pad($selector, 10) . &quot; x=&quot; . $box-&gt;x . &quot; y=&quot; . $box-&gt;y
+            . &quot;  &quot; . $box-&gt;w . &quot; x &quot; . $box-&gt;h;
+    }
+}
+
+// Lay the page out at 800 x 500 ...
+$view = new HtmlView(0, 800, 500, html_theme_dark());
+$view-&gt;load($html, $css);
+$view-&gt;ensure();
+report($view, &quot;800 x 500&quot;);
+
+// ... and again in a bigger window. Only the flexible boxes grow.
+$view-&gt;resize(1200, 700);
+$view-&gt;ensure();
+report($view, &quot;1200 x 700&quot;);</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 02-layout-boxes.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-03-render-a-page">
+<h2><span class="example-num">03</span>Render a styled page in a window</h2>
+<p>The window holds a single canvas control (<code>ui_add</code> type 18), and an <code>HtmlView</code> paints the whole page into it: backgrounds, borders, rounded corners, flex rows and wrapped text all come from the stylesheet. This is a small weather dashboard; change the CSS and run it again to restyle it.</p>
+<div class="example-file">03-render-a-page.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;html&quot;;
+
+$width = 560;
+$height = 340;
+
+$html = &quot;&lt;div class='app'&gt;
+  &lt;div class='title'&gt;Weather in Zurich&lt;/div&gt;
+  &lt;div class='now'&gt;
+    &lt;div class='temp'&gt;18 C&lt;/div&gt;
+    &lt;div class='desc'&gt;Partly cloudy. A light breeze from the west, dry until the evening.&lt;/div&gt;
+  &lt;/div&gt;
+  &lt;div class='days'&gt;
+    &lt;div class='day'&gt;&lt;div class='name'&gt;Tue&lt;/div&gt;&lt;div class='hi'&gt;21 C&lt;/div&gt;&lt;/div&gt;
+    &lt;div class='day'&gt;&lt;div class='name'&gt;Wed&lt;/div&gt;&lt;div class='hi'&gt;17 C&lt;/div&gt;&lt;/div&gt;
+    &lt;div class='day today'&gt;&lt;div class='name'&gt;Thu&lt;/div&gt;&lt;div class='hi'&gt;23 C&lt;/div&gt;&lt;/div&gt;
+    &lt;div class='day'&gt;&lt;div class='name'&gt;Fri&lt;/div&gt;&lt;div class='hi'&gt;19 C&lt;/div&gt;&lt;/div&gt;
+  &lt;/div&gt;
+&lt;/div&gt;&quot;;
+
+$css = &quot;
+.app   { padding: 20px; }
+.title { font-size: 20px; font-weight: bold; color: #ffffff; height: 32px; }
+.now   { display: flex; gap: 16px; align-items: center; margin-bottom: 16px; }
+.temp  { font-size: 48px; color: #4ec9b0; width: 110px; flex: none; }
+.desc  { flex: 1; color: #b8b8b8; }
+.days  { display: flex; gap: 10px; }
+.day   { flex: 1; padding: 10px; border-radius: 8px;
+         background-color: #252526; border: 1px solid #3c3c3c; }
+.day.today { border: 1px solid #007acc; }
+.name  { color: #8b8b8b; font-size: 11px; height: 18px; }
+.hi    { color: #ffffff; font-size: 18px; height: 26px; }
+&quot;;
+
+// A window with one canvas filling it.
+$window = ui_window(&quot;HolyHTML weather&quot;, -1, -1, $width, $height);
+$canvas = ui_add($window, 18, &quot;&quot;, 0, 0, $width, $height);
+
+// Parse, style, lay out and paint the page onto the canvas.
+$view = new HtmlView($canvas, $width, $height, html_theme_dark());
+$view-&gt;load($html, $css);
+$view-&gt;paint();
+
+ui_run_main();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 03-render-a-page.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-04-clickable-tabs">
+<h2><span class="example-num">04</span>Clickable tabs: events are data</h2>
+<p>HolyHTML does not attach callbacks to elements. Instead the canvas events are handed to <code>mouse()</code>, which updates hover and focus and returns an <code>HtmlEvent</code> naming the node under the pointer - the program decides what a click means. Here a click on a tab moves the <code>active</code> class with <code>add_class()</code> / <code>remove_class()</code> and swaps the panel text with <code>set_text()</code>. Hover colours come from <code>:hover</code> in the CSS alone.</p>
+<div class="example-file">04-clickable-tabs.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;html&quot;;
+
+$html = &quot;&lt;div class='tabs'&gt;
+  &lt;div class='tab active' id='home'&gt;Home&lt;/div&gt;
+  &lt;div class='tab' id='files'&gt;Files&lt;/div&gt;
+  &lt;div class='tab' id='help'&gt;Help&lt;/div&gt;
+&lt;/div&gt;
+&lt;div class='panel' id='panel'&gt;Welcome home.&lt;/div&gt;&quot;;
+
+$css = &quot;
+.tabs { display: flex; background-color: #252526; height: 34px; }
+.tab  { padding: 0 18px; height: 34px; color: #969696; border-bottom: 2px solid #252526; }
+.tab:hover  { color: #ffffff; }
+.tab.active { color: #ffffff; border-bottom: 2px solid #007acc; }
+.panel { padding: 20px; color: #cccccc; }
+&quot;;
+
+$texts = [&quot;home&quot; =&gt; &quot;Welcome home.&quot;, &quot;files&quot; =&gt; &quot;No files yet.&quot;, &quot;help&quot; =&gt; &quot;Click a tab to switch.&quot;];
+
+$window = ui_window(&quot;Tabs&quot;, -1, -1, 480, 240);
+$canvas = ui_add($window, 18, &quot;&quot;, 0, 0, 480, 240);
+$view = new HtmlView($canvas, 480, 240, html_theme_dark());
+$view-&gt;load($html, $css);
+
+// Pointer moved (canvas event 8): repaint only if the hover changed.
+ui_on($canvas, 8, function($x, $y, $button) use ($view) {
+    $event = $view-&gt;mouse(&quot;move&quot;, $x, $y, 0, 0);
+    if ($event-&gt;state) {
+        $view-&gt;paint();
+    }
+});
+
+// Button released (canvas event 7): find the tab that was clicked.
+ui_on($canvas, 7, function($x, $y, $button) use ($view, $texts) {
+    $event = $view-&gt;mouse(&quot;up&quot;, $x, $y, $button, 0);
+    $node = $event-&gt;node;
+    while ($node != null &amp;&amp; !$node-&gt;hasClass(&quot;tab&quot;)) {
+        $node = $node-&gt;up;
+    }
+    if ($node == null) {
+        return;
+    }
+
+    // Move the &quot;active&quot; class to the clicked tab and update the panel.
+    $view-&gt;remove_class($view-&gt;find(&quot;.tab.active&quot;), &quot;active&quot;);
+    $view-&gt;add_class($node, &quot;active&quot;);
+    $view-&gt;set_text($view-&gt;find(&quot;#panel&quot;), $texts[$node-&gt;id]);
+    $view-&gt;paint();
+});
+
+$view-&gt;paint();
+ui_run_main();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 04-clickable-tabs.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-05-test-without-a-window">
+<h2><span class="example-num">05</span>Testing a UI without a window</h2>
+<p>Because events are data, a whole interaction can be driven headless: lay the page out, ask <code>box_of()</code> where an element is, feed <code>mouse()</code> a click at that spot and assert on the result. <code>draw_list()</code> records what would be painted as plain strings, so even the paint step can be checked. This is how you would unit-test a checklist widget in CI.</p>
+<div class="example-file">05-test-without-a-window.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;html&quot;;
+
+$html = &quot;&lt;div class='list'&gt;
+  &lt;div class='item' id='milk'&gt;Buy milk&lt;/div&gt;
+  &lt;div class='item' id='bread'&gt;Buy bread&lt;/div&gt;
+  &lt;div class='item' id='eggs'&gt;Buy eggs&lt;/div&gt;
+&lt;/div&gt;&quot;;
+$css = &quot;.item { height: 24px; padding: 0 8px; } .item.done { color: #6a9955; }&quot;;
+
+$view = new HtmlView(0, 300, 120, html_theme_dark());
+$view-&gt;load($html, $css);
+$view-&gt;ensure();
+
+// The application logic under test: a click toggles &quot;done&quot; on an item.
+function click_item(HtmlView $view, int $x, int $y) {
+    $node = $view-&gt;mouse(&quot;up&quot;, $x, $y, 1, 0)-&gt;node;
+    while ($node != null &amp;&amp; !$node-&gt;hasClass(&quot;item&quot;)) {
+        $node = $node-&gt;up;
+    }
+    if ($node == null) {
+        return;
+    }
+    if ($node-&gt;hasClass(&quot;done&quot;)) {
+        $view-&gt;remove_class($node, &quot;done&quot;);
+    } else {
+        $view-&gt;add_class($node, &quot;done&quot;);
+    }
+}
+
+// Click the middle of an element, wherever the layout put it.
+function click_on(HtmlView $view, string $selector) {
+    $box = $view-&gt;box_of($view-&gt;find($selector));
+    click_item($view, $box-&gt;x + intdiv($box-&gt;w, 2), $box-&gt;y + intdiv($box-&gt;h, 2));
+}
+
+function expect(string $what, bool $ok) {
+    echo ($ok ? &quot;PASS  &quot; : &quot;FAIL  &quot;) . $what;
+}
+
+// The tests.
+click_on($view, &quot;#bread&quot;);
+expect(&quot;clicking an item marks it done&quot;, $view-&gt;find(&quot;#bread&quot;)-&gt;hasClass(&quot;done&quot;));
+expect(&quot;other items are untouched&quot;, !$view-&gt;find(&quot;#milk&quot;)-&gt;hasClass(&quot;done&quot;));
+
+click_on($view, &quot;#bread&quot;);
+expect(&quot;a second click un-marks it&quot;, !$view-&gt;find(&quot;#bread&quot;)-&gt;hasClass(&quot;done&quot;));
+
+click_on($view, &quot;#milk&quot;);
+click_on($view, &quot;#eggs&quot;);
+expect(&quot;two items done&quot;, count($view-&gt;find_all(&quot;.item.done&quot;)) == 2);
+
+$commands = $view-&gt;draw_list();
+expect(&quot;the frame paints something (&quot; . count($commands) . &quot; draw calls)&quot;, count($commands) &gt; 0);</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 05-test-without-a-window.hphp</code></pre></div>
+</article>
 </section>
 <aside class="lib-related"><h3>Related libraries</h3><div class="lib-mini-grid"><a href="../ui/"><b>ui</b><span>Native windows, widgets, menus, dialogs and themes.</span></a></div></aside>
 </main>
@@ -215,7 +493,17 @@ $view->load("<div class='card'>red accent</div>", ".card { padding: 8px; }");</c
   function show(name, push) {
     var found = false;
     panels.forEach(function (p) { var on = p.getAttribute("data-tab-panel") === name; p.hidden = !on; if (on) found = true; });
-    if (!found) return show(panels[0].getAttribute("data-tab-panel"), false);
+    if (!found) {
+      /* an anchor inside a panel (#ex-02-json-api): open that panel, scroll to it */
+      var target = name && document.getElementById(name);
+      var owner = target && target.closest("[data-tab-panel]");
+      if (owner) {
+        show(owner.getAttribute("data-tab-panel"), false);
+        target.scrollIntoView();
+        return;
+      }
+      return show(panels[0].getAttribute("data-tab-panel"), false);
+    }
     buttons.forEach(function (b) { var on = b.getAttribute("data-tab-button") === name; b.setAttribute("aria-selected", on ? "true" : "false"); b.classList.toggle("active", on); });
     if (push) history.replaceState(null, "", "#" + name);
     var side = document.querySelector(".doc-side");

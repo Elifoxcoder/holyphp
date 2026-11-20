@@ -1,0 +1,63 @@
+<?php
+/* Counting primes on every core
+ *
+ * `Pool::map()` runs a function over an array on several OS threads and
+ * returns the results in input order, whatever order the threads finish
+ * in. Here the range 1..2,000,000 is cut into eight slices, the slices
+ * are counted on worker threads, and the time is compared with doing
+ * the same work on one thread.
+ *
+ * try: hphp run 02-parallel-map.hphp
+ */
+
+import "thread";
+
+// Plain, deliberately slow trial division: good CPU-bound work.
+function count_primes(int $from, int $to): int {
+    $found = 0;
+    for ($n = $from; $n <= $to; $n++) {
+        if ($n < 2) {
+            continue;
+        }
+        $isPrime = true;
+        for ($d = 2; $d * $d <= $n; $d++) {
+            if ($n % $d == 0) {
+                $isPrime = false;
+                break;
+            }
+        }
+        if ($isPrime) {
+            $found = $found + 1;
+        }
+    }
+    return $found;
+}
+
+// Cut the range into 8 equal slices.
+$limit = 2000000;
+$sliceCount = 8;
+$sliceSize = intdiv($limit, $sliceCount);
+$slices = [];
+for ($start = 1; $start <= $limit; $start += $sliceSize) {
+    $slices[] = [$start, min($start + $sliceSize - 1, $limit)];
+}
+
+// Parallel: up to one worker thread per core, one slice per job.
+$workers = min(thr_cpu_count(), $sliceCount);
+$pool = new Pool($workers);
+$t0 = microtime();
+$counts = $pool->map(function($slice) {
+    return count_primes($slice[0], $slice[1]);
+}, $slices);
+$parallelMs = intval((microtime() - $t0) * 1000);
+
+foreach ($slices as $i => $slice) {
+    echo "slice " . $slice[0] . ".." . $slice[1] . ": " . $counts[$i] . " primes";
+}
+echo "parallel:   " . array_sum($counts) . " primes in $parallelMs ms on $workers threads";
+
+// Sequential: the same work on the main thread, for comparison.
+$t1 = microtime();
+$total = count_primes(1, $limit);
+$sequentialMs = intval((microtime() - $t1) * 1000);
+echo "sequential: $total primes in $sequentialMs ms on 1 thread";

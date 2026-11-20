@@ -1,0 +1,35 @@
+<?php
+/* Fail early on missing settings
+ *
+ * Settings without a sensible default (an API key, a database URL) should
+ * stop the program at start with a clear message, not crash later.
+ * `env_required()` throws when a variable is missing; catching it once
+ * gives a friendly error.
+ *
+ * try: hphp run 02-required-settings.hphp
+ * try: API_KEY=abc123 DATABASE_URL=sqlite:app.db hphp run 02-required-settings.hphp
+ */
+import "dotenv";
+
+env_load();
+
+// everything the program cannot run without, checked in one place
+function load_settings(): array {
+    $settings = [];
+    $settings["api_key"] = env_required("API_KEY");
+    $settings["database"] = env_required("DATABASE_URL");
+    $settings["timeout"] = env_int("TIMEOUT_SECONDS", 30);
+    return $settings;
+}
+
+try {
+    $settings = load_settings();
+} catch (string $e) {
+    echo "configuration error: " . $e;
+    echo "set it in .env or in the environment, then start again";
+    exit(1);
+}
+
+echo "database: " . $settings["database"];
+echo "timeout:  " . $settings["timeout"] . " s";
+echo "api key:  " . substr($settings["api_key"], 0, 3) . "...";

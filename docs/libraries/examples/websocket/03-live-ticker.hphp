@@ -1,0 +1,51 @@
+<?php
+/* Pushing live updates from your own loop
+ *
+ * Servers do not have to wait for clients to speak. Instead of the
+ * blocking `run()`, this program drives the server with `tick()` from its
+ * own loop, and once a second pushes a fake stock price to every open
+ * client. Every ten seconds it also `ping()`s each client so dead
+ * connections are noticed, and prints `clientCount()`.
+ *
+ * try: hphp run 03-live-ticker.hphp
+ */
+
+import "websocket";
+
+$server = new WebSocketServer("tcp://127.0.0.1:9003");
+if (!$server->listen()) {
+    echo "could not listen on port 9003";
+    exit(1);
+}
+
+$server->onOpen = function(int $client) use ($server): void {
+    $server->send($client, "subscribed to HPHP quotes");
+};
+
+$price = 100.0;
+$lastQuote = 0;
+$lastPing = 0;
+echo "ticker on ws://127.0.0.1:9003";
+
+while (true) {
+    // Accept new clients and read incoming frames (waits at most 50 ms).
+    $server->tick(50);
+    $now = time();
+
+    // Once a second: move the price a little and push it to everyone.
+    if ($now != $lastQuote) {
+        $lastQuote = $now;
+        $price = $price + (rand(-100, 100) / 100);
+        $quote = "HPHP " . number_format($price, 2) . " at " . date("H:i:s");
+        $server->broadcast($quote);
+    }
+
+    // Every ten seconds: ping each client and report the audience.
+    if ($now - $lastPing >= 10) {
+        $lastPing = $now;
+        foreach ($server->clients() as $client) {
+            $server->ping($client);
+        }
+        echo "listeners: " . $server->clientCount();
+    }
+}

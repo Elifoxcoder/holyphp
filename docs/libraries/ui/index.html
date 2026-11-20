@@ -272,12 +272,275 @@ $app-&gt;every(400, function() use (&amp;$ticks, $bar, $label) {
 </section>
 <section class="tab-panel" data-tab-panel="examples" role="tabpanel" aria-label="Examples">
 <h2 class="tab-title">Examples</h2>
-<h2>Full tour</h2>
-  <p><code>examples/ui_demo.hphp</code> is a complete app — themed header, a role row,
-  two columns of forms and lists, meters, menus, dialogs and a live timer.
-  <code>examples/ui_gallery.hphp</code> shows every widget in every theme.</p>
-<pre><code class="hphp">hphp build examples/ui_demo.hphp -o ui_demo.exe
-hphp run   examples/ui_gallery.hphp</code></pre>
+<p class="example-intro">5 complete programs. Every one is type-checked with the compiler before the site is published; copy one into <code>src/</code> of a project (<code>hphp create</code>) and run it.</p>
+<nav class="example-toc"><a href="#ex-01-hello-window">01 Hello, window</a><a href="#ex-02-counter">02 A counter with buttons</a><a href="#ex-03-signup-form">03 A sign-up form with validation</a><a href="#ex-04-todo-list">04 A to-do list with a menu</a><a href="#ex-05-focus-timer">05 A focus timer with themes</a></nav>
+<article class="example" id="ex-01-hello-window">
+<h2><span class="example-num">01</span>Hello, window</h2>
+<p>The smallest complete desktop app. <code>new App()</code> opens a themed window, and widgets such as <code>heading()</code>, <code>sub()</code> and <code>button()</code> stack themselves top to bottom - no coordinates needed. A button takes a role (<code>primary</code>, <code>danger</code>, <code>ghost</code>, ...) and a closure to run when it is clicked.</p>
+<div class="example-file">01-hello-window.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;ui&quot;;
+
+// A 480 x 300 window with the default dark theme.
+$app = new App(&quot;Hello&quot;, 480, 300);
+
+// Text: a big heading and a muted subtitle.
+$app-&gt;heading(&quot;Hello, world&quot;);
+$app-&gt;sub(&quot;This window was written in HolyPHP.&quot;);
+
+// A button that opens a message box when clicked.
+$app-&gt;button(&quot;Say hello&quot;, &quot;primary&quot;, function() use ($app) {
+    $app-&gt;msg(&quot;Hello from HolyPHP!&quot;, &quot;Greetings&quot;);
+});
+
+// A second button that asks before closing the window.
+$app-&gt;button(&quot;Quit&quot;, &quot;ghost&quot;, function() use ($app) {
+    if ($app-&gt;ask(&quot;Really quit?&quot;)) {
+        $app-&gt;close();
+    }
+});
+
+// Hand control to the window until it is closed.
+$app-&gt;run();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 01-hello-window.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-02-counter">
+<h2><span class="example-num">02</span>A counter with buttons</h2>
+<p>State in a GUI program is just a variable that the click handlers share. The handlers capture it by reference (<code>use (&amp;$count)</code>) so every button sees the same number, and <code>text()</code> updates the label. Buttons sit side by side inside a <code>row()</code>, and the minus button is disabled at zero.</p>
+<div class="example-file">02-counter.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;ui&quot;;
+
+$app = new App(&quot;Counter&quot;, 360, 260);
+$app-&gt;theme(&quot;ocean&quot;);
+
+$count = 0;
+
+// The number itself, shown as a heading.
+$app-&gt;sub(&quot;Clicks so far&quot;);
+$display = $app-&gt;heading(&quot;0&quot;);
+
+// Three buttons next to each other.
+$buttons = $app-&gt;row();
+$minus = $buttons-&gt;button(&quot;-1&quot;);
+$plus = $buttons-&gt;button(&quot;+1&quot;, &quot;primary&quot;);
+$reset = $buttons-&gt;button(&quot;Reset&quot;, &quot;ghost&quot;);
+
+// Redraw the label and enable or disable &quot;-1&quot; to match the count.
+$refresh = function() use (&amp;$count, $display, $minus) {
+    $display-&gt;text(&quot;$count&quot;);
+    $minus-&gt;enable($count &gt; 0);
+};
+$refresh();
+
+// Each handler changes the shared count, then refreshes the view.
+$plus-&gt;onClick(function() use (&amp;$count, $refresh) {
+    $count = $count + 1;
+    $refresh();
+});
+$minus-&gt;onClick(function() use (&amp;$count, $refresh) {
+    $count = $count - 1;
+    $refresh();
+});
+$reset-&gt;onClick(function() use (&amp;$count, $refresh) {
+    $count = 0;
+    $refresh();
+});
+
+$app-&gt;run();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 02-counter.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-03-signup-form">
+<h2><span class="example-num">03</span>A sign-up form with validation</h2>
+<p>A small form inside a <code>card()</code>: text inputs, a <code>combo()</code> drop-down and a <code>checkbox()</code>. Clicking &quot;Create account&quot; reads every field with <code>content()</code>, <code>selectedText()</code> and <code>checked()</code>, validates them, and shows either the first problem in a red label or a summary in a message box.</p>
+<div class="example-file">03-signup-form.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;ui&quot;;
+
+$app = new App(&quot;Create account&quot;, 460, 560);
+$app-&gt;theme(&quot;light&quot;);
+$app-&gt;heading(&quot;Create your account&quot;);
+
+// The form fields, inside a rounded card.
+$form = $app-&gt;card(400);
+$form-&gt;label(&quot;Name&quot;);
+$name = $form-&gt;input(&quot;&quot;);
+$form-&gt;label(&quot;Email&quot;);
+$email = $form-&gt;input(&quot;&quot;);
+$form-&gt;label(&quot;Plan&quot;);
+$plan = $form-&gt;combo([&quot;Free&quot;, &quot;Pro&quot;, &quot;Team&quot;]);
+$plan-&gt;select(0);
+$terms = $form-&gt;checkbox(&quot;I accept the terms&quot;);
+
+// Where validation errors appear (empty until needed).
+$errors = $form-&gt;label(&quot;&quot;)-&gt;color(0xD32F2F);
+
+// Read the fields, find the first problem, then report.
+$submit = function() use ($app, $name, $email, $plan, $terms, $errors) {
+    $problem = &quot;&quot;;
+    if (trim($name-&gt;content()) == &quot;&quot;) {
+        $problem = &quot;Please enter your name.&quot;;
+    } elseif (!str_contains($email-&gt;content(), &quot;@&quot;)) {
+        $problem = &quot;That email address looks wrong.&quot;;
+    } elseif (!$terms-&gt;checked()) {
+        $problem = &quot;You need to accept the terms.&quot;;
+    }
+
+    $errors-&gt;text($problem);
+    if ($problem != &quot;&quot;) {
+        return;
+    }
+    $app-&gt;msg(&quot;Welcome, &quot; . trim($name-&gt;content()) . &quot;!\n&quot;
+        . &quot;Plan: &quot; . $plan-&gt;selectedText() . &quot;\n&quot;
+        . &quot;We sent a confirmation to &quot; . $email-&gt;content() . &quot;.&quot;, &quot;Account created&quot;);
+};
+
+$form-&gt;button(&quot;Create account&quot;, &quot;primary&quot;, $submit);
+
+// Pressing Enter in the email field submits too (13 = the Enter key).
+$email-&gt;onKey(function($key, $char, $mods) use ($submit) {
+    if ($key == 13) {
+        $submit();
+    }
+});
+
+$app-&gt;run();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 03-signup-form.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-04-todo-list">
+<h2><span class="example-num">04</span>A to-do list with a menu</h2>
+<p>A <code>list()</code> box holds the tasks. Type a task and press Enter or click &quot;Add&quot;; select one and click &quot;Done&quot; to remove it. A menu bar adds File &gt; Save, which writes the tasks to a file picked with <code>saveFile()</code>.</p>
+<div class="example-file">04-todo-list.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;ui&quot;;
+
+$app = new App(&quot;To-do&quot;, 420, 480);
+$app-&gt;heading(&quot;Things to do&quot;);
+
+// Input and &quot;Add&quot; button side by side.
+$entry = $app-&gt;row();
+$newTask = $entry-&gt;input(&quot;&quot;);
+$add = $entry-&gt;button(&quot;Add&quot;, &quot;primary&quot;);
+
+// The list, the &quot;Done&quot; button and a status line.
+$tasks = $app-&gt;list([&quot;Water the plants&quot;, &quot;Write the report&quot;]);
+$done = $app-&gt;button(&quot;Done&quot;, &quot;success&quot;);
+$status = $app-&gt;sub(&quot;&quot;);
+
+$updateStatus = function() use ($tasks, $status) {
+    $status-&gt;text($tasks-&gt;count() . &quot; task(s) left&quot;);
+};
+$updateStatus();
+
+// Add the typed task, then clear the input for the next one.
+$addTask = function() use ($newTask, $tasks, $updateStatus) {
+    $text = trim($newTask-&gt;content());
+    if ($text == &quot;&quot;) {
+        return;
+    }
+    $tasks-&gt;add($text);
+    $newTask-&gt;text(&quot;&quot;);
+    $updateStatus();
+};
+$add-&gt;onClick($addTask);
+$newTask-&gt;onKey(function($key, $char, $mods) use ($addTask) {
+    if ($key == 13) {
+        $addTask();
+    }
+});
+
+// Remove the selected task (selected() is -1 when nothing is selected).
+$done-&gt;onClick(function() use ($tasks, $updateStatus) {
+    $index = $tasks-&gt;selected();
+    if ($index &gt;= 0) {
+        $tasks-&gt;remove($index);
+        $updateStatus();
+    }
+});
+
+// File menu: save the list to disk, or quit.
+$file = $app-&gt;menu(&quot;File&quot;);
+$file-&gt;item(&quot;Save...&quot;, function() use ($app, $tasks) {
+    $path = $app-&gt;saveFile(&quot;Text files|*.txt&quot;);
+    if ($path != &quot;&quot;) {
+        file_put_contents($path, implode(&quot;\n&quot;, $tasks-&gt;items()) . &quot;\n&quot;);
+        $app-&gt;msg(&quot;Saved &quot; . $tasks-&gt;count() . &quot; tasks to &quot; . $path);
+    }
+});
+$file-&gt;item(&quot;Quit&quot;, function() use ($app) {
+    $app-&gt;close();
+});
+
+$app-&gt;run();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 04-todo-list.hphp</code></pre></div>
+</article>
+<article class="example" id="ex-05-focus-timer">
+<h2><span class="example-num">05</span>A focus timer with themes</h2>
+<p>A Pomodoro timer: a <code>slider()</code> sets the minutes, <code>every()</code> ticks once a second, a <code>progress()</code> bar fills up, and a <code>combo()</code> of <code>ui_theme_names()</code> restyles the whole window live with <code>theme()</code>.</p>
+<div class="example-file">05-focus-timer.hphp</div>
+<pre><code class="hphp">&lt;?php
+import &quot;ui&quot;;
+
+$app = new App(&quot;Focus timer&quot;, 420, 420);
+
+// Settings: session length (1-60 minutes) and theme.
+$settings = $app-&gt;section(&quot;Settings&quot;, 360);
+$length = $settings-&gt;slider(25);
+$length-&gt;range(1, 60);
+$themes = $settings-&gt;combo(ui_theme_names());
+
+// The clock: time left, a progress bar and the start button.
+$clock = $app-&gt;heading(&quot;25:00&quot;);
+$bar = $app-&gt;progress(0);
+$startStop = $app-&gt;button(&quot;Start&quot;, &quot;primary&quot;);
+
+// Timer state, shared by the handlers below.
+$total = 25 * 60;
+$left = $total;
+$running = false;
+
+// Show the remaining time as mm:ss and fill the bar as time passes.
+$show = function() use (&amp;$total, &amp;$left, $clock, $bar) {
+    $clock-&gt;text(sprintf(&quot;%02d:%02d&quot;, intdiv($left, 60), $left % 60));
+    $bar-&gt;progress(intdiv(($total - $left) * 100, $total));
+};
+
+// Moving the slider resets the timer to the new length.
+$length-&gt;onChange(function($minutes) use (&amp;$total, &amp;$left, $show) {
+    $total = $minutes * 60;
+    $left = $total;
+    $show();
+});
+
+// Picking a theme restyles every widget at once.
+$themes-&gt;onChange(function($index, $name) use ($app) {
+    $app-&gt;theme($name);
+});
+
+// Start / pause toggles one flag; the timer below checks it.
+$startStop-&gt;onClick(function() use (&amp;$running, $startStop) {
+    $running = !$running;
+    $startStop-&gt;text($running ? &quot;Pause&quot; : &quot;Start&quot;);
+});
+
+// Once a second: count down while running; at zero, announce and reset.
+$app-&gt;every(1000, function() use ($app, &amp;$running, &amp;$left, &amp;$total, $startStop, $show) {
+    if (!$running) {
+        return;
+    }
+    $left = $left - 1;
+    if ($left == 0) {
+        $running = false;
+        $startStop-&gt;text(&quot;Start&quot;);
+        $app-&gt;msg(&quot;Time is up - take a break!&quot;);
+        $left = $total;
+    }
+    $show();
+});
+
+$app-&gt;run();</code></pre>
+<div class="example-try"><span>Try it</span><pre><code class="bash">hphp run 05-focus-timer.hphp</code></pre></div>
+</article>
 </section>
 <aside class="lib-related"><h3>Related libraries</h3><div class="lib-mini-grid"><a href="../html/"><b>html</b><span>Parse HTML and CSS, lay out and paint documents.</span></a></div></aside>
 </main>
@@ -293,7 +556,17 @@ hphp run   examples/ui_gallery.hphp</code></pre>
   function show(name, push) {
     var found = false;
     panels.forEach(function (p) { var on = p.getAttribute("data-tab-panel") === name; p.hidden = !on; if (on) found = true; });
-    if (!found) return show(panels[0].getAttribute("data-tab-panel"), false);
+    if (!found) {
+      /* an anchor inside a panel (#ex-02-json-api): open that panel, scroll to it */
+      var target = name && document.getElementById(name);
+      var owner = target && target.closest("[data-tab-panel]");
+      if (owner) {
+        show(owner.getAttribute("data-tab-panel"), false);
+        target.scrollIntoView();
+        return;
+      }
+      return show(panels[0].getAttribute("data-tab-panel"), false);
+    }
     buttons.forEach(function (b) { var on = b.getAttribute("data-tab-button") === name; b.setAttribute("aria-selected", on ? "true" : "false"); b.classList.toggle("active", on); });
     if (push) history.replaceState(null, "", "#" + name);
     var side = document.querySelector(".doc-side");
