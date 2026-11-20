@@ -381,13 +381,11 @@ class Server {
     /* ------------------------------------------------------- setup */
 
     public function open_bt_cursors(): void {
-        unsafe {
-        if ($this->btPosts == 0) { $this->btPosts = bt_open($this->db, "posts", 0); }
-        if ($this->btFeed == 0) { $this->btFeed = bt_open($this->db, "posts_created_at_id_idx", 1); }
-        if ($this->btLikes == 0) { $this->btLikes = bt_open($this->db, "likes_post_id_idx", 1); }
-        if ($this->btUsers == 0) { $this->btUsers = bt_open($this->db, "users", 0); }
-    
-        }}
+        if ($this->btPosts == 0) { unsafe { $this->btPosts = bt_open($this->db, "posts", 0); } }
+        if ($this->btFeed == 0) { unsafe { $this->btFeed = bt_open($this->db, "posts_created_at_id_idx", 1); } }
+        if ($this->btLikes == 0) { unsafe { $this->btLikes = bt_open($this->db, "likes_post_id_idx", 1); } }
+        if ($this->btUsers == 0) { unsafe { $this->btUsers = bt_open($this->db, "users", 0); } }
+    }
 
     public function close_bt_cursors(): void {
         if ($this->btPosts != 0) { bt_close($this->btPosts); $this->btPosts = 0; }
@@ -397,7 +395,6 @@ class Server {
     }
 
     public function open(string $host, int $port): bool {
-        unsafe {
         $path = getenv("SQLITE_PATH");
         if ($path === false || $path == "") { $path = "feed.db"; }
         $sec = getenv("JWT_SECRET");
@@ -431,8 +428,8 @@ class Server {
          * transaction. The checkpoint connection uses the same VFS. */
         $sqliteVfs = getenv("HPHP_SQLITE_VFS");
         $db = 0;
-        if ($sqliteVfs != "") { $db = sqlite_open_vfs($path, $sqliteVfs); }
-        else { $db = sqlite_open($path); }
+        if ($sqliteVfs != "") { unsafe { $db = sqlite_open_vfs($path, $sqliteVfs); } }
+        else { unsafe { $db = sqlite_open($path); } }
         if ($db == 0) {
             echo "fatal: cannot open sqlite database " . $path . "\n";
             return false;
@@ -502,7 +499,7 @@ class Server {
            . "FROM (SELECT p.id, p.body, p.created_at, u.username AS author "
            . "FROM posts p JOIN users u ON u.id = p.user_id "
            . "ORDER BY p.created_at DESC, p.id DESC LIMIT 20) p";
-        $this->feed = sqlite_prepare($db, $q);
+        unsafe { $this->feed = sqlite_prepare($db, $q); }
         if ($this->feed == 0) {
             echo "fatal: feed query: " . sqlite_errmsg($db) . "\n";
             return false;
@@ -513,25 +510,25 @@ class Server {
            . "'author', (SELECT username FROM users u WHERE u.id = p.user_id), "
            . "'like_count', (SELECT count(*) FROM likes l WHERE l.post_id = p.id)"
            . ")) FROM posts p WHERE p.id = ?1";
-        $this->post = sqlite_prepare($db, $q);
+        unsafe { $this->post = sqlite_prepare($db, $q); }
         if ($this->post == 0) {
             echo "fatal: post query: " . sqlite_errmsg($db) . "\n";
             return false;
         }
 
-        $this->health = sqlite_prepare($db, "SELECT 1");
+        unsafe { $this->health = sqlite_prepare($db, "SELECT 1"); }
         if ($this->health == 0) {
             echo "fatal: health query: " . sqlite_errmsg($db) . "\n";
             return false;
         }
         /* transaction control prepared once: sqlite3_exec re-parses the text
          * on every group commit (it showed up in the write profile) */
-        $this->beginTx = sqlite_prepare($db, "BEGIN IMMEDIATE");
-        $this->commitTx = sqlite_prepare($db, "COMMIT");
-        $this->rollbackTx = sqlite_prepare($db, "ROLLBACK");
+        unsafe { $this->beginTx = sqlite_prepare($db, "BEGIN IMMEDIATE"); }
+        unsafe { $this->commitTx = sqlite_prepare($db, "COMMIT"); }
+        unsafe { $this->rollbackTx = sqlite_prepare($db, "ROLLBACK"); }
 
         /* one post's like count for the B-tree post path (index range scan) */
-        $this->likecnt = sqlite_prepare($db, "SELECT count(*) FROM likes WHERE post_id = ?1");
+        unsafe { $this->likecnt = sqlite_prepare($db, "SELECT count(*) FROM likes WHERE post_id = ?1"); }
         if ($this->likecnt == 0) {
             echo "fatal: like count query: " . sqlite_errmsg($db) . "\n";
             return false;
@@ -539,7 +536,7 @@ class Server {
 
         $q = "INSERT INTO posts (user_id, body) VALUES (?1, ?2) "
            . "RETURNING id, created_at";
-        $this->insPost = sqlite_prepare($db, $q);
+        unsafe { $this->insPost = sqlite_prepare($db, $q); }
         if ($this->insPost == 0) {
             echo "fatal: insert post: " . sqlite_errmsg($db) . "\n";
             return false;
@@ -548,13 +545,13 @@ class Server {
         $q = "INSERT INTO likes (user_id, post_id) "
            . "SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM posts WHERE id = ?2) "
            . "ON CONFLICT (user_id, post_id) DO NOTHING";
-        $this->insLike = sqlite_prepare($db, $q);
+        unsafe { $this->insLike = sqlite_prepare($db, $q); }
         if ($this->insLike == 0) {
             echo "fatal: insert like: " . sqlite_errmsg($db) . "\n";
             return false;
         }
 
-        $this->hasPost = sqlite_prepare($db, "SELECT 1 FROM posts WHERE id = ?1 LIMIT 1");
+        unsafe { $this->hasPost = sqlite_prepare($db, "SELECT 1 FROM posts WHERE id = ?1 LIMIT 1"); }
         if ($this->hasPost == 0) {
             echo "fatal: post exists query: " . sqlite_errmsg($db) . "\n";
             return false;
@@ -698,8 +695,7 @@ class Server {
         $this->diagmode = (getenv("HPHP_DIAG") == "1");
         $this->diagNext = $this->start + 5;
         return true;
-    
-        }}
+    }
 
     /* -------------------------------------------------------- main loop */
 
@@ -797,17 +793,12 @@ class Server {
     }
 
     public function run(): void {
-        unsafe {
         while (true) {
-            /* Everything allocated while serving this poll cycle is released
-             * by scope_end(): no per-request malloc survives the round. */
-            scope_begin();
-
             $pollWaitMs = 50;
             if ($this->retryingWrites) { $pollWaitMs = 1; }
             $diagT = 0;
             if ($this->diagmode) { $diagT = hrtime(true); }
-            if ($this->fdArrays) { epoll_wait_iarr2($this->readyIds, $this->writableIds, $pollWaitMs); }
+            if ($this->fdArrays) { unsafe { epoll_wait_iarr2($this->readyIds, $this->writableIds, $pollWaitMs); } }
             else { epoll_wait2($this->ready, $this->writable, $pollWaitMs); }
             if ($this->diagmode) {
                 $diagNow = hrtime(true);
@@ -828,7 +819,7 @@ class Server {
             if (!$this->retryingWrites && $n > 0 && $n < 32) {
                 if ($this->writeWaitMs > 0) {
                     if ($this->diagmode) { $diagT = hrtime(true); }
-                    if ($this->fdArrays) { epoll_wait_iarr2($this->readyIds, $this->writableIds, $this->writeWaitMs); }
+                    if ($this->fdArrays) { unsafe { epoll_wait_iarr2($this->readyIds, $this->writableIds, $this->writeWaitMs); } }
                     else { epoll_wait2($this->ready, $this->writable, $this->writeWaitMs); }
                     if ($this->diagmode) {
                         $diagNow = hrtime(true);
@@ -868,11 +859,8 @@ class Server {
             }
 
             if ($this->diagmode) { $this->diag_log(); }
-
-            scope_end();
         }
-    
-        }}
+    }
 
     /* Emits bounded, interval-based diagnostics even when /stats is delayed
      * behind a saturated event loop. Timers are disabled unless HPHP_DIAG=1. */
@@ -2302,7 +2290,6 @@ class Server {
     }
 
     public function execute_writes(): void {
-        unsafe {
         $n = count($this->pending);
         if ($n == 0) { return; }
         if ($this->writeGroupMs > 0 && $n < 256) {
@@ -2382,7 +2369,7 @@ class Server {
                 sb_put($sb, ',"author":');
                 sb_json_str($sb, $r["name"]);
                 sb_put($sb, ',"like_count":0}}');
-                $r["body"] = sb_take($sb);
+                unsafe { $r["body"] = sb_take($sb); }
                 $r["code"] = 201;
                 $this->pending[$i] = $r;
             } else if ($r["kind"] == 2) {
@@ -2447,8 +2434,7 @@ class Server {
             $this->fail_writes($failWhere, $failDetail, $failCode);
         }
         $this->flush();
-    
-        }}
+    }
 
     public function fail_writes(string $where, string $detail, int $code): void {
         echo "sqlite write failure at " . $where . " code=" . $code . ": " . $detail . "\n";
