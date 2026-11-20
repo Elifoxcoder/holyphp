@@ -5,6 +5,7 @@
  * hphp.json is still read, for older projects and for package archives,
  * and a packed hphp.yaml project carries a generated hphp.json so the
  * registry and older clients understand it. */
+#define _DEFAULT_SOURCE 1   /* realpath, popen, fileno, S_ISDIR on glibc with -std=c11 */
 #include "project.h"
 #include "pkgcore.h"
 #include "util.h"
@@ -33,12 +34,12 @@
 
 static bool p_is_dir(const char *p) {
     struct stat st;
-    return stat(p, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR;
+    return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
 static bool p_is_file(const char *p) {
     struct stat st;
-    return stat(p, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG;
+    return stat(p, &st) == 0 && S_ISREG(st.st_mode);
 }
 
 static void p_mkdir1(const char *p) {
