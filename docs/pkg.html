@@ -17,6 +17,82 @@
   packed into a portable <code>.hpx</code> archive, and shared through a registry —
   which is itself a HolyPHP program (<code>registry/server.hphp</code>, ~250 lines).</p>
 
+  <h2>Projects: <code>hphp create</code></h2>
+  <p>A project is a folder with an <code>hphp.yaml</code>. Its dependencies are
+  installed into the project's own <code>.hphp/packages/</code> folder and pinned in
+  <code>hphp.lock</code>, so every project keeps its own versions and a fresh clone
+  gets exactly the same ones with one command.</p>
+<pre><code class="bash">hphp create                       # asks: name, template, description, author, license, ...
+hphp create shop -t web --yes     # no questions: web template, defaults
+
+cd shop
+hphp install                      # everything in hphp.yaml (keeps hphp.lock)
+hphp install websocket            # add a dependency (pins "^x.y")
+hphp install thread@^1.0          # ... with a version constraint
+hphp install phpunit_lite --dev   # only for development (require-dev)
+hphp install ../mylib             # a local package folder (path:../mylib)
+hphp update                       # newest allowed versions, rewrites hphp.lock
+hphp update websocket             # just one package
+hphp remove websocket             # drop it (and what only it needed)
+hphp deps                         # what is installed, from where
+hphp run                          # runs the entry from hphp.yaml
+hphp test                         # runs tests/*.hphp (a test passes when it exits 0)
+hphp build                        # writes build/shop(.exe)</code></pre>
+  <p>Templates: <code>console</code> (input + colored output), <code>web</code> (HTTP server with
+  routes on the <a href="lib-async.html">async</a> library), <code>lib</code> (a package with
+  tests, ready for <code>hphp pkg publish</code>) and <code>empty</code>.
+  <code>hphp create --help</code> lists the options for scripts and CI
+  (<code>--template</code>, <code>--description</code>, <code>--author</code>,
+  <code>--license</code>, <code>--safe</code>, <code>--no-git</code>, <code>--yes</code>).</p>
+
+  <h3>Layout</h3>
+<pre class="fragment"><code class="bash">shop/
+  hphp.yaml            name, version, entry, require, require-dev
+  hphp.lock            exact versions + checksums - commit it
+  src/main.hphp        the entry file
+  src/routes.hphp
+  tests/routes_test.hphp
+  .hphp/packages/      installed dependencies - not committed (.gitignore)
+  build/               hphp build output</code></pre>
+
+  <h3>The project file: <code>hphp.yaml</code></h3>
+<pre><code class="yaml"># HolyPHP project file
+name: shop
+version: 0.1.0
+type: project            # or: library
+description: A HolyPHP web server.
+entry: src/main.hphp
+author: Ada
+license: MIT
+
+require:
+  async: "^1.0"          # 1.x from 1.0
+  websocket: "~1.2"      # 1.2.x
+  mylib: "path:../mylib" # a local folder
+
+require-dev: {}</code></pre>
+  <p>Version constraints: <code>"*"</code> any, <code>"1.2.3"</code> exactly,
+  <code>"1.2"</code> any 1.2.x, <code>"^1.2"</code> 1.2 up to (not including) 2.0,
+  <code>"~1.2"</code> 1.2.x, <code>"&gt;=1.0 &lt;2.0"</code> a range,
+  <code>"^1.0 || ^2.0"</code> either. Quote them: <code>*</code> and <code>^</code> mean
+  something else in plain YAML. The file is a small YAML subset: <code>key: value</code>,
+  one level of nested <code>name: "version"</code> lines, <code>{}</code> for an empty map,
+  and <code>#</code> comments.</p>
+  <p><code>import "async";</code> looks in the importing file's project
+  (<code>.hphp/packages/async/</code>) before the per-user package home and the
+  libraries bundled in the compiler. Packages come from the registry; when it is
+  unreachable or does not have them, from the libraries bundled in
+  <code>hphp</code> (works offline). The registry serves the newest version of a
+  package only, so a constraint it cannot meet fails with a clear message
+  instead of installing something else. <code>hphp.lock</code> records an FNV-1a
+  checksum of every archive; a package that changed under the same version
+  number stops the install.</p>
+  <p>Older projects with an <code>hphp.json</code> keep working; when a folder has
+  both, <code>hphp.yaml</code> wins. <code>hphp pkg pack</code> and
+  <code>hphp pkg publish</code> read <code>hphp.yaml</code> and add a generated
+  <code>hphp.json</code> to the archive, so registries and older clients understand
+  it; <code>.hphp/</code>, <code>.git/</code> and <code>build/</code> are left out.</p>
+
   <h2>Quick start</h2>
 <pre><code class="hphp">hphp pkg init                     # create hphp.json skeleton in this folder
 hphp pkg check                    # typecheck the package's entry file

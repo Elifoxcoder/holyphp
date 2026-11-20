@@ -22,6 +22,13 @@
     <tr><td><code>hphp run file.hphp</code></td><td>Compile to a temp binary and execute it. Perfect for scripts and quick iteration.</td></tr>
     <tr><td><code>hphp build file.hphp -o app.exe</code></td><td>Produce a standalone executable. Ships with the runtime linked in — no dependencies on the target machine.</td></tr>
     <tr><td><code>hphp emit file.hphp</code></td><td>Print the generated C (for the curious and the debugger-inclined).</td></tr>
+    <tr><td><code>hphp create [name]</code></td><td>New project folder from a template (console, web, lib, empty). Asks a few questions in a terminal; <code>--yes</code> and the options from <code>hphp create --help</code> for scripts.</td></tr>
+    <tr><td><code>hphp run</code> / <code>build</code> / <code>check</code></td><td>Without a file, inside a project: use the <code>entry</code> from <code>hphp.yaml</code>. <code>hphp build</code> then writes <code>build/&lt;name&gt;</code>.</td></tr>
+    <tr><td><code>hphp install [pkg[@version]]</code></td><td>In a project: install everything from <code>hphp.yaml</code> into <code>.hphp/packages/</code> (keeping <code>hphp.lock</code>), or add one dependency (<code>--dev</code> for <code>require-dev</code>, a folder such as <code>../mylib</code> for a local package). Outside a project: install a package for your user, as before.</td></tr>
+    <tr><td><code>hphp update [pkg]</code></td><td>Move dependencies to the newest version their constraint allows and rewrite <code>hphp.lock</code>.</td></tr>
+    <tr><td><code>hphp remove pkg</code></td><td>Drop a dependency, its folder and whatever only it needed.</td></tr>
+    <tr><td><code>hphp deps</code></td><td>List the locked dependencies and where they came from.</td></tr>
+    <tr><td><code>hphp test [filter] [-v]</code></td><td>Run every <code>tests/*.hphp</code> of the project; a test passes when it exits 0.</td></tr>
     <tr><td><code>hphp pkg ...</code></td><td>Package manager: <code>init</code>, <code>check</code>, <code>pack</code>, <code>publish</code>, <code>install</code>, <code>remove</code>, <code>search</code>, <code>registry</code>, <code>list</code>, <code>home</code>. See the <a href="pkg.html">Packages</a> page.</td></tr>
   </table>
 

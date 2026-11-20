@@ -9,6 +9,24 @@ behaves differently, what they have to change.
 
 ## Unreleased
 
+- Projects: `hphp create` asks a few questions (name, template, description,
+  author, license, strict memory safety, git) and creates a ready project
+  from one of four templates: console, web server, library or empty. A
+  project is described by `hphp.yaml`; its dependencies (`require`,
+  `require-dev`, with constraints like `"^1.2"`, `"~1.2"` or
+  `"path:../mylib"`) are installed into the project's own `.hphp/packages/`
+  by `hphp install` and pinned with checksums in `hphp.lock`. New commands:
+  `hphp install [pkg[@version]] [--dev]`, `hphp update [pkg]`,
+  `hphp remove pkg`, `hphp deps` and `hphp test`; `hphp run`, `build` and
+  `check` without a file use the project's entry. `hphp install <pkg>`
+  outside a project still installs for your user. `hphp pkg pack/publish`
+  accept `hphp.yaml` projects. See https://hphp.ch/pkg.html.
+- `hphp run sub/app.hphp` (a source in a subfolder, without `-o`) failed with
+  exit code 127 because the program was built relative to the compiler's work
+  folder; it now runs.
+- Installing a bundled library into a brand-new package home no longer fails
+  with "cannot write .../cache/.embedded/...".
+
 - Fixed unsafe pointer cleanup and immortal string literal handling. Builtin
   temporary release now respects borrowed results, and io_uring receive values
   remain stable after the ring reuses its buffer.
