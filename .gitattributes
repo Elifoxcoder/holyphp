@@ -8,6 +8,8 @@
 # Linux desktop files: appimagetool rejects CRLF line endings
 *.desktop text eol=lf
 AppRun text eol=lf
+# server-side scripts run through a shebang: CRLF breaks "#!/usr/bin/env python3"
+*.py text eol=lf
 
 # Vendored sources are verified by hash in their README, so Git must not
 # rewrite their line endings.

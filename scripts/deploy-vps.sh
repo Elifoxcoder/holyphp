@@ -76,6 +76,9 @@ step "4/5 Playground-API + Live-Runner"
 "$SCP_BIN" -q tools/playground-api/hphp-playground.slice "$HOST:/etc/systemd/system/hphp-playground.slice"
 "$SCP_BIN" -q tools/playground-api/hphp-playground.tmpfiles.conf "$HOST:/etc/tmpfiles.d/hphp-playground.conf"
 "$SSH_BIN" "$HOST" "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io sudo && systemctl enable --now docker && install -o root -g root -m 0755 /tmp/hphp-playground-container /usr/local/sbin/hphp-playground-container && install -o root -g root -m 0644 /tmp/hphp-playground-jobs.mount '/etc/systemd/system/var-lib-hphp\\x2dplayground-jobs.mount' && install -d -o root -g root -m 0755 /opt/hphp-playground/container /var/lib/hphp-playground/jobs && install -o root -g root -m 0644 /tmp/hphp-playground-Dockerfile /opt/hphp-playground/container/Dockerfile && cp $REMOTE/hphp /opt/hphp-playground/container/hphp && docker build --pull -t hphp-playground:latest /opt/hphp-playground/container && printf '%s\\n' 'hphpplay ALL=(root) NOPASSWD: /usr/local/sbin/hphp-playground-container' > /etc/sudoers.d/hphp-playground-container && chmod 0440 /etc/sudoers.d/hphp-playground-container && visudo -cf /etc/sudoers.d/hphp-playground-container && systemctl daemon-reload && systemd-tmpfiles --create /etc/tmpfiles.d/hphp-playground.conf && systemctl enable --now 'var-lib-hphp\\x2dplayground-jobs.mount'"
+# A checkout on Windows may carry CRLF line endings; a script run through its
+# shebang then fails with "No such file or directory" (python3\r).
+"$SSH_BIN" "$HOST" "sed -i 's/\r\$//' /usr/local/sbin/hphp-playground-container $API/live.py"
 "$SSH_BIN" "$HOST" "chmod 755 $API/live.py && systemctl daemon-reload \
   && systemd-tmpfiles --create /etc/tmpfiles.d/hphp-playground.conf \
   && systemctl enable --now hphp-playground hphp-playground-live \
