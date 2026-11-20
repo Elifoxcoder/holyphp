@@ -76,16 +76,23 @@ ${GUIDE_RAIL}
   var button = document.getElementById('nav-burger');
   var links = document.getElementById('site-links');
   if (!button || !links) return;
-  button.addEventListener('click', function() {
-    var open = button.getAttribute('aria-expanded') !== 'true';
+  function setOpen(open) {
     button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    button.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
     links.classList.toggle('is-open', open);
+    document.body.classList.toggle('nav-lock', open);   /* fullscreen menu: no page scroll */
+  }
+  button.addEventListener('click', function() {
+    setOpen(button.getAttribute('aria-expanded') !== 'true');
   });
   links.addEventListener('click', function(event) {
-    if (event.target.closest('a')) {
-      button.setAttribute('aria-expanded', 'false');
-      links.classList.remove('is-open');
-    }
+    if (event.target.closest('a')) setOpen(false);
+  });
+  document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape' && links.classList.contains('is-open')) { setOpen(false); button.focus(); }
+  });
+  window.addEventListener('resize', function() {
+    if (window.innerWidth > 900 && links.classList.contains('is-open')) setOpen(false);
   });
 })();
 </script>
