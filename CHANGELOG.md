@@ -19,6 +19,10 @@ behaves differently, what they have to change.
   packages are pinned by checksum in `hphp.lock` (with `trust:`), so later
   installs of the same archive do not ask again. `--trust` installs without
   asking (CI). `hphp deps` shows each package's trust level.
+- `import` of an official library no longer picks up an outdated copy that
+  was installed for the user earlier (`%APPDATA%/hphp/packages`); it always
+  uses the library that ships with the compiler (a project's locked copy in
+  `.hphp/packages/` still wins).
 - Website: the menu on phones and small tablets is a fullscreen menu, with
   a quieter menu button.
 

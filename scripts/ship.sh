@@ -120,7 +120,7 @@ got=$(./hphp.exe --version | awk '{print $2}')
 
 # ---------------------------------------------------------------- 6
 step 6 "tests"
-set +e; bash tests/run.sh all > /tmp/hphp_ship_tests.log 2>&1; set -e
+bash tests/run.sh all > /tmp/hphp_ship_tests.log 2>&1 || true   # failures are judged below (known-failures.txt); "|| true" keeps the ERR trap quiet
 tail -1 /tmp/hphp_ship_tests.log
 known=$(grep -vE '^\s*(#|$)' tests/known-failures.txt 2>/dev/null | awk '{print $1}' | sort -u || true)
 failed=$(grep '^FAIL ' /tmp/hphp_ship_tests.log | awk '{print $2}' | sort -u || true)

@@ -143,6 +143,18 @@ has "official names install the bundled library" "$out" "installed http"
 out=$(cd app_console && "$HPHP" deps 2>&1)
 has "deps shows trust levels" "$out" "TRUST"
 
+# --- a stale per-user copy never shadows an official library -----------------
+"$HPHP" install testing > /dev/null 2>&1
+stale=$(ls -d "$HPHP_HOME"/hphp/packages/testing "$HPHP_HOME"/packages/testing 2>/dev/null | head -1)
+if [ -n "$stale" ]; then
+    printf '<?php\nfunction broken_on_purpose( {\n' > "$stale/testing.hphp"
+    mkdir -p loose && printf '<?php\nimport "testing";\n$t = new Test("x");\n$t->equal(1, 1, "one");\n$t->done();\n' > loose/use_testing.hphp
+    out=$("$HPHP" run loose/use_testing.hphp 2>&1)
+    has "official imports ignore a stale per-user copy" "$out" "1 passed"
+else
+    bad "official imports ignore a stale per-user copy" "testing was not installed for the user"
+fi
+
 # --- outside a project ------------------------------------------------------
 mkdir -p outside && cd outside || exit 1
 out=$("$HPHP" test 2>&1)

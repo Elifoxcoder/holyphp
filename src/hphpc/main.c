@@ -1174,6 +1174,20 @@ static bool upwards_lib(LoadCtx *ctx, const char *start_dir, const char *spec) {
     return hit;
 }
 
+bool pkg_is_official(const char *name);
+
+/* "thread.hphp" / "thread/x.hphp" -> is "thread" an official library? */
+static bool import_names_official(const char *spec) {
+    char pkg[128];
+    const char *slash = strchr(spec, '/');
+    size_t n = slash ? (size_t)(slash - spec) : strlen(spec);
+    if (!slash && n > 5 && !strcmp(spec + n - 5, ".hphp")) n -= 5;
+    if (n == 0 || n >= sizeof pkg) return false;
+    memcpy(pkg, spec, n);
+    pkg[n] = 0;
+    return pkg_is_official(pkg);
+}
+
 static bool load_import(LoadCtx *ctx, const char *importer, const char *spec) {
     /* convention: an import spec without an extension names a library or
      * package ("websocket"), not a source file - resolve it to "<spec>.hphp"
@@ -1214,7 +1228,10 @@ static bool load_import(LoadCtx *ctx, const char *importer, const char *spec) {
         if (vend && load_candidate(ctx, vend)) { free(idir); return true; }
         cands[0] = fmt("src/hphpc/std/%s", spec);
         cands[1] = fmt("%s/%s", idir, spec);
-        cands[2] = pkg_import_candidate(spec);   /* installed packages */
+        /* installed packages - but never for an official library: a copy
+         * installed for the user goes stale when the compiler is updated,
+         * and the official one is always the compiler's own (see below) */
+        cands[2] = import_names_official(spec) ? NULL : pkg_import_candidate(spec);
         free(idir);
         for (int i = 0; i < 3; i++) {
             if (load_candidate(ctx, cands[i])) return true;
