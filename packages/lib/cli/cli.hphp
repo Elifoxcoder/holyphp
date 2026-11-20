@@ -1,0 +1,270 @@
+<?php
+/* cli.hphp - command-line programs: arguments, questions, tables, progress.
+ *
+ *   import "cli";
+ *
+ *   $args = cli_args();                    // myapp build --out=dist -v src
+ *   $out  = $args->get("out", "build");   // "dist"
+ *   if ($args->has("v")) { ... }           // -v, --v, --verbose=...
+ *   $src  = $args->arg(1, ".");           // positional: "build", "src"
+ *
+ *   $name = cli_ask("Project name", "demo");
+ *   if (cli_confirm("Continue?", true)) { ... }
+ *   $i = cli_choose("Template", ["console", "web"], 0);
+ *
+ *   echo cli_table(["name", "size"], [["a.txt", "12"], ["b.txt", "3400"]]);
+ *   echo cli_progress(30, 120);            // [#######.....................]  25%
+ *   echo cli_color("done", "green");
+ */
+
+class CliArgs {
+    /* --name=value, --flag, -abc (each letter) */
+    pub array $options = [];
+    /* everything else, in order (and everything after "--") */
+    pub array $positional = [];
+
+    pub function has(string $name): bool {
+        return array_key_exists($name, $this->options);
+    }
+
+    /* Option value as a string; "true" for a bare flag; $default when absent. */
+    pub function get(string $name, string $default = ""): string {
+        if (!array_key_exists($name, $this->options)) {
+            return $default;
+        }
+        return strval($this->options[$name]);
+    }
+
+    pub function int(string $name, int $default = 0): int {
+        if (!array_key_exists($name, $this->options)) {
+            return $default;
+        }
+        return intval($this->options[$name]);
+    }
+
+    /* Positional argument $i (0-based), or $default. */
+    pub function arg(int $i, string $default = ""): string {
+        if ($i < 0 || $i >= count($this->positional)) {
+            return $default;
+        }
+        return strval($this->positional[$i]);
+    }
+
+    pub function count(): int {
+        return count($this->positional);
+    }
+}
+
+/* Parse a list of arguments (without the program name). */
+function cli_parse(array $list): CliArgs {
+    $a = new CliArgs();
+    $rest = false;
+    foreach ($list as $raw) {
+        $s = strval($raw);
+        if ($rest) {
+            $a->positional[] = $s;
+        } elseif ($s == "--") {
+            $rest = true;
+        } elseif (strlen($s) > 2 && substr($s, 0, 2) == "--") {
+            $body = substr($s, 2);
+            $eq = strpos($body, "=");
+            if ($eq === false) {
+                $a->options[$body] = "true";
+            } else {
+                $a->options[substr($body, 0, $eq)] = substr($body, $eq + 1);
+            }
+        } elseif (strlen($s) > 1 && substr($s, 0, 1) == "-" && !is_numeric($s)) {
+            for ($i = 1; $i < strlen($s); $i++) {
+                $a->options[substr($s, $i, 1)] = "true";
+            }
+        } else {
+            $a->positional[] = $s;
+        }
+    }
+    return $a;
+}
+
+/* The program's own arguments ($argv without the program name). */
+function cli_args(): CliArgs {
+    $list = [];
+    for ($i = 1; $i < count($argv); $i++) {
+        $list[] = $argv[$i];
+    }
+    return cli_parse($list);
+}
+
+/* ---------------- questions ---------------- */
+
+function cli_ask(string $question, string $default = ""): string {
+    $prompt = $question;
+    if ($default != "") {
+        $prompt = $prompt . " [" . $default . "]";
+    }
+    $answer = trim(input($prompt . ": "));
+    if ($answer == "") {
+        return $default;
+    }
+    return $answer;
+}
+
+function cli_confirm(string $question, bool $default = false): bool {
+    $hint = "y/N";
+    if ($default) {
+        $hint = "Y/n";
+    }
+    $answer = strtolower(trim(input($question . " (" . $hint . ") ")));
+    if ($answer == "") {
+        return $default;
+    }
+    $first = substr($answer, 0, 1);
+    return $first == "y" || $first == "j";
+}
+
+/* Numbered menu; returns the chosen index (0-based). */
+function cli_choose(string $question, array $options, int $default = 0): int {
+    echo $question;
+    for ($i = 0; $i < count($options); $i++) {
+        echo "  " . ($i + 1) . ") " . strval($options[$i]);
+    }
+    while (true) {
+        $answer = trim(input("Choose 1-" . count($options) . " [" . ($default + 1) . "]: "));
+        if ($answer == "") {
+            return $default;
+        }
+        $n = intval($answer);
+        if ($n >= 1 && $n <= count($options)) {
+            return $n - 1;
+        }
+        echo "  please enter a number between 1 and " . count($options);
+    }
+    return $default;
+}
+
+/* ---------------- output ---------------- */
+
+/* Visible width: ANSI color codes do not take up columns. */
+function cli_width(string $s): int {
+    $w = 0;
+    $i = 0;
+    $n = strlen($s);
+    while ($i < $n) {
+        if (ord(substr($s, $i, 1)) == 27) {
+            while ($i < $n && substr($s, $i, 1) != "m") {
+                $i++;
+            }
+            $i++;
+            continue;
+        }
+        /* count UTF-8 lead bytes only */
+        $o = ord(substr($s, $i, 1));
+        if ($o < 128 || $o >= 192) {
+            $w++;
+        }
+        $i++;
+    }
+    return $w;
+}
+
+function cli_pad(string $s, int $width): string {
+    $missing = $width - cli_width($s);
+    if ($missing <= 0) {
+        return $s;
+    }
+    return $s . str_repeat(" ", $missing);
+}
+
+/* A plain-text table with aligned columns. */
+function cli_table(array $headers, array $rows): string {
+    $widths = [];
+    for ($c = 0; $c < count($headers); $c++) {
+        $widths[] = cli_width(strval($headers[$c]));
+    }
+    foreach ($rows as $row) {
+        for ($c = 0; $c < count($headers); $c++) {
+            $cell = "";
+            if ($c < count($row)) {
+                $cell = strval($row[$c]);
+            }
+            if (cli_width($cell) > $widths[$c]) {
+                $widths[$c] = cli_width($cell);
+            }
+        }
+    }
+    $line = "";
+    $rule = "";
+    for ($c = 0; $c < count($headers); $c++) {
+        $sep = "  ";
+        if ($c == count($headers) - 1) {
+            $sep = "";
+        }
+        $line = $line . cli_pad(strval($headers[$c]), $widths[$c]) . $sep;
+        $rule = $rule . str_repeat("-", $widths[$c]) . $sep;
+    }
+    $out = rtrim($line) . "\n" . $rule;
+    foreach ($rows as $row) {
+        $line = "";
+        for ($c = 0; $c < count($headers); $c++) {
+            $cell = "";
+            if ($c < count($row)) {
+                $cell = strval($row[$c]);
+            }
+            $sep = "  ";
+            if ($c == count($headers) - 1) {
+                $sep = "";
+            }
+            $line = $line . cli_pad($cell, $widths[$c]) . $sep;
+        }
+        $out = $out . "\n" . rtrim($line);
+    }
+    return $out;
+}
+
+/* "[#######.....................]  25%" */
+function cli_progress(int $done, int $total, int $width = 30): string {
+    $pct = 0;
+    if ($total > 0) {
+        $pct = intval($done * 100 / $total);
+    }
+    if ($pct < 0) {
+        $pct = 0;
+    }
+    if ($pct > 100) {
+        $pct = 100;
+    }
+    $full = intval($pct * $width / 100);
+    $label = strval($pct);
+    while (strlen($label) < 3) {
+        $label = " " . $label;
+    }
+    return "[" . str_repeat("#", $full) . str_repeat(".", $width - $full) . "] " . $label . "%";
+}
+
+/* ANSI colors: red green yellow blue magenta cyan gray bold dim underline. */
+function cli_color(string $text, string $color): string {
+    $codes = ["red" => "31", "green" => "32", "yellow" => "33", "blue" => "34",
+              "magenta" => "35", "cyan" => "36", "gray" => "90", "bold" => "1",
+              "dim" => "2", "underline" => "4"];
+    if (!array_key_exists($color, $codes)) {
+        return $text;
+    }
+    return chr(27) . "[" . $codes[$color] . "m" . $text . chr(27) . "[0m";
+}
+
+/* Remove ANSI color codes (for logs and width checks). */
+function cli_strip(string $s): string {
+    $out = "";
+    $i = 0;
+    $n = strlen($s);
+    while ($i < $n) {
+        if (ord(substr($s, $i, 1)) == 27) {
+            while ($i < $n && substr($s, $i, 1) != "m") {
+                $i++;
+            }
+            $i++;
+            continue;
+        }
+        $out = $out . substr($s, $i, 1);
+        $i++;
+    }
+    return $out;
+}

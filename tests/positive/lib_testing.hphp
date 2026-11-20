@@ -1,0 +1,39 @@
+<?php
+/* the testing library: every assertion passes and fails as documented */
+import "testing";
+
+function parse_age(string $s): int {
+    if ($s == "" || intval($s) == 0 && $s != "0") {
+        throw "not a number: " . $s;
+    }
+    return intval($s);
+}
+
+$t = new Test("lib_testing");
+$t->section("passing checks");
+$t->equal(1 + 1, 2, "equal ints");
+$t->equal("a" . "b", "ab", "equal strings");
+$t->equal([1, 2], [1, 2], "equal arrays");
+$t->same(3, 3, "same int");
+$t->notEqual("x", "y", "notEqual");
+$t->isTrue(strlen("abc") == 3, "true");
+$t->isFalse(false, "false");
+$t->contains("hello world", "lo w", "contains");
+$t->near(0.1 + 0.2, 0.3, 0.000001, "near");
+$t->count([1, 2, 3], 3, "count");
+$t->throws(function() { parse_age("x"); }, "throws");
+$t->noThrow(function() { parse_age("42"); }, "noThrow");
+
+/* failing checks are counted, not fatal, and render both sides */
+$f = new Test("inner");
+$f->equal("a", "b", "string mismatch");
+$f->same(1, "1", "type mismatch");
+$f->throws(function() { parse_age("7"); }, "no exception");
+$f->contains("abc", "z", "missing needle");
+$t->section("failing checks are recorded");
+$t->equal($f->failed, 4, "four failures counted");
+$t->equal($f->passed, 0, "no passes counted");
+$t->equal(testing_show("q"), "\"q\"", "strings are quoted");
+$t->equal(testing_show(true), "true", "bools are spelled");
+$t->equal(testing_show(null), "null", "null is spelled");
+$t->done();

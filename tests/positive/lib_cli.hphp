@@ -1,0 +1,37 @@
+<?php
+/* the cli library: argument parsing, tables, progress, colors */
+import "testing";
+import "cli";
+
+$t = new Test("lib_cli");
+
+$a = cli_parse(["build", "--out=dist", "--verbose", "-xz", "src", "--", "--not-an-option"]);
+$t->equal($a->arg(0), "build", "first positional");
+$t->equal($a->arg(1), "src", "second positional");
+$t->equal($a->arg(2), "--not-an-option", "after -- everything is positional");
+$t->equal($a->arg(9, "none"), "none", "missing positional uses the default");
+$t->equal($a->count(), 3, "positional count");
+$t->equal($a->get("out"), "dist", "--name=value");
+$t->isTrue($a->has("verbose"), "--flag");
+$t->equal($a->get("verbose"), "true", "a flag reads as true");
+$t->isTrue($a->has("x") && $a->has("z"), "short flags split");
+$t->isFalse($a->has("q"), "absent option");
+$t->equal($a->get("q", "dflt"), "dflt", "absent option default");
+$t->equal(cli_parse(["--n=42"])->int("n"), 42, "int option");
+$t->equal(cli_parse(["-5"])->arg(0), "-5", "negative numbers stay positional");
+$t->equal(cli_args()->count(), 0, "cli_args without arguments");
+
+$table = cli_table(["name", "size"], [["a.txt", "12"], ["long-name.txt", "3400"]]);
+$lines = explode("\n", $table);
+$t->equal(count($lines), 4, "table has header, rule and two rows");
+$t->equal($lines[0], "name           size", "header is padded to the widest cell");
+$t->equal($lines[1], "-------------  ----", "rule matches the widths");
+$t->equal($lines[3], "long-name.txt  3400", "rows are aligned");
+$t->equal(cli_width(cli_color("abc", "red")), 3, "colors take no width");
+$t->equal(cli_strip(cli_color("abc", "green")), "abc", "strip removes colors");
+$t->equal(cli_color("x", "nope"), "x", "unknown color is a no-op");
+
+$t->equal(cli_progress(30, 120, 10), "[##........]  25%", "progress quarter");
+$t->equal(cli_progress(5, 0, 4), "[....]   0%", "progress with zero total");
+$t->equal(cli_progress(9, 3, 4), "[####] 100%", "progress is clamped");
+$t->done();

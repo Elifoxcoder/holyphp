@@ -1,0 +1,64 @@
+<?php
+/* the http library without sockets: parsing, routing, responses */
+import "testing";
+import "http";
+
+$t = new Test("lib_http");
+
+$raw = "POST /api/items?page=2&q=red%20car HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\n{\"name\":\"a\"}!extra";
+$t->isTrue(http_complete($raw), "complete with body");
+$t->isFalse(http_complete("GET / HTTP/1.1\r\nHost: x\r\n"), "headers not finished");
+$t->isFalse(http_complete("POST / HTTP/1.1\r\nContent-Length: 10\r\n\r\n12345"), "body not finished");
+
+$req = http_parse($raw);
+$t->equal($req->method, "POST", "method");
+$t->equal($req->path, "/api/items", "path");
+$t->equal($req->query, "page=2&q=red%20car", "raw query");
+$t->equal($req->input("q"), "red car", "query is url-decoded");
+$t->equal($req->input("page"), "2", "query parameter");
+$t->equal($req->header("CONTENT-TYPE"), "application/json", "headers ignore case");
+$t->equal($req->body, "{\"name\":\"a\"}!", "body cut to Content-Length");
+$t->equal(http_parse_query("a=1&b=&c"), ["a" => "1", "b" => "", "c" => ""], "parse_query");
+
+$form = http_parse("POST /f HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 15\r\n\r\nuser=ada&age=36");
+$t->equal($form->input("user"), "ada", "form field");
+
+$t->equal(http_match("/users/{id}", "/users/7"), ["id" => "7"], "placeholder");
+$t->equal(http_match("/users/{id}/posts/{p}", "/users/7/posts/3/"), ["id" => "7", "p" => "3"], "two placeholders, trailing slash");
+$t->same(http_match("/users/{id}", "/users"), null, "missing segment");
+$t->same(http_match("/users/{id}", "/users/7/x"), null, "extra segment");
+$t->equal(http_match("/files/*", "/files/a/b.txt"), ["*" => "a/b.txt"], "wildcard tail");
+$t->equal(http_match("/", "/"), [], "root");
+
+$app = new HttpRouter();
+$app->get("/", function(HttpRequest $r): HttpResponse { return http_html("<h1>home</h1>"); });
+$app->get("/users/{id}", function(HttpRequest $r): HttpResponse {
+    return http_json(["id" => intval($r->param("id")), "q" => $r->input("q")]);
+});
+$app->post("/echo", function(HttpRequest $r): HttpResponse { return http_text($r->body, 201); });
+$app->get("/boom", function(HttpRequest $r): HttpResponse { throw "kaputt"; });
+$app->get("/go", function(HttpRequest $r): HttpResponse { return http_redirect("/"); });
+
+$res = $app->dispatch(http_parse("GET /users/42?q=x HTTP/1.1\r\n\r\n"));
+$t->equal($res->status, 200, "route status");
+$t->equal($res->body, "{\"id\":42,\"q\":\"x\"}", "json body");
+$t->equal($res->headers["Content-Type"], "application/json", "json type");
+
+$out = $app->handle("POST /echo HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello");
+$t->contains($out, "HTTP/1.1 201 Created\r\n", "status line");
+$t->contains($out, "Content-Length: 5\r\n", "content length");
+$t->isTrue(substr($out, strlen($out) - 5) == "hello", "body last");
+
+$t->equal($app->dispatch(http_parse("GET /nothing HTTP/1.1\r\n\r\n"))->status, 404, "404");
+$t->equal($app->dispatch(http_parse("DELETE /echo HTTP/1.1\r\n\r\n"))->status, 405, "405 for a known path");
+$t->equal($app->dispatch(http_parse("GET /boom HTTP/1.1\r\n\r\n"))->status, 500, "a throwing handler is a 500");
+$redirect = $app->dispatch(http_parse("GET /go HTTP/1.1\r\n\r\n"));
+$t->equal($redirect->status, 302, "redirect status");
+$t->equal($redirect->headers["Location"], "/", "redirect target");
+$head = $app->dispatch(http_parse("HEAD / HTTP/1.1\r\n\r\n"));
+$t->isTrue($head->status == 200 && $head->body == "", "HEAD uses GET without a body");
+
+$app->notFound(function(HttpRequest $r): HttpResponse { return http_text("custom " . $r->path, 404); });
+$t->equal($app->dispatch(http_parse("GET /zzz HTTP/1.1\r\n\r\n"))->body, "custom /zzz", "custom 404");
+$t->equal(http_status_text(418), "Status", "unknown status text");
+$t->done();

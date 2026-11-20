@@ -1,0 +1,146 @@
+<?php
+/* dotenv.hphp - configuration from .env files and the environment.
+ *
+ *   import "dotenv";
+ *
+ *   env_load();                          // reads ./.env if it exists
+ *   env_load(".env.local");              // later files override earlier ones
+ *
+ *   $port  = env_int("PORT", 8080);
+ *   $debug = env_bool("DEBUG", false);
+ *   $db    = env("DATABASE_URL", "sqlite:app.db");
+ *   $key   = env_required("API_KEY");    // throws when missing
+ *
+ * .env syntax: KEY=value lines, # comments, optional `export ` prefix,
+ * "double quoted" values with \n escapes and ${OTHER} expansion,
+ * 'single quoted' values taken literally. Real environment variables win
+ * over the file unless env_load(..., true) is asked to override them.
+ * Loaded values go into the process environment (putenv), so getenv() and
+ * child processes see them too.
+ */
+
+/* Parse .env text into a map (no side effects). */
+function env_parse(string $text): array {
+    $out = [];
+    $lines = explode("\n", str_replace("\r", "", $text));
+    foreach ($lines as $raw) {
+        $line = trim($raw);
+        if ($line == "" || substr($line, 0, 1) == "#") {
+            continue;
+        }
+        if (substr($line, 0, 7) == "export ") {
+            $line = trim(substr($line, 7));
+        }
+        $eq = strpos($line, "=");
+        if ($eq === false) {
+            continue;
+        }
+        $key = trim(substr($line, 0, $eq));
+        $val = trim(substr($line, $eq + 1));
+        if ($key == "") {
+            continue;
+        }
+        $first = substr($val, 0, 1);
+        if (strlen($val) >= 2 && $first == "'" && substr($val, strlen($val) - 1) == "'") {
+            $val = substr($val, 1, strlen($val) - 2);
+        } elseif (strlen($val) >= 2 && $first == "\"" && substr($val, strlen($val) - 1) == "\"") {
+            $val = substr($val, 1, strlen($val) - 2);
+            $val = str_replace("\\n", "\n", $val);
+            $val = str_replace("\\\"", "\"", $val);
+            $val = env_expand($val, $out);
+        } else {
+            $hash = strpos($val, " #");
+            if ($hash !== false) {
+                $val = trim(substr($val, 0, $hash));
+            }
+            $val = env_expand($val, $out);
+        }
+        $out[$key] = $val;
+    }
+    return $out;
+}
+
+/* ${NAME} -> value from $known, the loaded files or the environment. */
+function env_expand(string $val, array $known): string {
+    $out = "";
+    $i = 0;
+    $n = strlen($val);
+    while ($i < $n) {
+        if (substr($val, $i, 2) == "\${") {
+            $close = strpos($val, "}", $i);
+            if ($close !== false) {
+                $name = substr($val, $i + 2, $close - $i - 2);
+                if (array_key_exists($name, $known)) {
+                    $out = $out . strval($known[$name]);
+                } else {
+                    $out = $out . env($name, "");
+                }
+                $i = $close + 1;
+                continue;
+            }
+        }
+        $out = $out . substr($val, $i, 1);
+        $i++;
+    }
+    return $out;
+}
+
+/* Load a .env file; returns how many keys it set (0 when it is missing). */
+function env_load(string $path = ".env", bool $override = false): int {
+    if (!file_exists($path)) {
+        return 0;
+    }
+    $vars = env_parse(file_get_contents($path));
+    $n = 0;
+    foreach ($vars as $key => $value) {
+        $real = getenv($key);
+        if (!$override && $real !== false && strval($real) != "") {
+            continue;
+        }
+        putenv($key . "=" . $value);
+        $n++;
+    }
+    return $n;
+}
+
+/* Value of $key from the environment (including loaded .env files), or
+ * $default when it is unset or empty. */
+function env(string $key, string $default = ""): string {
+    $real = getenv($key);
+    if ($real !== false && strval($real) != "") {
+        return strval($real);
+    }
+    return $default;
+}
+
+function env_has(string $key): bool {
+    return env($key, "\x01") != "\x01";
+}
+
+function env_int(string $key, int $default = 0): int {
+    $v = env($key, "");
+    if ($v == "" || !is_numeric($v)) {
+        return $default;
+    }
+    return intval($v);
+}
+
+/* true/yes/on/1 and false/no/off/0, any case. */
+function env_bool(string $key, bool $default = false): bool {
+    $v = strtolower(env($key, ""));
+    if ($v == "true" || $v == "yes" || $v == "on" || $v == "1") {
+        return true;
+    }
+    if ($v == "false" || $v == "no" || $v == "off" || $v == "0") {
+        return false;
+    }
+    return $default;
+}
+
+/* Throws "missing environment variable: KEY" when unset. */
+function env_required(string $key): string {
+    if (!env_has($key)) {
+        throw "missing environment variable: " . $key;
+    }
+    return env($key, "");
+}

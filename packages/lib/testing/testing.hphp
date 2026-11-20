@@ -1,0 +1,153 @@
+<?php
+/* testing.hphp - small assertions for `hphp test`.
+ *
+ *   import "testing";
+ *
+ *   $t = new Test("greeting");
+ *   $t->equal(greeting("Ada"), "Hello, Ada!", "greets by name");
+ *   $t->isTrue(strlen(greeting("")) > 0, "never empty");
+ *   $t->contains(greeting("Bo"), "Bo", "mentions the name");
+ *   $t->throws(function() { parse_age("x"); }, "rejects letters");
+ *   $t->done();          // prints a summary; exits with 1 when anything failed
+ *
+ * Every check prints one line ("ok" / "FAIL" with expected and actual), so
+ * `hphp test -v` shows what broke. A test file passes when it exits 0.
+ */
+
+class Test {
+    pub string $name = "";
+    pub int $passed = 0;
+    pub int $failed = 0;
+    pub string $section = "";
+
+    pub function __construct(string $name = "") {
+        $this->name = $name;
+    }
+
+    /* Group the following checks under a heading. */
+    pub function section(string $title): void {
+        $this->section = $title;
+        echo "";
+        echo $title;
+    }
+
+    /* Record a result; returns $ok so callers can branch on it. */
+    pub function check(bool $ok, string $what, string $detail = ""): bool {
+        if ($ok) {
+            $this->passed = $this->passed + 1;
+            echo "  ok   " . $what;
+        } else {
+            $this->failed = $this->failed + 1;
+            echo "  FAIL " . $what;
+            if ($detail != "") {
+                echo "       " . $detail;
+            }
+        }
+        return $ok;
+    }
+
+    pub function isTrue(bool $cond, string $what): bool {
+        return $this->check($cond, $what, "expected true, got false");
+    }
+
+    pub function isFalse(bool $cond, string $what): bool {
+        return $this->check(!$cond, $what, "expected false, got true");
+    }
+
+    /* Loose equality (==), like PHP's assertEquals. */
+    pub function equal(mixed $actual, mixed $expected, string $what): bool {
+        return $this->check($actual == $expected, $what,
+            "expected " . testing_show($expected) . ", got " . testing_show($actual));
+    }
+
+    /* Strict equality (===): same type and value. */
+    pub function same(mixed $actual, mixed $expected, string $what): bool {
+        return $this->check($actual === $expected, $what,
+            "expected " . testing_show($expected) . " (" . gettype($expected) . "), got "
+            . testing_show($actual) . " (" . gettype($actual) . ")");
+    }
+
+    pub function notEqual(mixed $actual, mixed $unexpected, string $what): bool {
+        return $this->check($actual != $unexpected, $what,
+            "expected anything but " . testing_show($unexpected));
+    }
+
+    pub function contains(string $haystack, string $needle, string $what): bool {
+        return $this->check(strpos($haystack, $needle) !== false, $what,
+            testing_show($haystack) . " does not contain " . testing_show($needle));
+    }
+
+    /* Floats: |actual - expected| <= epsilon. */
+    pub function near(float $actual, float $expected, float $epsilon, string $what): bool {
+        $diff = $actual - $expected;
+        if ($diff < 0) {
+            $diff = -$diff;
+        }
+        return $this->check($diff <= $epsilon, $what,
+            "expected " . $expected . " +/- " . $epsilon . ", got " . $actual);
+    }
+
+    pub function count(array $items, int $expected, string $what): bool {
+        $n = count($items);
+        return $this->check($n == $expected, $what,
+            "expected " . $expected . " items, got " . $n);
+    }
+
+    /* The callback must throw (any value). */
+    pub function throws($fn, string $what): bool {
+        $threw = false;
+        try {
+            $fn();
+        } catch (mixed $e) {
+            $threw = true;
+        }
+        return $this->check($threw, $what, "expected an exception, nothing was thrown");
+    }
+
+    /* The callback must finish without throwing. */
+    pub function noThrow($fn, string $what): bool {
+        $msg = "";
+        $threw = false;
+        try {
+            $fn();
+        } catch (mixed $e) {
+            $threw = true;
+            $msg = testing_show($e);
+        }
+        return $this->check(!$threw, $what, "threw " . $msg);
+    }
+
+    pub function fail(string $what): bool {
+        return $this->check(false, $what, "");
+    }
+
+    /* Summary line; exit code 1 when a check failed, so `hphp test` sees it. */
+    pub function done(): void {
+        $label = $this->name;
+        if ($label != "") {
+            $label = $label . ": ";
+        }
+        echo "";
+        echo $label . $this->passed . " passed, " . $this->failed . " failed";
+        if ($this->failed > 0) {
+            exit(1);
+        }
+    }
+}
+
+/* A short, readable rendering of any value for failure messages. */
+function testing_show(mixed $v): string {
+    if (is_string($v)) {
+        return json_encode($v);
+    }
+    if (is_bool($v)) {
+        return $v ? "true" : "false";
+    }
+    if ($v === null) {
+        return "null";
+    }
+    if (is_array($v)) {
+        return json_encode($v);
+    }
+    return strval($v);
+}

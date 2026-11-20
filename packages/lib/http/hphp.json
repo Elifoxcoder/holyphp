@@ -1,0 +1,10 @@
+{
+  "name": "http",
+  "version": "1.0.0",
+  "entry": "http.hphp",
+  "description": "HTTP/1.1 for HolyPHP: request parsing, responses, a router with {params} and a small server on the async loop",
+  "author": "HolyPHP",
+  "require": {
+    "async": "*"
+  }
+}

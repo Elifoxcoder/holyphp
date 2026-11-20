@@ -1,0 +1,7 @@
+{
+  "name": "dotenv",
+  "version": "1.0.0",
+  "entry": "dotenv.hphp",
+  "description": "Configuration from .env files and the environment: env(), env_int(), env_bool(), env_required()",
+  "author": "HolyPHP"
+}

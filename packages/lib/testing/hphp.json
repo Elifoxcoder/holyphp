@@ -1,0 +1,7 @@
+{
+  "name": "testing",
+  "version": "1.0.0",
+  "entry": "testing.hphp",
+  "description": "Assertions for hphp test: equal, same, contains, near, throws, with readable failure messages",
+  "author": "HolyPHP"
+}

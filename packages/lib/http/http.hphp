@@ -1,0 +1,381 @@
+<?php
+/* http.hphp - HTTP/1.1 requests, responses, a router and a small server.
+ *
+ *   import "http";
+ *
+ *   $app = new HttpRouter();
+ *   $app->get("/", function(HttpRequest $req): HttpResponse {
+ *       return http_html("<h1>Hello</h1>");
+ *   });
+ *   $app->get("/users/{id}", function(HttpRequest $req): HttpResponse {
+ *       return http_json(["id" => intval($req->param("id"))]);
+ *   });
+ *   $app->post("/echo", function(HttpRequest $req): HttpResponse {
+ *       return http_text($req->body);
+ *   });
+ *   http_serve($app, "tcp://127.0.0.1:8080");     // blocks; Ctrl-C stops it
+ *
+ * Without sockets (tests, other servers): http_parse() turns raw request
+ * text into an HttpRequest, $app->dispatch($req) returns the HttpResponse,
+ * and $response->toString() is the raw answer.
+ */
+import "async";
+
+class HttpRequest {
+    pub string $method = "GET";
+    pub string $target = "/";          /* path + query as sent */
+    pub string $path = "/";
+    pub string $query = "";
+    pub string $version = "HTTP/1.1";
+    pub array $headers = [];           /* lowercase name => value */
+    pub array $queryParams = [];       /* ?a=1&b=2 */
+    pub array $params = [];            /* route placeholders: /users/{id} */
+    pub string $body = "";
+
+    pub function header(string $name, string $default = ""): string {
+        $k = strtolower($name);
+        if (array_key_exists($k, $this->headers)) {
+            return strval($this->headers[$k]);
+        }
+        return $default;
+    }
+
+    /* A route placeholder ({id}). */
+    pub function param(string $name, string $default = ""): string {
+        if (array_key_exists($name, $this->params)) {
+            return strval($this->params[$name]);
+        }
+        return $default;
+    }
+
+    /* A query parameter, or a field of a urlencoded form body. */
+    pub function input(string $name, string $default = ""): string {
+        if (array_key_exists($name, $this->queryParams)) {
+            return strval($this->queryParams[$name]);
+        }
+        if (strpos($this->header("content-type"), "application/x-www-form-urlencoded") !== false) {
+            $form = http_parse_query($this->body);
+            if (array_key_exists($name, $form)) {
+                return strval($form[$name]);
+            }
+        }
+        return $default;
+    }
+
+    /* The body decoded as JSON (null when it is not JSON). */
+    pub function json(): mixed {
+        return json_decode($this->body, true);
+    }
+}
+
+class HttpResponse {
+    pub int $status = 200;
+    pub array $headers = [];           /* name => value, as given */
+    pub string $body = "";
+
+    pub function __construct(int $status = 200, string $body = "", string $type = "text/plain; charset=utf-8") {
+        $this->status = $status;
+        $this->body = $body;
+        $this->headers["Content-Type"] = $type;
+    }
+
+    /* Set a header; returns the response so calls can be chained. */
+    pub function header(string $name, string $value): HttpResponse {
+        $this->headers[$name] = $value;
+        return $this;
+    }
+
+    pub function toString(): string {
+        $out = "HTTP/1.1 " . $this->status . " " . http_status_text($this->status) . "\r\n";
+        foreach ($this->headers as $name => $value) {
+            $out = $out . $name . ": " . $value . "\r\n";
+        }
+        $out = $out . "Content-Length: " . strlen($this->body) . "\r\n";
+        $out = $out . "Connection: close\r\n\r\n";
+        return $out . $this->body;
+    }
+}
+
+/* ---------------- responses ---------------- */
+
+function http_text(string $body, int $status = 200): HttpResponse {
+    return new HttpResponse($status, $body, "text/plain; charset=utf-8");
+}
+
+function http_html(string $body, int $status = 200): HttpResponse {
+    return new HttpResponse($status, $body, "text/html; charset=utf-8");
+}
+
+function http_json(mixed $data, int $status = 200): HttpResponse {
+    return new HttpResponse($status, json_encode($data), "application/json");
+}
+
+function http_redirect(string $url, int $status = 302): HttpResponse {
+    $r = new HttpResponse($status, "", "text/plain; charset=utf-8");
+    $r->header("Location", $url);
+    return $r;
+}
+
+function http_not_found(string $message = "not found"): HttpResponse {
+    return new HttpResponse(404, $message, "text/plain; charset=utf-8");
+}
+
+function http_status_text(int $status): string {
+    return match ($status) {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        303 => "See Other",
+        304 => "Not Modified",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        413 => "Payload Too Large",
+        422 => "Unprocessable Content",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        _ => "Status",
+    };
+}
+
+/* ---------------- parsing ---------------- */
+
+/* "a=1&b=two%20words" -> ["a" => "1", "b" => "two words"] */
+function http_parse_query(string $q): array {
+    $out = [];
+    if ($q == "") {
+        return $out;
+    }
+    foreach (explode("&", $q) as $pair) {
+        if ($pair == "") {
+            continue;
+        }
+        $eq = strpos($pair, "=");
+        if ($eq === false) {
+            $out[urldecode($pair)] = "";
+        } else {
+            $out[urldecode(substr($pair, 0, $eq))] = urldecode(substr($pair, $eq + 1));
+        }
+    }
+    return $out;
+}
+
+/* True when $raw holds the whole request: headers and Content-Length body. */
+function http_complete(string $raw): bool {
+    $end = strpos($raw, "\r\n\r\n");
+    if ($end === false) {
+        return false;
+    }
+    $head = strtolower(substr($raw, 0, $end));
+    $p = strpos($head, "content-length:");
+    if ($p === false) {
+        return true;
+    }
+    $rest = substr($head, $p + 15);
+    $nl = strpos($rest, "\r\n");
+    if ($nl !== false) {
+        $rest = substr($rest, 0, $nl);
+    }
+    return strlen($raw) - ($end + 4) >= intval(trim($rest));
+}
+
+function http_parse(string $raw): HttpRequest {
+    $req = new HttpRequest();
+    $end = strpos($raw, "\r\n\r\n");
+    $head = $raw;
+    if ($end !== false) {
+        $head = substr($raw, 0, $end);
+        $req->body = substr($raw, $end + 4);
+    }
+    $lines = explode("\r\n", $head);
+    $first = explode(" ", $lines[0]);
+    if (count($first) >= 1 && $first[0] != "") {
+        $req->method = strtoupper($first[0]);
+    }
+    if (count($first) >= 2) {
+        $req->target = $first[1];
+    }
+    if (count($first) >= 3) {
+        $req->version = $first[2];
+    }
+    $q = strpos($req->target, "?");
+    if ($q === false) {
+        $req->path = $req->target;
+    } else {
+        $req->path = substr($req->target, 0, $q);
+        $req->query = substr($req->target, $q + 1);
+    }
+    $req->path = urldecode($req->path);
+    $req->queryParams = http_parse_query($req->query);
+    for ($i = 1; $i < count($lines); $i++) {
+        $colon = strpos($lines[$i], ":");
+        if ($colon === false) {
+            continue;
+        }
+        $req->headers[strtolower(trim(substr($lines[$i], 0, $colon)))] = trim(substr($lines[$i], $colon + 1));
+    }
+    $len = intval($req->header("content-length", "-1"));
+    if ($len >= 0 && strlen($req->body) > $len) {
+        $req->body = substr($req->body, 0, $len);
+    }
+    return $req;
+}
+
+/* ---------------- routing ---------------- */
+
+class HttpRouter {
+    /* [method, pattern, handler] */
+    pub array $routes = [];
+    pub $fallback = null;
+
+    pub function add(string $method, string $pattern, $handler): HttpRouter {
+        $this->routes[] = [strtoupper($method), $pattern, $handler];
+        return $this;
+    }
+
+    pub function get(string $pattern, $handler): HttpRouter { return $this->add("GET", $pattern, $handler); }
+    pub function post(string $pattern, $handler): HttpRouter { return $this->add("POST", $pattern, $handler); }
+    pub function put(string $pattern, $handler): HttpRouter { return $this->add("PUT", $pattern, $handler); }
+    pub function patch(string $pattern, $handler): HttpRouter { return $this->add("PATCH", $pattern, $handler); }
+    pub function delete(string $pattern, $handler): HttpRouter { return $this->add("DELETE", $pattern, $handler); }
+    /* any method */
+    pub function any(string $pattern, $handler): HttpRouter { return $this->add("*", $pattern, $handler); }
+
+    /* Called when no route matches (default: 404 text). */
+    pub function notFound($handler): HttpRouter {
+        $this->fallback = $handler;
+        return $this;
+    }
+
+    /* Find the route, fill $req->params, call the handler. A handler that
+     * throws becomes a 500; a path that exists for another method a 405. */
+    pub function dispatch(HttpRequest $req): HttpResponse {
+        $wrongMethod = false;
+        foreach ($this->routes as $route) {
+            $params = http_match($route[1], $req->path);
+            if ($params === null) {
+                continue;
+            }
+            $method = $route[0];
+            $head = $req->method == "HEAD" && $method == "GET";
+            if ($method != "*" && $method != $req->method && !$head) {
+                $wrongMethod = true;
+                continue;
+            }
+            $req->params = $params;
+            $fn = $route[2];
+            try {
+                $res = $fn($req) as HttpResponse;
+                if ($head) {
+                    $res->body = "";
+                }
+                return $res;
+            } catch (mixed $e) {
+                return http_text("internal error: " . strval($e), 500);
+            }
+        }
+        if ($wrongMethod) {
+            return http_text("method not allowed", 405);
+        }
+        if ($this->fallback !== null) {
+            $fb = $this->fallback;
+            return $fb($req) as HttpResponse;
+        }
+        return http_not_found();
+    }
+
+    /* Raw request text in, raw response text out. */
+    pub function handle(string $raw): string {
+        return $this->dispatch(http_parse($raw))->toString();
+    }
+}
+
+/* "/users/{id}/posts/{post}" against "/users/7/posts/3" ->
+ * ["id" => "7", "post" => "3"]; a trailing "*" matches the rest as
+ * ["*" => "..."]; null when the path does not match. */
+function http_match(string $pattern, string $path): mixed {
+    $pp = explode("/", http_trim_slashes($pattern));
+    $sp = explode("/", http_trim_slashes($path));
+    $params = [];
+    $n = count($pp);
+    for ($i = 0; $i < $n; $i++) {
+        $seg = $pp[$i];
+        if ($seg == "*" && $i == $n - 1) {
+            $rest = [];
+            for ($j = $i; $j < count($sp); $j++) {
+                $rest[] = $sp[$j];
+            }
+            $params["*"] = implode("/", $rest);
+            return $params;
+        }
+        if ($i >= count($sp)) {
+            return null;
+        }
+        if (strlen($seg) > 2 && substr($seg, 0, 1) == "{" && substr($seg, strlen($seg) - 1) == "}") {
+            if ($sp[$i] == "") {
+                return null;
+            }
+            $params[substr($seg, 1, strlen($seg) - 2)] = $sp[$i];
+        } elseif ($seg != $sp[$i]) {
+            return null;
+        }
+    }
+    if (count($sp) != $n) {
+        return null;
+    }
+    return $params;
+}
+
+/* ---------------- server ---------------- */
+
+/* Serve $router on $addr ("tcp://127.0.0.1:8080") until the process ends.
+ * One event loop, Connection: close; prints one line per request when
+ * $log is true. */
+function http_serve(HttpRouter $router, string $addr, bool $log = true): void {
+    $loop = new Loop();
+    $loop->listen($addr, function($client, $peer) use ($loop, $router, $log) {
+        $loop->watch($client, function($sock, $chunk, $eof) use ($loop, $router, $log) {
+            if ($eof) {
+                return;
+            }
+            $k = intval($sock);
+            $raw = $chunk;
+            if (array_key_exists($k, $loop->bufs)) {
+                $raw = $loop->bufs[$k] . $chunk;
+            }
+            if (!http_complete($raw)) {
+                $loop->bufs[$k] = $raw;
+                return;
+            }
+            $req = http_parse($raw);
+            $res = $router->dispatch($req);
+            stream_send($sock, $res->toString());
+            if ($log) {
+                echo $req->method . " " . $req->target . " -> " . $res->status;
+            }
+            $loop->unwatch($sock);
+            stream_close($sock);
+        });
+    });
+    echo "listening on " . str_replace("tcp://", "http://", $addr);
+    $loop->run();
+}
+
+/* "/a/b/" -> "a/b" */
+function http_trim_slashes(string $s): string {
+    $start = 0;
+    $end = strlen($s);
+    while ($start < $end && substr($s, $start, 1) == "/") {
+        $start++;
+    }
+    while ($end > $start && substr($s, $end - 1, 1) == "/") {
+        $end--;
+    }
+    return substr($s, $start, $end - $start);
+}

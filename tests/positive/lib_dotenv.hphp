@@ -1,0 +1,32 @@
+<?php
+/* the dotenv library: parsing, loading, typed getters */
+import "testing";
+import "dotenv";
+
+$t = new Test("lib_dotenv");
+
+$text = "# comment\nexport APP_NAME=Demo App\nPORT=8081\nEMPTY=\nQUOTED=\"line1\\nline2\"\nRAW='keep \\n ${PORT}'\nURL=http://host:${PORT}/x # trailing comment\nDEBUG=Yes\nBROKEN LINE\n";
+$v = env_parse($text);
+$t->equal($v["APP_NAME"], "Demo App", "export prefix and spaces");
+$t->equal($v["PORT"], "8081", "plain value");
+$t->equal($v["EMPTY"], "", "empty value");
+$t->equal($v["QUOTED"], "line1\nline2", "double quotes unescape \\n");
+$t->equal($v["RAW"], "keep \\n \${PORT}", "single quotes are literal");
+$t->equal($v["URL"], "http://host:8081/x", "expansion and comment");
+$t->isFalse(array_key_exists("BROKEN LINE", $v), "lines without = are skipped");
+
+$path = sys_get_temp_dir() . "/hphp_dotenv_test.env";
+file_put_contents($path, $text);
+$t->equal(env_load($path), 7, "load counts keys");
+$t->equal(env_load("/definitely/missing/.env"), 0, "a missing file loads nothing");
+$t->equal(env("APP_NAME"), "Demo App", "env()");
+$t->equal(env("NOPE_NOT_SET", "dflt"), "dflt", "default");
+$t->equal(env_int("PORT", 1), 8081, "env_int");
+$t->equal(env_int("APP_NAME", 5), 5, "env_int falls back on text");
+$t->isTrue(env_bool("DEBUG", false), "env_bool yes");
+$t->isFalse(env_bool("NOPE_NOT_SET", false), "env_bool default");
+$t->isTrue(env_has("EMPTY") == false || env("EMPTY") == "", "empty counts as unset or empty");
+$t->throws(function() { env_required("NOPE_NOT_SET"); }, "env_required throws");
+$t->equal(env_required("PORT"), "8081", "env_required returns the value");
+unlink($path);
+$t->done();

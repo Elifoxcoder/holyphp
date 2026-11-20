@@ -1,0 +1,7 @@
+{
+  "name": "cli",
+  "version": "1.0.0",
+  "entry": "cli.hphp",
+  "description": "Command-line programs: argument parsing, questions, aligned tables, progress bars and colors",
+  "author": "HolyPHP"
+}
