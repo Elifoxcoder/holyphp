@@ -373,14 +373,15 @@ hval hpbi_unset_slot(harr **slot, hval key) {
  * type projection — a missing key yields hp_null => isset == false. */
 hval hpbi_isset_raw(harr **slot, hval key) {
     if (!slot || !*slot) RETB(false);
-    RETB(hp_arr_has(*slot, key));
+    /* PHP: a key holding null is not set (array_key_exists says it exists) */
+    RETB(hp_arr_get(*slot, key).tag != HV_NULL);
 }
 
 /* isset() codegen path for a mixed (hval) variable: the slot boxes the
  * array, so unwrap it (an unboxed harr* here would be a garbage tag). */
 hval hpbi_isset_val(hval *slot, hval key) {
     if (!slot || slot->tag != HV_ARR || !slot->u.a) RETB(false);
-    RETB(hp_arr_has(slot->u.a, key));
+    RETB(hp_arr_get(slot->u.a, key).tag != HV_NULL);
 }
 
 hval hpbi_number_format(hval n, hval dec, hval dsep, hval tsep) {
@@ -1010,18 +1011,19 @@ hval hpbi_array_values(hval a) {
     return hp_of_arr(hp_arr_values(a.u.a));
 }
 hval hpbi_array_merge(hval a, hval b, hval c, hval d) {
-    /* PHP: variadic array_merge(...); codegen pads to 4 */
+    /* PHP: variadic array_merge(...); codegen pads to 4. String keys
+     * overwrite, integer keys are renumbered and appended - also those of
+     * the first array. */
     if (a.tag != HV_ARR) return a;
-    harr *out = hp_arr_clone(a.u.a);
-    hval rest[3] = { b, c, d };
-    for (int i = 0; i < 3; i++) {
-        if (rest[i].tag != HV_ARR) continue;
-        harr *x = rest[i].u.a;
-        if (x->is_map) {
-            for (size_t k = 0; k < x->len; k++)
+    harr *out = hp_arr_new();
+    hval all[4] = { a, b, c, d };
+    for (int i = 0; i < 4; i++) {
+        if (all[i].tag != HV_ARR || !all[i].u.a) continue;
+        harr *x = all[i].u.a;
+        for (size_t k = 0; k < x->len; k++) {
+            if (x->is_map && x->keys && x->keys[k].tag == HV_STR)
                 hp_arr_set(out, x->keys[k], x->vals[k]);
-        } else {
-            for (size_t k = 0; k < x->len; k++)
+            else
                 hp_arr_push(out, x->vals[k]);
         }
     }
@@ -1204,7 +1206,10 @@ hval hpbi_array_unshift(hval a, hval v) {
     hp_arr_unshift(a.u.a, v);
     RETI((int64_t)a.u.a->len);
 }
-hval hpbi_array_splice(hval a, hval off, hval len) {
+/* array_splice(&$a, $offset[, $length[, $replacement]]): removes $length
+ * elements at $offset, inserts $replacement there (lists), returns the
+ * removed elements. */
+hval hpbi_array_splice(hval a, hval off, hval len, hval repl) {
     if (a.tag != HV_ARR || !a.u.a) return hp_of_arr(hp_arr_new());
     harr *x = a.u.a;
     int64_t n = (int64_t)x->len;
@@ -1216,16 +1221,46 @@ hval hpbi_array_splice(hval a, hval off, hval len) {
     if (cnt < 0) cnt = n - start + cnt;
     if (cnt < 0) cnt = 0;
     if (cnt > n - start) cnt = n - start;
-    harr *removed = hp_arr_slice(x, start, start + cnt);
-    if (cnt > 0) {
-        memmove(x->vals + start, x->vals + start + cnt,
-                (size_t)(n - start - cnt) * sizeof(hval));
-        if (x->is_map && x->keys)
-            memmove(x->keys + start, x->keys + start + cnt,
-                    (size_t)(n - start - cnt) * sizeof(hval));
-        x->len = (size_t)(n - cnt);
+    harr *removed = hp_arr_slice(x, start, start + cnt);   /* retains its values */
+    bool insert = repl.tag != HV_NULL && !x->is_map;
+    if (cnt > 0 || insert) {
+        /* keep what follows the removed range, cut the array at start ... */
+        harr *tail = hp_arr_slice(x, start + cnt, n);
+        for (int64_t i = start; i < n; i++) {
+            hp_val_rc_dec(x->vals[i]);
+            if (x->is_map && x->keys) hp_val_rc_dec(x->keys[i]);
+        }
+        if (x->is_map && x->keys) {
+            /* maps: shift the keyed tail down; no insertion */
+            x->len = (size_t)start;
+            for (size_t i = 0; i < tail->len; i++) hp_arr_set(x, tail->keys ? tail->keys[i] : hp_of_int((int64_t)i), tail->vals[i]);
+        } else {
+            x->len = (size_t)start;
+            x->next_index = start;
+            /* ... then append the replacement and the tail */
+            if (insert) {
+                if (repl.tag == HV_ARR && repl.u.a) {
+                    for (size_t i = 0; i < repl.u.a->len; i++) hp_arr_push(x, repl.u.a->vals[i]);
+                } else {
+                    hp_arr_push(x, repl);
+                }
+            }
+            for (size_t i = 0; i < tail->len; i++) hp_arr_push(x, tail->vals[i]);
+        }
+        hp_val_rc_dec(hp_of_arr(tail));
     }
     return hp_of_arr(removed);
+}
+/* array_push($a, $v1, $v2, ...) / array_unshift with more than one value */
+hval hpbi_array_push_n(hval a, int64_t n, const hval *vals) {
+    if (a.tag != HV_ARR) RETI(0);
+    for (int64_t i = 0; i < n; i++) hp_arr_push(a.u.a, vals[i]);
+    RETI((int64_t)a.u.a->len);
+}
+hval hpbi_array_unshift_n(hval a, int64_t n, const hval *vals) {
+    if (a.tag != HV_ARR) RETI(0);
+    for (int64_t i = n - 1; i >= 0; i--) hp_arr_unshift(a.u.a, vals[i]);   /* keeps their order */
+    RETI((int64_t)a.u.a->len);
 }
 hval hpbi_shuffle(hval a) {
     /* PHP: shuffle mutates the array in place and returns true. */
@@ -1372,7 +1407,11 @@ hval hpbi_atan(hval v) { RETF(atan(hp_val_to_float(v))); }
 hval hpbi_atan2(hval a, hval b) { RETF(atan2(hp_val_to_float(a), hp_val_to_float(b))); }
 hval hpbi_asin(hval v) { RETF(asin(hp_val_to_float(v))); }
 hval hpbi_acos(hval v) { RETF(acos(hp_val_to_float(v))); }
-hval hpbi_log(hval v) { RETF(log(hp_val_to_float(v))); }
+hval hpbi_log(hval v, hval base) {
+    double x = log(hp_val_to_float(v));
+    if (base.tag == HV_NULL) RETF(x);
+    RETF(x / log(hp_val_to_float(base)));
+}
 hval hpbi_log2(hval v) { RETF(log2(hp_val_to_float(v))); }
 hval hpbi_log10(hval v) { RETF(log10(hp_val_to_float(v))); }
 hval hpbi_exp(hval v) { RETF(exp(hp_val_to_float(v))); }
@@ -1483,16 +1522,158 @@ hval hpbi_print_r(hval v) {
     fwrite(s->data, 1, s->len, stdout);
     RETS(s);
 }
-hval hpbi_var_export(hval v) {
+/* var_export: PHP syntax that recreates the value */
+static void hp_export_str(Buf *b, hstr *s) {
+    buf_putc(b, '\'');
+    for (size_t i = 0; i < s->len; i++) {
+        char c = s->data[i];
+        if (c == '\'' || c == '\\') buf_putc(b, '\\');
+        buf_putc(b, c);
+    }
+    buf_putc(b, '\'');
+}
+static void hp_export_r(hval v, Buf *b, int depth) {
+    switch (v.tag) {
+    case HV_NULL: buf_puts(b, "NULL"); break;
+    case HV_BOOL: buf_puts(b, v.u.b ? "true" : "false"); break;
+    case HV_INT: buf_printf(b, "%lld", (long long)v.u.i); break;
+    case HV_FLOAT: {
+        char tmp[64];
+        snprintf(tmp, sizeof tmp, "%.17g", v.u.f);
+        buf_puts(b, tmp);
+        if (!strpbrk(tmp, ".eEn")) buf_puts(b, ".0");
+        break;
+    }
+    case HV_STR: hp_export_str(b, v.u.s); break;
+    case HV_ARR: {
+        harr *x = v.u.a;
+        buf_puts(b, "array (\n");
+        for (size_t i = 0; x && i < x->len; i++) {
+            for (int d = 0; d <= depth; d++) buf_puts(b, "  ");
+            hval k = x->is_map && x->keys ? x->keys[i] : hp_of_int((int64_t)i);
+            if (k.tag == HV_STR) hp_export_str(b, k.u.s);
+            else buf_printf(b, "%lld", (long long)hp_val_to_int(k));
+            buf_puts(b, " => ");
+            if (depth > 32) buf_puts(b, "NULL");
+            else hp_export_r(x->vals[i], b, depth + 1);
+            buf_puts(b, ",\n");
+        }
+        for (int d = 0; d < depth; d++) buf_puts(b, "  ");
+        buf_putc(b, ')');
+        break;
+    }
+    default: buf_puts(b, "NULL"); break;
+    }
+}
+/* var_export($v[, $return]): prints, or returns the text when $return */
+hval hpbi_var_export(hval v, hval ret) {
     Buf b;
     buf_init(&b);
-    hp_print_r_r(v, &b, 0);
+    hp_export_r(v, &b, 0);
     hstr *s = hp_str_take_buf(&b);
+    if (hp_val_to_bool(ret)) RETS(s);
     fwrite(s->data, 1, s->len, stdout);
-    RETS(s);
+    hp_val_rc_dec(hp_of_str(s));
+    return hp_null;
 }
-hval hpbi_serialize(hval v) { return hpbi_print_r(v); }
-hval hpbi_unserialize(hval s) { (void)s; return hp_null; }
+
+/* serialize / unserialize: PHP's format (i:1; d:0.5; b:1; N; s:3:"abc";
+ * a:2:{key;value...}) for scalars and arrays */
+static void hp_ser_r(hval v, Buf *b, int depth) {
+    switch (v.tag) {
+    case HV_NULL: buf_puts(b, "N;"); break;
+    case HV_BOOL: buf_printf(b, "b:%d;", v.u.b ? 1 : 0); break;
+    case HV_INT: buf_printf(b, "i:%lld;", (long long)v.u.i); break;
+    case HV_FLOAT: buf_printf(b, "d:%.17g;", v.u.f); break;
+    case HV_STR:
+        buf_printf(b, "s:%zu:\"", v.u.s->len);
+        buf_write(b, v.u.s->data, v.u.s->len);
+        buf_puts(b, "\";");
+        break;
+    case HV_ARR: {
+        harr *x = v.u.a;
+        buf_printf(b, "a:%zu:{", x ? x->len : 0);
+        for (size_t i = 0; x && i < x->len; i++) {
+            hval k = x->is_map && x->keys ? x->keys[i] : hp_of_int((int64_t)i);
+            hp_ser_r(k.tag == HV_STR ? k : hp_of_int(hp_val_to_int(k)), b, depth + 1);
+            if (depth > 64) buf_puts(b, "N;");
+            else hp_ser_r(x->vals[i], b, depth + 1);
+        }
+        buf_putc(b, '}');
+        break;
+    }
+    default: buf_puts(b, "N;"); break;
+    }
+}
+hval hpbi_serialize(hval v) {
+    Buf b;
+    buf_init(&b);
+    hp_ser_r(v, &b, 0);
+    RETS(hp_str_take_buf(&b));
+}
+/* parse one value at *pp; false on malformed input */
+static bool hp_unser_r(const char **pp, const char *end, hval *out, int depth) {
+    const char *p = *pp;
+    if (p >= end || depth > 64) return false;
+    char t = *p;
+    if (t == 'N') {
+        if (p + 1 >= end || p[1] != ';') return false;
+        *out = hp_null; *pp = p + 2; return true;
+    }
+    if (p + 1 >= end || p[1] != ':') return false;
+    p += 2;
+    if (t == 'b' || t == 'i' || t == 'd') {
+        const char *semi = memchr(p, ';', (size_t)(end - p));
+        if (!semi) return false;
+        char tmp[64];
+        size_t n = (size_t)(semi - p);
+        if (n >= sizeof tmp) return false;
+        memcpy(tmp, p, n); tmp[n] = 0;
+        if (t == 'b') *out = hp_of_bool(atoi(tmp) != 0);
+        else if (t == 'i') *out = hp_of_int(strtoll(tmp, NULL, 10));
+        else *out = hp_of_float(strtod(tmp, NULL));
+        *pp = semi + 1;
+        return true;
+    }
+    if (t == 's') {
+        char *colon;
+        long long len = strtoll(p, &colon, 10);
+        if (*colon != ':' || colon + 2 + len + 2 > end || colon[1] != '"' || len < 0) return false;
+        const char *data = colon + 2;
+        if (data[len] != '"' || data[len + 1] != ';') return false;
+        *out = hp_of_str(hp_str_new(data, (size_t)len));
+        *pp = data + len + 2;
+        return true;
+    }
+    if (t == 'a') {
+        char *colon;
+        long long n = strtoll(p, &colon, 10);
+        if (*colon != ':' || colon[1] != '{' || n < 0) return false;
+        p = colon + 2;
+        harr *arr = hp_arr_new();
+        for (long long i = 0; i < n; i++) {
+            hval k, v;
+            if (!hp_unser_r(&p, end, &k, depth + 1)) { hp_val_rc_dec(hp_of_arr(arr)); return false; }
+            if (!hp_unser_r(&p, end, &v, depth + 1)) { hp_val_rc_dec(k); hp_val_rc_dec(hp_of_arr(arr)); return false; }
+            hp_arr_set(arr, k, v);
+            hp_val_rc_dec(k);
+            hp_val_rc_dec(v);
+        }
+        if (p >= end || *p != '}') { hp_val_rc_dec(hp_of_arr(arr)); return false; }
+        *out = hp_of_arr(arr);
+        *pp = p + 1;
+        return true;
+    }
+    return false;
+}
+/* unserialize($s): the value, or false when $s is not serialized data */
+hval hpbi_unserialize(hval s) {
+    if (s.tag != HV_STR || !s.u.s) RETB(false);
+    const char *p = s.u.s->data, *end = p + s.u.s->len;
+    hval v;
+    if (!hp_unser_r(&p, end, &v, 0) || p != end) RETB(false);
+    return v;
+}
 
 /* ---------- io / process ---------- */
 /* ANSI color escape sequences */
@@ -1685,6 +1866,19 @@ hval hpbi_php_uname(void) {
 }
 hval hpbi_phpversion(void) { RETS(hp_str_lit(HPHP_VERSION)); }
 hval hpbi_php_sapi_name(void) { RETS(hp_str_lit("cli")); }
+hval hpbi_php_sapi(void) { RETS(hp_str_lit("cli")); }
+/* PHP's historical logo GUID, kept for code that still asks for it */
+hval hpbi_php_logo_guid(void) { RETS(hp_str_lit("PHPE9568F34-D428-11d2-A769-00AA001ACF42")); }
+/* [1, 5, 15 minute load]; Windows has no load average: zeros */
+hval hpbi_sys_getloadavg(void) {
+    double l[3] = {0, 0, 0};
+#if !defined(_WIN32)
+    if (getloadavg(l, 3) != 3) { l[0] = l[1] = l[2] = 0; }
+#endif
+    harr *r = hp_arr_new();
+    for (int i = 0; i < 3; i++) hp_arr_push(r, hp_of_float(l[i]));
+    return hp_of_arr(r);
+}
 hval hpbi_microtime(void) {
     /* High-resolution on all platforms: PHP's microtime(true) needs
      * sub-second precision for benchmarks. */
@@ -1713,9 +1907,37 @@ hval hpbi_hrtime(hval as_number) {
 #endif
     RETI(ns);
 }
-static size_t hp_mem_used = 0;
-hval hpbi_memory_get_usage(void) { RETI((int64_t)hp_mem_used); }
-hval hpbi_memory_get_peak_usage(void) { RETI((int64_t)hp_mem_used); }
+/* memory_get_usage(): the process's resident memory, as the OS reports it
+ * (the working set on Windows, RSS from /proc on Linux). */
+#if defined(_WIN32)
+typedef struct { DWORD cb, faults; SIZE_T peak_ws, ws, a, b, c, d, pagefile, peak_pagefile; } hp_pmc;
+BOOL WINAPI K32GetProcessMemoryInfo(HANDLE, void *, DWORD);
+#endif
+static int64_t hp_mem_rss(bool peak) {
+#if defined(_WIN32)
+    hp_pmc pmc;
+    memset(&pmc, 0, sizeof pmc);
+    pmc.cb = sizeof pmc;
+    if (!K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) return 0;
+    return (int64_t)(peak ? pmc.peak_ws : pmc.ws);
+#else
+    FILE *f = fopen(peak ? "/proc/self/status" : "/proc/self/statm", "r");
+    if (!f) return 0;
+    long long v = 0;
+    if (peak) {
+        char line[256];
+        while (fgets(line, sizeof line, f))
+            if (!strncmp(line, "VmHWM:", 6)) { v = atoll(line + 6) * 1024; break; }
+    } else {
+        long long size = 0, rss = 0;
+        if (fscanf(f, "%lld %lld", &size, &rss) == 2) v = rss * sysconf(_SC_PAGESIZE);
+    }
+    fclose(f);
+    return (int64_t)v;
+#endif
+}
+hval hpbi_memory_get_usage(void) { RETI(hp_mem_rss(false)); }
+hval hpbi_memory_get_peak_usage(void) { RETI(hp_mem_rss(true)); }
 hval hpbi_gc_collect_cycles(void) { RETI(0); }
 hval hpbi_date2(hval fmt, hval ts) {
     /* PHP date(): Y m d H i s and friends over the local time;
@@ -1754,6 +1976,22 @@ hval hpbi_date2(hval fmt, hval ts) {
         if (c == 'L') { int y = tmv->tm_year + 1900; buf_printf(&b, "%d", ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)); continue; }
         if (c == 't') { static const int mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31}; int mm = tmv->tm_mon; int d = mdays[mm]; if (mm == 1) { int y = tmv->tm_year + 1900; if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) d = 29; } buf_printf(&b, "%d", d); continue; }
         if (c == 'U') { buf_printf(&b, "%lld", (long long)now); continue; }
+        /* names: D Mon, l Monday, M Jan, F January (English, as in PHP) */
+        if (c == 'D' || c == 'l') {
+            static const char *days[7] = {"Sunday", "Monday", "Tuesday", "Wednesday",
+                                          "Thursday", "Friday", "Saturday"};
+            const char *dn = days[tmv->tm_wday % 7];
+            if (c == 'D') buf_write(&b, dn, 3); else buf_puts(&b, dn);
+            continue;
+        }
+        if (c == 'M' || c == 'F') {
+            static const char *months[12] = {"January", "February", "March", "April", "May",
+                                             "June", "July", "August", "September", "October",
+                                             "November", "December"};
+            const char *mn = months[tmv->tm_mon % 12];
+            if (c == 'M') buf_write(&b, mn, 3); else buf_puts(&b, mn);
+            continue;
+        }
         buf_putc(&b, c);
     }
     RETS(hp_str_take_buf(&b));
@@ -1770,6 +2008,7 @@ hval hpbi_usleep(hval us) {
 }
 hval hpbi_sleep(hval s) {
 #if defined(_WIN32)
+    Sleep((DWORD)(hp_val_to_int(s) * 1000));
 #else
     struct timespec ts = { .tv_sec = hp_val_to_int(s), .tv_nsec = 0 };
     nanosleep(&ts, NULL);
@@ -1802,12 +2041,6 @@ hval hpbi_mt_rand(hval mn, hval mx) {
 hval hpbi_srand(hval seed) { srand((unsigned)hp_val_to_int(seed)); hp_seeded = true; return hp_null; }
 hval hpbi_mt_srand(hval seed) { srand((unsigned)hp_val_to_int(seed)); hp_seeded = true; return hp_null; }
 hval hpbi_random_int(hval mn, hval mx) { return hpbi_rand(mn, mx); }
-hval hpbi_fgetc(hval stream) {
-    int c = fgetc(stdin);
-    if (c == EOF) RETS(hp_str_lit(""));
-    char b[1] = { (char)c };
-    RETS(hp_str_new(b, 1));
-}
 
 /* ---------- filesystem helpers ---------- */
 hval hpbi_getcwd(void) {
@@ -1914,6 +2147,15 @@ hval hpbi_fgets(hval fh) {
     size_t n = strlen(line);
     while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) n--;
     RETS(hp_str_new(line, n));
+}
+/* fgetc($fh): one byte from an fopen() handle (stdin when given none / STDIN),
+ * false at the end. It used to read stdin whatever handle it got. */
+hval hpbi_fgetc(hval fh) {
+    FILE *f = file_ok(fh) ? g_files[fh.u.i] : stdin;
+    int c = fgetc(f);
+    if (c == EOF) RETB(false);
+    char b[1] = { (char)c };
+    RETS(hp_str_new(b, 1));
 }
 hval hpbi_fwrite(hval fh, hval data) {
     if (fh.tag == HV_STR) {

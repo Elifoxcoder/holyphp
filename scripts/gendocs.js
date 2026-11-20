@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* gendocs.js — generates docs/builtins.html from extension/hphp/data/builtins.json
+/* gendocs.js — generates docs/builtins.html from packages/extension/hphp/data/builtins.json
  * (which scripts/genext.js generated from the compiler's own builtin table +
  * the hand-written explanations in scripts/builtin-docs.js).
  * Run after adding builtins:  node scripts/genext.js && node scripts/gendocs.js
@@ -9,7 +9,7 @@ const path = require("path");
 
 const root = path.join(__dirname, "..");
 const data = JSON.parse(
-  fs.readFileSync(path.join(root, "extension/hphp/data/builtins.json"), "utf8")
+  fs.readFileSync(path.join(root, "packages/extension/hphp/data/builtins.json"), "utf8")
 );
 const builtins = data.builtins || [];
 

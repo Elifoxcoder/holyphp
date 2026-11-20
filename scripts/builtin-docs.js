@@ -1,6 +1,6 @@
 /* builtin-docs.js — hand-written explanations for every HolyPHP builtin.
  * Consumed by scripts/gendocs.js (docs/builtins.html) and scripts/genext.js
- * (extension/hphp/data/builtins.json). Keyed by function name.
+ * (packages/extension/hphp/data/builtins.json). Keyed by function name.
  * Convention: one or two sentences — what it does, what it returns,
  * notable arguments/edge cases. Written for a developer who knows PHP.
  */

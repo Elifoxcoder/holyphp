@@ -190,7 +190,7 @@ void builtins_init(void) {
     add("srand",         B_MISC,    ty_void,   false, false);
     add("mt_srand",      B_MISC,    ty_void,   false, false);
     add("random_int",    B_MISC,    ty_int,    false, false);
-    add("fgetc",         B_MISC,    ty_string, false, false);
+    add("fgetc",         B_MISC,    ty_mixed,  false, false);   /* string|false at EOF, PHP-style */
     add("abs",           B_ABS,     ty_mixed,  false, false);
     add("round",         B_MISC,    ty_mixed,  false, false);
     add("floor",         B_ABS,     ty_float,  false, false);
@@ -206,7 +206,7 @@ void builtins_init(void) {
     add("atan2",         B_MISC,    ty_float,  false, false);
     add("asin",          B_ABS,     ty_float,  false, false);
     add("acos",          B_ABS,     ty_float,  false, false);
-    add("log",           B_ABS,     ty_float,  false, false);
+    add("log",           B_MISC,    ty_float,  false, false);   /* log($x[, $base]) */
     add("log2",          B_ABS,     ty_float,  false, false);
     add("log10",         B_ABS,     ty_float,  false, false);
     add("exp",           B_ABS,     ty_float,  false, false);

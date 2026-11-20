@@ -192,6 +192,12 @@ grammar.repository.functions = {
       name: "support.function.builtin.hphp",
       match: alternation(functionNames) + "\\s*(?=\\()",
     },
+    {
+      /* calls of the program's own functions (not $callback() or ->method()):
+       * after the builtins, so a builtin keeps its own scope */
+      name: "entity.name.function.php",
+      match: "(?<![$>])\\b[A-Za-z_][A-Za-z0-9_]*\\b\\s*(?=\\()",
+    },
   ],
 };
 

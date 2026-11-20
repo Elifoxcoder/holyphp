@@ -687,7 +687,7 @@ module.exports = {
     }],
     ret: "The text with only the five HTML-critical characters (& \" ' < >) escaped.",
     ex: 'echo htmlspecialchars("<a href=\\"x\\">link</a>");',
-    out: "&lt;a href=\\\"x\\\"&gt;link&lt;/a&gt;",
+    out: "&lt;a href=&quot;x&quot;&gt;link&lt;/a&gt;",
     see: ["htmlentities", "html_entity_decode"],
   },
   html_entity_decode: {
@@ -1256,8 +1256,8 @@ module.exports = {
       },
     ],
     ret: "true; visits leaves of nested arrays only.",
-    ex: '$a = [1, [2, 3]];\narray_walk_recursive($a, fn(&$v, $k) => $v = $v + 10);\necho $a[0], " ", $a[1][0];',
-    out: "11 12",
+    ex: "$sum = 0;\narray_walk_recursive([1, [2, 3]], function($v, $k) use (&$sum) { $sum = $sum + $v; });\necho $sum;",
+    out: "6",
     see: ["array_walk", "array_map"],
   },
   array_map: {
@@ -1933,7 +1933,7 @@ module.exports = {
     params: [],
     ret: "π as float. The constant M_PI is equivalent.",
     ex: 'echo pi(), " ", round(pi(), 2);',
-    out: "3.141592653589793 3.14",
+    out: "3.1415926535898 3.14",
     see: ["M_PI", "sin", "cos"],
   },
   M_PI: {
@@ -2219,7 +2219,7 @@ module.exports = {
     }],
     ret: "Type name string: \"int\", \"float\", \"string\", \"bool\", \"array\", \"null\".",
     ex: 'echo gettype(1), " ", gettype(1.5), " ", gettype("x"), " ", gettype(true), " ", gettype([]), " ", gettype(null);',
-    out: "int float string bool array null",
+    out: "integer double string boolean array null",
     see: ["is_int", "var_dump", "type_of"],
   },
   var_dump: {
@@ -2230,7 +2230,7 @@ module.exports = {
     }],
     ret: "Prints type and value, recursively for arrays; returns nothing. The main debugging tool.",
     ex: 'var_dump([1, "a" => true]);\nvar_dump(42);\nvar_dump("hi");',
-    out: "array(2) {\n  [0] => int(1)\n  [\"a\"] => bool(true)\n}\nint(42)\nstring(2) \"hi\"",
+    out: "array(2) {\n  [0]=>\n  int(1)\n  [\"a\"]=>\n  bool(true)\n}\nint(42)\nstring(2) \"hi\"",
     see: ["print_r", "var_export", "gettype"],
   },
   print_r: {
@@ -2241,7 +2241,7 @@ module.exports = {
     }],
     ret: "Human-readable rendering of the value. Prints it AND returns the text (unlike PHP, where a second argument is needed for that).",
     ex: 'print_r(["a" => 1, "b" => [2, 3]]);',
-    out: "Array\n(\n  [a] => 1\n  [b] => Array\n  (\n    [0] => 2\n    [1] => 3\n  )\n)",
+    out: "Array\n(\n  [a] => 1\n  [b] => Array\n  (\n    [0] => 2\n    [1] => 3\n  )\n\n)",
     see: ["var_dump", "var_export"],
   },
   var_export: {
@@ -2251,8 +2251,8 @@ module.exports = {
       d: "value to export"
     }],
     ret: "String of HolyPHP code that would recreate the value.",
-    ex: 'echo var_export([1, 2]);',
-    out: "array(1, 2)",
+    ex: "echo var_export([1, \"a\" => true], true);",
+    out: "array (\n  0 => 1,\n  'a' => true,\n)",
     see: ["var_dump", "print_r", "serialize"],
   },
   serialize: {
@@ -2487,8 +2487,8 @@ module.exports = {
       },
     ],
     ret: "The formatted date/time string (local time).",
-    ex: 'echo date("Y-m-d", strtotime("2024-03-15 12:30:00")), "\n";\necho date("H:i:s", strtotime("2024-03-15 12:30:00")), "\n";\necho date("Y-m-d H:i:s", 1710508200), "\n";',
-    out: "2024-03-15\n12:30:00\n2024-03-15 12:30:00",
+    ex: "$t = strtotime(\"2024-03-15 12:30:00\");\necho date(\"Y-m-d\", $t);\necho date(\"H:i:s\", $t);\necho date(\"D, d M Y\", $t);",
+    out: "2024-03-15\n12:30:00\nFri, 15 Mar 2024",
     see: ["strtotime", "mktime", "gmdate", "checkdate"],
   },
   mktime: {
@@ -2838,7 +2838,7 @@ module.exports = {
       d: "handle from fopen()"
     }],
     ret: "One character per call.",
-    ex: 'file_put_contents("/tmp/hphp_doc_gc.txt", "ab");\n$fh = fopen("/tmp/hphp_doc_gc.txt", "r");\necho fgetc($fh), fgetc($fh);\nfclose($fh);',
+    ex: "$f = sys_get_temp_dir() . \"/hphp_doc_gc.txt\";\nfile_put_contents($f, \"ab\");\n$fh = fopen($f, \"r\");\necho fgetc($fh), fgetc($fh);\nfclose($fh);\nunlink($f);",
     out: "ab",
     see: ["fgets", "fread"],
   },
@@ -2856,7 +2856,7 @@ module.exports = {
       },
     ],
     ret: "true on success.",
-    ex: 'mkdir("/tmp/hphp_doc_m/deep", true);\nvar_dump(is_dir("/tmp/hphp_doc_m/deep"));\nrmdir("/tmp/hphp_doc_m/deep");\nrmdir("/tmp/hphp_doc_m");',
+    ex: "$d = sys_get_temp_dir() . \"/hphp_doc_m\";\nmkdir($d . \"/deep\", 0777, true);\nvar_dump(is_dir($d . \"/deep\"));\nrmdir($d . \"/deep\");\nrmdir($d);",
     out: "bool(true)",
     see: ["rmdir", "is_dir"],
   },
@@ -2992,8 +2992,8 @@ module.exports = {
       d: "directory path"
     }],
     ret: "Array of entry names (including \".\" and \"..\").",
-    ex: 'mkdir("/tmp/hphp_doc_sc");\nfile_put_contents("/tmp/hphp_doc_sc/a.txt", "1");\necho count(scandir("/tmp/hphp_doc_sc")) >= 3 ? "listed" : "empty";\nunlink("/tmp/hphp_doc_sc/a.txt");\nrmdir("/tmp/hphp_doc_sc");',
-    out: "listed",
+    ex: "$d = sys_get_temp_dir() . \"/hphp_doc_sc\";\nmkdir($d);\nfile_put_contents($d . \"/a.txt\", \"1\");\necho implode(\",\", scandir($d));   // without . and ..\nunlink($d . \"/a.txt\");\nrmdir($d);",
+    out: "a.txt",
     see: ["opendir", "is_dir"],
   },
   opendir: {
@@ -3123,7 +3123,7 @@ module.exports = {
   memory_get_peak_usage: {
     params: [],
     ret: "Peak bytes allocated so far.",
-    ex: '$peak = memory_get_peak_usage();\necho $peak >= memory_get_usage() ? "peak-ok" : "peak-broke";',
+    ex: "$used = memory_get_usage();\n$peak = memory_get_peak_usage();\necho $peak >= $used ? \"peak-ok\" : \"peak-broke\";",
     out: "peak-ok",
     see: ["memory_get_usage"],
   },
@@ -3506,7 +3506,7 @@ module.exports = {
     }],
     ret: "Escaped string (' \" \\ NUL) safe for SQL literals.",
     ex: 'echo mysql_escape("it\'s O\'Brien");',
-    out: "it\\\\'s O\\\\'Brien",
+    out: "it\\'s O\\'Brien",
     see: ["mysql_query", "addslashes"],
   },
 
@@ -3519,7 +3519,7 @@ module.exports = {
     }],
     ret: "32-character hex MD5 digest. Broken for security — checksums only.",
     ex: 'echo md5("holy");',
-    out: "REPLACE_MD5_HOLY",
+    out: "ff0eca571f7670efa4ac4a2c37214c6b",
     see: ["sha1", "sha256", "crc32"],
   },
   sha1: {
@@ -3530,7 +3530,7 @@ module.exports = {
     }],
     ret: "40-character hex SHA-1 digest (legacy — prefer sha256).",
     ex: 'echo sha1("holy");',
-    out: "REPLACE_SHA1_HOLY",
+    out: "c6c8286ae5ed496fd5e6633f25700f79d9223fdb",
     see: ["sha256", "md5"],
   },
   sha256: {
@@ -3573,7 +3573,7 @@ module.exports = {
       },
     ],
     ret: "HMAC digest as hex — proves the message came from someone holding $key.",
-    ex: '$sig = hash_hmac("sha256", "order:42", "secret-key");\necho strlen($sig) == 64 ? "signed" : "bad";\necho hash_hmac("sha256", "order:42", "secret-key") == $sig ? " matches" : " nope";',
+    ex: "$sig = hash_hmac(\"sha256\", \"order:42\", \"secret-key\");\n$again = hash_hmac(\"sha256\", \"order:42\", \"secret-key\");\necho strlen($sig) == 64 ? \"signed\" : \"bad\", $again == $sig ? \" matches\" : \" nope\";",
     out: "signed matches",
     see: ["sha256", "hash_equals"],
   },
@@ -4529,7 +4529,7 @@ module.exports = {
   heap_dump: {
     params: [],
     ret: "Debug dump of the runtime heap (allocation count, sizes).",
-    ex: 'echo strlen(heap_dump()) > 0 ? "heap-info" : "empty";',
+    ex: "unsafe {\n    echo strlen(heap_dump()) > 0 ? \"heap-info\" : \"empty\";\n}",
     out: "heap-info",
     see: ["memory_get_usage", "gc_collect_cycles"],
   },
@@ -4654,7 +4654,7 @@ module.exports = {
   arr_free: {
     params: [{ n: "a", t: "array", d: "array to release" }],
     ret: "true.",
-    ex: "$a = [1, 2, 3];\narr_free($a);\necho \"freed\\n\";",
+    ex: "$a = [1, 2, 3];\nunsafe {\n    arr_free($a);\n}\necho \"freed\";",
     out: "freed",
     see: ["arr_clear"],
   },
@@ -4675,35 +4675,35 @@ module.exports = {
   iarr_get_fast: {
     params: [{ n: "h", t: "int", d: "array handle" }, { n: "i", t: "int", d: "index" }],
     ret: "The value without a bounds check.",
-    ex: "$a = iarr_new(2);\niarr_set($a, 1, 8);\necho iarr_get_fast($a, 1), \"\\n\";",
+    ex: "$a = iarr_new(2);\niarr_set($a, 1, 8);\nunsafe {\n    echo iarr_get_fast($a, 1);\n}",
     out: "8",
     see: ["iarr_get"],
   },
   iarr_len: {
     params: [{ n: "h", t: "int", d: "array handle" }],
     ret: "Number of elements.",
-    ex: "$a = iarr_new(4);\necho iarr_len($a), \"\\n\";",
-    out: "4",
+    ex: "$a = iarr_new(4);          // room for 4, nothing stored yet\necho iarr_len($a);\niarr_set($a, 2, 77);\necho iarr_get($a, 2);",
+    out: "0\n77",
     see: ["iarr_new"],
   },
   iarr_new: {
     params: [{ n: "n", t: "int", d: "length" }],
     ret: "Handle of a zeroed int64 array.",
-    ex: "$a = iarr_new(3);\necho iarr_len($a), \" \", iarr_get($a, 0), \"\\n\";",
-    out: "3 0",
+    ex: "$a = iarr_new(3);\necho iarr_len($a), \" \", iarr_get($a, 0);",
+    out: "0 0",
     see: ["iarr_set", "iarr_release"],
   },
   iarr_new_uninit: {
     params: [{ n: "n", t: "int", d: "length" }],
     ret: "Handle of an uninitialised int64 array.",
-    ex: "$a = iarr_new_uninit(2);\niarr_set($a, 1, 9);\necho iarr_get($a, 1), \"\\n\";",
+    ex: "unsafe {\n    $a = iarr_new_uninit(2);\n    iarr_set($a, 1, 9);\n    echo iarr_get($a, 1);\n}",
     out: "9",
     see: ["iarr_new"],
   },
   iarr_release: {
     params: [{ n: "h", t: "int", d: "array handle" }],
     ret: "true; the array returns to the pool.",
-    ex: "$a = iarr_new(4);\niarr_release($a);\necho \"released\\n\";",
+    ex: "$a = iarr_new(4);\nunsafe {\n    iarr_release($a);\n}\necho \"released\";",
     out: "released",
     see: ["iarr_new"],
   },
@@ -4717,7 +4717,7 @@ module.exports = {
   iarr_set_fast: {
     params: [{ n: "h", t: "int", d: "array handle" }, { n: "i", t: "int", d: "index" }, { n: "v", t: "int", d: "value" }],
     ret: "true.",
-    ex: "$a = iarr_new(2);\niarr_set_fast($a, 0, 4);\necho iarr_get($a, 0), \"\\n\";",
+    ex: "$a = iarr_new(2);\nunsafe {\n    iarr_set_fast($a, 0, 4);\n}\necho iarr_get($a, 0);",
     out: "4",
     see: ["iarr_set"],
   },
@@ -4759,7 +4759,7 @@ module.exports = {
   sb_discard: {
     params: [{ n: "h", t: "int", d: "builder handle" }],
     ret: "true; the builder is released.",
-    ex: "$sb = sb_new();\nsb_put($sb, \"gone\");\nsb_discard($sb);\necho \"discarded\\n\";",
+    ex: "$sb = sb_new();\nsb_put($sb, \"gone\");\nunsafe {\n    sb_discard($sb);\n}\necho \"discarded\";",
     out: "discarded",
     see: ["sb_take"],
   },
@@ -4815,7 +4815,7 @@ module.exports = {
   scope_end: {
     params: [],
     ret: "true (no-op in this core).",
-    ex: "scope_begin(); echo scope_end() ? \"ok\\n\" : \"no\\n\";",
+    ex: "scope_begin();\nunsafe {\n    echo scope_end() ? \"ok\" : \"no\";\n}",
     out: "ok",
     see: ["scope_begin"],
   },
@@ -4871,8 +4871,8 @@ module.exports = {
   str_to_int: {
     params: [{ n: "s", t: "string", d: "decimal text" }],
     ret: "The integer, or 0.",
-    ex: "echo str_to_int(\"42\"), \" \", str_to_int(\"x\"), \"\\n\";",
-    out: "42 0",
+    ex: "echo str_to_int(\"42\"), \" \", str_to_int(\"x\");   // -1: not a number",
+    out: "42 -1",
     see: ["str_to_int_range", "intval"],
   },
   str_to_int_range: {

@@ -9,6 +9,27 @@ behaves differently, what they have to change.
 
 ## Unreleased
 
+- Array fixes found by running every documented builtin example:
+  - `[1, "a" => true]` (plain values mixed with keys) lost entries; plain
+    values now get the next integer key, as in PHP. `array(...)` with
+    `key => value` parses too.
+  - An array that gained a string key forgot its earlier integer keys
+    (`$a[0] = 1; $a["k"] = 2; $a[0]` was null); values appended to a large
+    map were not found by key.
+  - `array_merge` renumbers integer keys instead of overwriting them;
+    `isset($a["k"])` is false when the value is null.
+  - `array_push` / `array_unshift` with several values, `array_splice` with a
+    replacement, `array_filter` without a callback, `hrtime()` without an
+    argument and `log($x, $base)` no longer fail to compile.
+- `var_export` prints PHP syntax (and returns it with `var_export($v, true)`);
+  `serialize` / `unserialize` use PHP's format instead of printing the value.
+- `fgetc($fh)` reads from the file instead of the keyboard, and is `false` at
+  the end; `sleep()` sleeps on Windows; `memory_get_usage()` reports the
+  process's memory instead of 0; `date()` knows `D`, `l`, `M` and `F`;
+  `sys_getloadavg()`, `php_sapi()` and `php_logo_guid()` exist.
+- `echo "text\n";` no longer prints an empty line after the text: `echo` adds
+  its line break only when the output does not already end with one.
+
 - Package trust: official libraries (bundled with `hphp`) always install
   from the compiler, never from a registry, and no community package may use
   their names; the registry refuses to publish them too. Community packages

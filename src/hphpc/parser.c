@@ -1494,16 +1494,23 @@ static Expr *parse_closure_after_fn(Parser *p) {
 
 /* '[' array literal; a bare comma ("[$a, , $c]") is an empty destructuring
  * slot, represented as a NULL entry in elems. */
-static Expr *parse_primary_lbracket(Parser *p) {
+/* `close` is T_RBRACKET for [..] and T_RPAREN for the PHP spelling array(..) */
+static Expr *parse_array_items(Parser *p, TokKind close) {
     const Token *t = ts_peek(p->ts);
     ts_advance(p->ts);
     Expr *e = expr_new(EX_ARRAY_LIT, *t);
     skip_nl(p);
-    while (!ts_check(p->ts, T_RBRACKET) && !ts_check(p->ts, T_EOF)) {
+    /* Collect the entries in order first: u.arr and u.map share storage (a
+     * union), so a literal that mixes plain values and `key => value` must
+     * end up entirely in one of them. */
+    PtrVec keys = {0}, vals = {0};     /* key NULL = positional entry */
+    bool any_key = false;
+    while (!ts_check(p->ts, close) && !ts_check(p->ts, T_EOF)) {
         skip_nl(p);
         if (ts_check(p->ts, T_COMMA)) {
             /* empty slot: list(,,$c) style skip position */
-            ptrvec_push(&e->u.arr.elems, NULL);
+            ptrvec_push(&keys, NULL);
+            ptrvec_push(&vals, NULL);
             ts_advance(p->ts);
             skip_nl(p);
             continue;
@@ -1511,17 +1518,44 @@ static Expr *parse_primary_lbracket(Parser *p) {
         Expr *k = parse_ternary(p);
         if (ts_match(p->ts, T_DOUBLEARROW)) {
             Expr *v = parse_ternary(p);
-            ptrvec_push(&e->u.map.keys, k);
-            ptrvec_push(&e->u.map.vals, v);
+            ptrvec_push(&keys, k);
+            ptrvec_push(&vals, v);
+            any_key = true;
         } else {
-            ptrvec_push(&e->u.arr.elems, k);
+            ptrvec_push(&keys, NULL);
+            ptrvec_push(&vals, k);
         }
         skip_nl(p);
         if (!ts_match(p->ts, T_COMMA)) break;
         skip_nl(p);
     }
-    ts_expect(p->ts, T_RBRACKET, "']' to close literal");
+    ts_expect(p->ts, close, close == T_RBRACKET ? "']' to close literal" : "')' to close array(...)");
     skip_nl(p);
+    if (!any_key) {
+        for (size_t i = 0; i < vals.len; i++) ptrvec_push(&e->u.arr.elems, vals.items[i]);
+    } else {
+        /* PHP: a plain value gets the next integer key, one past the
+         * largest integer key so far ([5 => "a", "b"] puts "b" at 6) */
+        long long next = 0;
+        for (size_t i = 0; i < vals.len; i++) {
+            Expr *k = keys.items[i];
+            Expr *v = vals.items[i];
+            if (!v) {
+                fatal("%s:%zu:%zu: an empty slot cannot appear in an array literal with keys",
+                      t->file, t->line, t->col);
+            }
+            if (!k) {
+                k = expr_new(EX_INT, v->tok);
+                k->u.i.ival = next++;
+            } else if (k->kind == EX_INT && !k->u.i.is_wide && k->u.i.ival >= next) {
+                next = k->u.i.ival + 1;
+            }
+            ptrvec_push(&e->u.map.keys, k);
+            ptrvec_push(&e->u.map.vals, v);
+        }
+    }
+    free(keys.items);
+    free(vals.items);
     return e;
 }
 
@@ -1654,9 +1688,15 @@ static Expr *parse_primary(Parser *p) {
         return e;
     }
     case T_LBRACKET:
-        return parse_primary_lbracket(p);
+        return parse_array_items(p, T_RBRACKET);
     case T_IDENT: {
         /* function call, class name, or plain identifier */
+        /* PHP's long array syntax: array(1, "k" => 2) is the literal [1, "k" => 2] */
+        if (t->len == 5 && !strncmp(t->text, "array", 5) &&
+            ts_peek2(p->ts)->kind == T_LPAREN) {
+            ts_advance(p->ts);                       /* array; parse_array_items eats '(' */
+            return parse_array_items(p, T_RPAREN);
+        }
         const Token *nm = ts_advance(p->ts);
         const char *name = dup_text(nm);
         if (ts_check(p->ts, T_LPAREN)) {

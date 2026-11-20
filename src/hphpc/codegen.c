@@ -524,6 +524,12 @@ static int builtin_max_args(const char *name) {
     if (strcmp(name, "implode") == 0) return 2;
 
     if (strcmp(name, "array_slice") == 0) return 3;
+    if (strcmp(name, "array_splice") == 0) return 4;      /* + $replacement */
+    if (strcmp(name, "var_export") == 0) return 2;        /* + $return */
+    if (strcmp(name, "heap_dump") == 0) return 1;         /* object optional */
+    if (strcmp(name, "array_filter") == 0) return 2;      /* callback optional */
+    if (strcmp(name, "hrtime") == 0) return 1;            /* hrtime() = [s, ns] */
+    if (strcmp(name, "log") == 0) return 2;               /* log($x, $base) */
     if (strcmp(name, "str_split") == 0) return 2;
     if (strcmp(name, "number_format") == 0) return 4;
     if (strcmp(name, "file_put_contents") == 0) return 3;
@@ -1361,6 +1367,20 @@ static void emit_builtin_call_body(Codegen *g, const char *name, PtrVec args,
         project_hval(dst, ret);
         return;
     }
+    /* array_push($a, 1, 2, 3) / array_unshift with several values: the C
+     * functions take one value, the _n variants a list */
+    if ((strcmp(name, "array_push") == 0 || strcmp(name, "array_unshift") == 0) && args.len > 2) {
+        buf_printf(dst, "hpbi_%s_n(", name);
+        to_hval(g, args.items[0], dst);
+        buf_printf(dst, ", %zu, (const hval[]){", args.len - 1);
+        for (size_t i = 1; i < args.len; i++) {
+            if (i > 1) buf_puts(dst, ", ");
+            to_hval(g, args.items[i], dst);
+        }
+        buf_puts(dst, "})");
+        project_hval(dst, ret);
+        return;
+    }
     if (strcmp(name, "json_encode_pretty") == 0 && args.len >= 1) {
         /* always pretty: json_encode2(v, flags=JSON_PRETTY_PRINT) */
         buf_puts(dst, "hpbi_json_encode2(");
@@ -1412,7 +1432,8 @@ static void emit_builtin_call_body(Codegen *g, const char *name, PtrVec args,
          * still has to reach the C function as (text, hp_null). */
         int mn = builtin_min_args(name), mx = builtin_max_args(name);
         if (mx >= 0 && (int)args.len < mx && (int)args.len >= mn)
-            for (int i = (int)args.len; i < mx; i++) buf_puts(&call, ", hp_null");
+            for (int i = (int)args.len; i < mx; i++)
+                buf_puts(&call, i > 0 ? ", hp_null" : "hp_null");   /* no leading comma for f() */
     }
     buf_puts(&call, ")");
     if (owns_arg) {

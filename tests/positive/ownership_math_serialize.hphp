@@ -17,7 +17,7 @@ check("serialize left the array intact", count($data) == 2);
 $r = print_r($data);
 check("print_r returned text", str_contains($r, "Array"));
 
-$r = var_export($data);
+$r = var_export($data, true);   /* PHP: returns the text only with true */
 check("var_export returned text", strlen($r) > 0);
 
 var_dump($data);

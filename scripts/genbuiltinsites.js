@@ -9,7 +9,7 @@ const path = require("path");
 
 const root = path.join(__dirname, "..");
 const data = JSON.parse(
-  fs.readFileSync(path.join(root, "extension/hphp/data/builtins.json"), "utf8")
+  fs.readFileSync(path.join(root, "packages/extension/hphp/data/builtins.json"), "utf8")
 );
 const EX = require(path.join(__dirname, "builtin-examples.js"));
 const builtins = data.builtins || [];

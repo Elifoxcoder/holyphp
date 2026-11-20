@@ -1,0 +1,74 @@
+<?php
+/* Fixes found by running every documented builtin example (1.1.0):
+ * mixed array literals, array(), lists turning into maps, array_merge,
+ * isset on null, variadic array_push/unshift, array_splice replacement,
+ * array_filter without callback, var_export, serialize, fgetc, log base,
+ * hrtime(), date names. */
+import "testing";
+
+$t = new Test("builtins 1.1");
+
+$t->section("array literals");
+$mixed = [1, "a" => true, 2];
+$t->equal(count($mixed), 3, "[1, 'a' => true, 2] keeps all three");
+$t->equal($mixed[1], 2, "the second plain value gets key 1");
+$gap = [5 => "a", "b"];
+$t->equal($gap[6], "b", "a plain value follows the largest int key");
+$old = array("x", "k" => 1);
+$t->equal(count($old), 2, "array(...) with keys");
+$t->equal($old["k"], 1, "array(...) key lookup");
+$t->equal(count(array()), 0, "array() is empty");
+
+$t->section("lists that become maps");
+$w = [];
+$w[0] = 1;
+$w["k"] = 2;
+$t->equal($w[0], 1, "int key survives a string key");
+$t->isTrue(array_key_exists(0, $w), "array_key_exists finds it");
+$big = [];
+for ($i = 0; $i < 40; $i++) {
+    $big["k" . $i] = $i;
+}
+$big[] = "pushed";
+$t->equal($big[0], "pushed", "push into an indexed map is found by key");
+
+$t->section("array functions");
+$m = array_merge(["a" => 1, 0 => "x"], ["a" => 2, 0 => "y"]);
+$t->equal(count($m), 3, "array_merge appends int keys");
+$t->equal($m["a"], 2, "array_merge overwrites string keys");
+$n = ["k" => null];
+$t->isTrue(array_key_exists("k", $n), "array_key_exists with null");
+$t->isFalse(isset($n["k"]), "isset is false for null");
+$p = [1];
+$t->equal(array_push($p, 2, 3), 3, "array_push with several values");
+$t->equal(implode(",", $p), "1,2,3", "... in order");
+$u = [3];
+array_unshift($u, 1, 2);
+$t->equal(implode(",", $u), "1,2,3", "array_unshift with several values keeps their order");
+$s = [1, 2, 3, 4];
+$removed = array_splice($s, 1, 2, ["x", "y", "z"]);
+$t->equal(implode(",", $s), "1,x,y,z,4", "array_splice inserts the replacement");
+$t->equal(implode(",", $removed), "2,3", "array_splice returns the removed part");
+$t->equal(implode(",", array_filter([0, 1, "", "a", null])), "1,a", "array_filter without callback");
+
+$t->section("export and serialize");
+$t->equal(var_export([1, "a" => true], true), "array (\n  0 => 1,\n  'a' => true,\n)", "var_export returns PHP syntax");
+$data = [1, "k" => true, "f" => 1.5, "s" => "q\"x"];
+$t->equal(unserialize(serialize($data)), $data, "serialize round trip");
+$t->same(unserialize("not serialized"), false, "unserialize rejects garbage");
+
+$t->section("misc");
+$t->near(log(8, 2), 3.0, 0.000001, "log with a base");
+$t->isTrue(hrtime() > 0, "hrtime() without argument");
+$day = strtotime("2024-03-15 12:00:00");
+$t->equal(date("D M", $day), "Fri Mar", "date D and M");
+$t->equal(date("l F", $day), "Friday March", "date l and F");
+$f = sys_get_temp_dir() . "/hphp_regress_fgetc.txt";
+file_put_contents($f, "ab");
+$fh = fopen($f, "r");
+$t->equal(fgetc($fh) . fgetc($fh), "ab", "fgetc reads the file, not stdin");
+$t->same(fgetc($fh), false, "fgetc is false at the end");
+fclose($fh);
+unlink($f);
+
+$t->done();

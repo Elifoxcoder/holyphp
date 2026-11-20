@@ -14,12 +14,12 @@ const { execFileSync } = require("child_process");
 const root = path.join(__dirname, "..");
 const EX = require(path.join(__dirname, "builtin-examples.js"));
 const data = JSON.parse(
-  fs.readFileSync(path.join(root, "extension/hphp/data/builtins.json"), "utf8")
+  fs.readFileSync(path.join(root, "packages/extension/hphp/data/builtins.json"), "utf8")
 );
 const known = new Set(data.builtins.map(b => b.name));
 
 const filters = process.argv.slice(2);   // zero, one or many names
-const hphp = path.join(root, "hphp.exe");
+const hphp = process.env.HPHP_EXAMPLES_COMPILER || path.join(root, "hphp.exe");   /* compare against another build */
 
 /* normalize: hphp on Windows prints \r\n — compare line-wise, trimmed */
 const norm = s => String(s).replace(/\r\n/g, "\n").replace(/\r/g, "\n")

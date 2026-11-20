@@ -41,3 +41,6 @@ benchmarks/challenge/bin/
 .freebuff/
 Thumbs.db
 .DS_Store
+
+# server address and credentials (see AGENTS.md: Server)
+/scripts/vps.env

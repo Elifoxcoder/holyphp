@@ -447,13 +447,21 @@ void hp_rc_dec(void *p) {
     hp_gc_unlock();
 }
 
+/* last byte the current echo statement wrote (0 = nothing yet) */
+static _Thread_local int hp_echo_last = 0;
+
 void hp_echo(hval v) {
     hstr *s = hp_val_to_str(v);
     fwrite(s->data, 1, s->len, stdout);
+    if (s->len) hp_echo_last = (unsigned char)s->data[s->len - 1];
 }
 
+/* An echo statement ends its line - unless what it printed already ends
+ * with "\n" (PHP-style `echo "done\n";`), so ported code prints one line,
+ * not two. `echo "";` still prints an empty line. */
 void hp_echo_newline(void) {
-    fputc('\n', stdout);
+    if (hp_echo_last != '\n') fputc('\n', stdout);
+    hp_echo_last = 0;
 }
 
 /* ---------------- string builder ---------------- */
@@ -1169,26 +1177,44 @@ harr *hp_map_of_take(int n, const hval *kvs) {
     return a;
 }
 
+static void hp_arr_index_add(harr *a, size_t valslot);
+
+/* A list that became a map (a string or out-of-order key was set, or a
+ * builtin flagged it) needs a key per existing element: its position.
+ * Without this the old elements' keys were uninitialised memory, so
+ * `$a = [1]; $a["k"] = 2; $a[0]` found nothing. */
+static void hp_arr_ensure_keys(harr *a) {
+    if (!a->is_map || a->keys) return;
+    size_t cap = a->cap ? a->cap : 8;
+    a->keys = malloc(cap * sizeof(hval));
+    for (size_t i = 0; i < cap; i++)
+        a->keys[i] = i < a->len ? hp_of_int((int64_t)i) : hp_null;
+}
+
 void hp_arr_push(harr *a, hval v) {
     /* Low-level mutation: callers without an owner slot must pass writable
      * storage. COW belongs in hp_arr_push_v/owner helpers, which can return
      * or install the detached pointer. */
     if (!a) return;
+    hp_arr_ensure_keys(a);
     hp_arr_grow(a, a->len + 1);
     hp_val_rc_inc(v);
     a->vals[a->len] = v;
     if (a->is_map) a->keys[a->len] = hp_of_int(a->next_index);
     a->len++;
     a->next_index++;
+    if (a->is_map && a->index) hp_arr_index_add(a, a->len - 1);   /* keep lookups exact */
 }
 
 void hp_arr_push_take(harr *a, hval v) {
     if (!a) return;
+    hp_arr_ensure_keys(a);
     hp_arr_grow(a, a->len + 1);
     a->vals[a->len] = v;
     if (a->is_map) a->keys[a->len] = hp_of_int(a->next_index);
     a->len++;
     a->next_index++;
+    if (a->is_map && a->index) hp_arr_index_add(a, a->len - 1);
 }
 
 /* PHP `$a[] = v`: push and return the array (hval wrapper) so the
@@ -1299,6 +1325,7 @@ static int64_t hp_key_index(harr *a, hval key) {
         if (a->index && key.tag == HV_STR && key.u.s) {
             uint32_t mask = a->icap - 1;
             uint32_t h = hp_str_hash(key.u.s);
+            if (!h) h = 1;   /* the index stores hash 0 as 1 (hp_hash_str) */
             uint32_t slot = h & mask;
             for (;;) {
                 uint32_t e = a->index[slot];
@@ -1664,6 +1691,7 @@ void hp_arr_set(harr *a, hval idx, hval v) {
         else if (idx.tag == HV_INT && idx.u.i != a->next_index)
             a->is_map = true;
     }
+    hp_arr_ensure_keys(a);   /* a list turning into a map keeps its positions as keys */
     hp_arr_grow(a, a->len + 1);
     if (a->is_map) {
         a->keys = realloc(a->keys, a->cap * sizeof(hval));
