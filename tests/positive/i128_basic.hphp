@@ -28,6 +28,8 @@ function fib(int $n): i128 {
     }
     return $a;
 }
+function add_mixed(mixed $a, mixed $b): mixed { return $a + $b; }
+function mul_mixed(mixed $a, mixed $b): mixed { return $a * $b; }
 
 check(fib(184) == 127127879743834334146972278486287885163, "fib(184) exact");
 check(fib(186) == -7457256833870901142178577642133753608, "fib(186) wraps");
@@ -37,6 +39,14 @@ $min = -(i128)170141183460469231731687303715884105727 - 1;
 check($max == 170141183460469231731687303715884105727, "INT128_MAX literal");
 check($min == -170141183460469231731687303715884105728, "INT128_MIN");
 check($min < 0 && $max > 0, "sign");
+check(-$min == $min, "negating INT128_MIN wraps");
+check($min / -1 == $min && $min % -1 == 0, "division edge wraps safely");
+$max64 = (int)PHP_INT_MAX;
+check($max64 + 1 == (int)PHP_INT_MIN, "64-bit addition wraps");
+check($max64 * 2 == -2, "64-bit multiplication wraps");
+check(-((int)PHP_INT_MIN) == (int)PHP_INT_MIN, "64-bit negation wraps");
+check(add_mixed(PHP_INT_MAX, 1) == PHP_INT_MIN, "dynamic 64-bit addition wraps");
+check(mul_mixed(PHP_INT_MAX, 2) == -2, "dynamic 64-bit multiplication wraps");
 
 // literals beyond the int64 range are i128
 check(9223372036854775808 > 9223372036854775807, "literal beyond int64");
@@ -67,6 +77,9 @@ check(((i128)0xF0 | (i128)0x0F) == 0xFF, "|");
 check(((i128)0xFF ^ (i128)0x0F) == 0xF0, "^");
 check((~(i128)0) == -1, "~");
 check(((i128)1 << 100) == 1267650600228229401496703205376, "<<");
+check(((i128)0x8000000000000000 << 64) == $min, "unsigned high-half construction");
+check(((i128)1 << 128) == 0, "oversized left shift is defined");
+check($min >> 128 == -1, "oversized arithmetic right shift is defined");
 check((((i128)1 << 100) >> 90) == 1024, ">>");
 
 // compound assignment and ++/--

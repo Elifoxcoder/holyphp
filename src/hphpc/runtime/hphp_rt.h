@@ -306,10 +306,52 @@ static inline bool hp_eq_f(double a, double b) { return a == b; }
  * versions; comparison yields the PHP spaceship value. */
 static inline hp_i128 hp_i128_div(hp_i128 a, hp_i128 b) {
     if (b == 0) hp_throw_str("Division by zero");
+    if (a == (hp_i128)((hp_u128)1 << 127) && b == -1) return a;
     return a / b;
+}
+static inline hp_i128 hp_i128_from_u(hp_u128 value) {
+    return (hp_i128)value;
+}
+static inline hp_i128 hp_i128_add_wrap(hp_i128 a, hp_i128 b) {
+    return hp_i128_from_u((hp_u128)a + (hp_u128)b);
+}
+static inline hp_i128 hp_i128_sub_wrap(hp_i128 a, hp_i128 b) {
+    return hp_i128_from_u((hp_u128)a - (hp_u128)b);
+}
+static inline hp_i128 hp_i128_mul_wrap(hp_i128 a, hp_i128 b) {
+    return hp_i128_from_u((hp_u128)a * (hp_u128)b);
+}
+static inline hp_i128 hp_i128_neg_wrap(hp_i128 a) {
+    return hp_i128_from_u((hp_u128)0 - (hp_u128)a);
+}
+static inline hp_i128 hp_i128_shl_wrap(hp_i128 a, int n) {
+    if (n < 0 || n >= 128) return 0;
+    return hp_i128_from_u((hp_u128)a << n);
+}
+static inline hp_i128 hp_i128_shr_safe(hp_i128 a, int n) {
+    if (n < 0) return 0;
+    if (n >= 128) return a < 0 ? -1 : 0;
+    return a >> n;
+}
+static inline int64_t hp_i64_from_u(uint64_t value) {
+    return (int64_t)value;
+}
+static inline int64_t hp_i64_add_wrap(int64_t a, int64_t b) { return hp_i64_from_u((uint64_t)a + (uint64_t)b); }
+static inline int64_t hp_i64_sub_wrap(int64_t a, int64_t b) { return hp_i64_from_u((uint64_t)a - (uint64_t)b); }
+static inline int64_t hp_i64_mul_wrap(int64_t a, int64_t b) { return hp_i64_from_u((uint64_t)a * (uint64_t)b); }
+static inline int64_t hp_i64_neg_wrap(int64_t a) { return hp_i64_from_u((uint64_t)0 - (uint64_t)a); }
+static inline int64_t hp_i64_shl_wrap(int64_t a, int n) {
+    if (n < 0 || n >= 64) return 0;
+    return hp_i64_from_u((uint64_t)a << n);
+}
+static inline int64_t hp_i64_shr_safe(int64_t a, int n) {
+    if (n < 0) return 0;
+    if (n >= 64) return a < 0 ? -1 : 0;
+    return a >> n;
 }
 static inline hp_i128 hp_i128_mod(hp_i128 a, hp_i128 b) {
     if (b == 0) hp_throw_str("Modulo by zero");
+    if (a == (hp_i128)((hp_u128)1 << 127) && b == -1) return 0;
     return a % b;
 }
 static inline int64_t hp_i128_cmp(hp_i128 a, hp_i128 b) {

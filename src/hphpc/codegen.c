@@ -817,7 +817,10 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
     }
     switch (op) {
     case T_PLUS:
-        if (numeric) buf_printf(dst, "((%s) + (%s))", ls, rs);
+        if (widest) buf_printf(dst, "hp_i128_add_wrap((hp_i128)(%s), (hp_i128)(%s))", ls, rs);
+        else if (numeric && lt && rt && type_is_integral(lt->kind) && type_is_integral(rt->kind))
+            buf_printf(dst, "hp_i64_add_wrap((int64_t)(%s), (int64_t)(%s))", ls, rs);
+        else if (numeric) buf_printf(dst, "((%s) + (%s))", ls, rs);
         /* the runtime's hp_add keeps PHP semantics (numeric strings add as
          * numbers), so only project to hstr* when the node is typed string */
         else if (e->type && e->type->kind == TY_STRING)
@@ -826,26 +829,32 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
             buf_printf(dst, "hp_add(hv(%s), hv(%s))", ls, rs);
         break;
     case T_MINUS:
-        if (numeric) buf_printf(dst, "((%s) - (%s))", ls, rs);
+        if (widest) buf_printf(dst, "hp_i128_sub_wrap((hp_i128)(%s), (hp_i128)(%s))", ls, rs);
+        else if (numeric && lt && rt && type_is_integral(lt->kind) && type_is_integral(rt->kind))
+            buf_printf(dst, "hp_i64_sub_wrap((int64_t)(%s), (int64_t)(%s))", ls, rs);
+        else if (numeric) buf_printf(dst, "((%s) - (%s))", ls, rs);
         else buf_printf(dst, "hpbi_scalar_sub(hv(%s), hv(%s))", ls, rs);
         break;
     case T_STAR:
-        if (numeric) buf_printf(dst, "((%s) * (%s))", ls, rs);
+        if (widest) buf_printf(dst, "hp_i128_mul_wrap((hp_i128)(%s), (hp_i128)(%s))", ls, rs);
+        else if (numeric && lt && rt && type_is_integral(lt->kind) && type_is_integral(rt->kind))
+            buf_printf(dst, "hp_i64_mul_wrap((int64_t)(%s), (int64_t)(%s))", ls, rs);
+        else if (numeric) buf_printf(dst, "((%s) * (%s))", ls, rs);
         else buf_printf(dst, "hpbi_scalar_mul(hv(%s), hv(%s))", ls, rs);
         break;
     /* shifts: unbox both sides, since a string/mixed operand is converted by
      * hp_val_to_int (PHP semantics); the node type is always int */
     case T_SHL:
         if (widest)
-            buf_printf(dst, "(hp_i128)((hp_i128)(%s) << (int)(%s))", ls, rs);
+            buf_printf(dst, "hp_i128_shl_wrap((hp_i128)(%s), (int)(%s))", ls, rs);
         else
-            buf_printf(dst, "(hp_val_to_int(hv(%s)) << hp_val_to_int(hv(%s)))", ls, rs);
+            buf_printf(dst, "hp_i64_shl_wrap(hp_val_to_int(hv(%s)), (int)hp_val_to_int(hv(%s)))", ls, rs);
         break;
     case T_SHR:
         if (widest)
-            buf_printf(dst, "(hp_i128)((hp_i128)(%s) >> (int)(%s))", ls, rs);
+            buf_printf(dst, "hp_i128_shr_safe((hp_i128)(%s), (int)(%s))", ls, rs);
         else
-            buf_printf(dst, "(hp_val_to_int(hv(%s)) >> hp_val_to_int(hv(%s)))", ls, rs);
+            buf_printf(dst, "hp_i64_shr_safe(hp_val_to_int(hv(%s)), (int)hp_val_to_int(hv(%s)))", ls, rs);
         break;
     case T_SLASH:
         /* i128 division stays exact and integer; everything else keeps
@@ -1012,6 +1021,40 @@ static void emit_builtin_call(Codegen *g, const char *name, PtrVec args,
 
 static void emit_builtin_call_body(Codegen *g, const char *name, PtrVec args,
                                    const Type *ret, Buf *dst) {
+    /* arr_free consumes its argument. When the caller passes a local owner,
+     * clear that slot before the generated scope cleanup can release it a
+     * second time. */
+    if (strcmp(name, "arr_free") == 0 && args.len == 1) {
+        Expr *arg = (Expr *)args.items[0];
+        if (arg && arg->kind == EX_VAR && arg->u.var.sym) {
+            VarSym *sym = (VarSym *)arg->u.var.sym;
+            const char *vn = var_name(sym);
+            bool boxed = type_is_hval_slot(sym->type) || sym->is_program_global ||
+                         sym->captured_byref || sym->is_param_ref;
+            const char *slot = (sym->captured_byref || sym->is_param_ref)
+                ? fmt("(*%s)", vn) : vn;
+            int id = g->tmp_id++;
+            if (boxed)
+                buf_printf(dst, "({ hval _hp_freed_arr_%d = (%s); %s = hp_null; hp_val_to_bool(hpbi_arr_free(_hp_freed_arr_%d)); })",
+                           id, slot, slot, id);
+            else
+                buf_printf(dst, "({ hval _hp_freed_arr_%d = hp_of_arr(%s); %s = NULL; hp_val_to_bool(hpbi_arr_free(_hp_freed_arr_%d)); })",
+                           id, slot, slot, id);
+            if (slot != vn) free((void *)slot);
+            free((void *)vn);
+            (void)ret;
+            return;
+        }
+        if (arg && expr_is_fresh_owned(arg)) {
+            Buf value;
+            buf_init(&value);
+            to_hval(g, arg, &value);
+            buf_printf(dst, "hp_val_to_bool(hpbi_arr_free(%s))", buf_take(&value));
+            free(value.data);
+            (void)ret;
+            return;
+        }
+    }
     /* i128 through the value-printing builtins: an hval cannot hold 128 bits,
      * so these four are routed to the 128-bit runtime helpers instead of
      * boxing the argument (which would turn it into a string and make
@@ -2565,6 +2608,17 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
                 buf_printf(dst, "((%s) = hp_of_int(hp_val_to_int(%s) %s hp_val_to_int(hv(%s))))",
                            name, name, iop, buf_take(&v));
             }
+            else if (tt2 && (op == T_PLUSASSIGN || op == T_MINUSASSIGN ||
+                             op == T_STARASSIGN || op == T_SHLASSIGN) &&
+                     type_is_integral(tt2->kind)) {
+                const char *fn = tt2->kind == TY_I128 ?
+                    (op == T_PLUSASSIGN ? "hp_i128_add_wrap" : op == T_MINUSASSIGN ? "hp_i128_sub_wrap" : op == T_STARASSIGN ? "hp_i128_mul_wrap" : "hp_i128_shl_wrap") :
+                    (op == T_PLUSASSIGN ? "hp_i64_add_wrap" : op == T_MINUSASSIGN ? "hp_i64_sub_wrap" : op == T_STARASSIGN ? "hp_i64_mul_wrap" : "hp_i64_shl_wrap");
+                const char *right = buf_take(&v);
+                if (cvt && cvt->kind == TY_MIXED) right = fmt("hp_val_to_int(%s)", right);
+                if (op == T_SHLASSIGN) right = fmt("(int)(%s)", right);
+                buf_printf(dst, "(%s = %s(%s, %s))", name, fn, name, right);
+            }
             else if (cvt && cvt->kind == TY_MIXED && tt2 &&
                 (type_is_integral(tt2->kind) || tt2->kind == TY_BOOL))
                 buf_printf(dst, "(%s %s hp_val_to_int(%s))", name, c_op, buf_take(&v));
@@ -2911,7 +2965,7 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
             unsigned __int128 u = (unsigned __int128)e->u.i.wide;
             unsigned long long hi = (unsigned long long)(u >> 64);
             unsigned long long lo = (unsigned long long)(u & 0xFFFFFFFFFFFFFFFFULL);
-            buf_printf(dst, "(((hp_i128)0x%llxULL << 64) | (hp_i128)0x%llxULL)", hi, lo);
+            buf_printf(dst, "hp_i128_from_u(((hp_u128)0x%llxULL << 64) | (hp_u128)0x%llxULL)", hi, lo);
         } else {
             buf_printf(dst, "(int64_t)%lld", e->u.i.ival);
         }
@@ -3104,6 +3158,10 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
                  e->u.un.operand->type->kind == TY_OPTION ||
                  e->u.un.operand->type->kind == TY_RESULT))
                 buf_printf(dst, "(-(hp_val_to_float(hv(%s))))", os);
+            else if (e->type && e->type->kind == TY_I128)
+                buf_printf(dst, "hp_i128_neg_wrap((hp_i128)(%s))", os);
+            else if (e->type && type_is_integral(e->type->kind))
+                buf_printf(dst, "hp_i64_neg_wrap((int64_t)(%s))", os);
             else
                 buf_printf(dst, "(-(%s))", os);
             break;
@@ -5707,6 +5765,7 @@ void codegen_emit(Program *prog, Buf *out) {
     /* 4) top-level main */
     line(&g, "static int hp_main(void) {");
     g.depth++;
+    line(&g, "void *_hp_main_mark = hp_cleanup_mark();");
     /* hoisted declarations for top-level PHP-style variables */
     {
         PtrVec syms = {0};
@@ -5732,6 +5791,9 @@ void codegen_emit(Program *prog, Buf *out) {
                 line(&g, "%s %s = %s;", ctype_of(v->type),
                      var_name(v), zero_init_decl_of(v->type));
             }
+            if (v->captured_byref) emit_register_owner(&g, var_name(v), NULL, true, false);
+            else if (type_can_own_heap(v->type))
+                emit_register_owner(&g, var_name(v), v->type, false, type_is_hval_slot(v->type));
         }
     }
     /* initialize `global $x;` storage (hval slots need a runtime null) */
@@ -5768,6 +5830,7 @@ void codegen_emit(Program *prog, Buf *out) {
         free(gsyms.items);
     }
     emit_block(&g, prog->stmts);
+    line(&g, "hp_cleanup_pop_to(_hp_main_mark);");
     line(&g, "return 0;");
     g.depth--;
     line(&g, "}");
