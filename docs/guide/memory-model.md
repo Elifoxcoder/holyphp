@@ -221,6 +221,25 @@ Builtin ownership metadata also remains for task 1.4, so builtins that retain,
 consume, or alias heap arguments still require a separate audit. WSL is
 unavailable in the current environment, so sanitizer verification has not run.
 
+The generated `hp_main()` function now uses the same cleanup stack as ordinary
+functions: heap locals declared by top-level script code are registered and
+dropped when the script finishes. File-scope values retained for `global`
+bindings remain reachable through their static slots until process exit.
+`putenv()` copies its `NAME=VALUE` input into the operating system environment,
+so the managed input string can safely leave scope after the call. Fresh
+strings inserted into arrays by `explode()`, `preg_split()`, `scandir()`, and
+`pathinfo()` transfer their initial owner to the array rather than retaining a
+second temporary owner.
+
+Signed integer `+`, `-`, `*`, unary negation, left shifts and integer power use
+unsigned arithmetic for defined two's-complement wrapping in the generated
+64-bit and 128-bit paths. Converting an unsigned result back to the signed
+representation is implementation-defined in C, but does not invoke signed
+overflow undefined behavior on the supported GCC targets. The minimum signed
+value divided by `-1` wraps to itself, and its remainder is zero. Shift counts
+outside the operand width produce zero for left shift and sign-fill for
+arithmetic right shift.
+
 Array-list and string indexing checks bounds in the runtime and throws a
 catchable error on an invalid read. Map lookups remain nullable for missing
 keys. A narrow compiler proof removes the per-read check for
