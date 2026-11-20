@@ -225,7 +225,9 @@ echo laenge($w);        // owner keeps $w
   supported borrow rules.</div>
   <p>Use <code>declare(enforce_memory_safety=1);</code> at the start of a file to make
   unsafe blocks and calls to builtins marked unsafe compile errors. The declaration
-  applies to the whole file.</p>
+  applies to the whole file, and the borrow checker analyzes the file's script and
+  functions. Both this mode and ordinary code use the same reference-counted value
+  representation.</p>
   <p><b>Runtime memory:</b> generated owners retain and release strings, arrays, closures,
   and class instances. Arrays detach on mutation when shared. Strong cycles across objects,
   arrays, and closures are collected automatically. A <code>weak</code> property does not
@@ -236,13 +238,21 @@ echo laenge($w);        // owner keeps $w
   single-thread path and cycle-collector registry operations avoid the mutex. Starting
   a thread switches those operations to synchronized mode. Generated string-literal
   sites cache their handle after first use, and owner cleanup registrations reuse a
-  per-thread buffer. Function and loop region allocation plus borrow-proof-based RC
-  removal are planned optimizations and are not implemented yet.</p>
+  per-thread buffer. In safety mode, parameters used only by read-only builtins such as
+  <code>count()</code>, <code>array_sum()</code>, and <code>strlen()</code>, or forwarded
+  to another proven borrowing parameter, can omit the call-boundary retain/release pair.
+  Unknown calls, writes, returns, stores, methods, and closures keep the normal RC path.
+  A function-local array made from scalar literals also uses a short-lived arena when
+  every use is read-only; returning, storing, or mutating it keeps normal ownership.
+  In canonical counted loops, the same proof can also remove array index checks
+  when the body only passes the stable array to a proven borrower. Function and
+  loop-iteration regions and broader escape analysis remain planned.</p>
   <p><b>Indexing:</b> array-list and string reads check their bounds at runtime. An
   out-of-range read raises a catchable error ("Array index out of bounds" or
   "String index out of bounds"). Map lookups for absent keys continue to return
-  <code>null</code>. The compiler removes checks in a canonical counted loop only
-  when it proves the array and induction variable are not changed in the body;
+  <code>null</code>. The compiler removes checks in a canonical counted loop when
+  it proves the array and induction variable are stable; in safety mode the body
+  may also pass the array to a proven borrower;
   other reads retain runtime checks. <code>foreach</code> uses a runtime iterator.
   <code>array_sum()</code> promotes to a float if adding integer elements would
   overflow <code>int64</code>.</p>

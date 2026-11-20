@@ -22,6 +22,15 @@ behaves differently, what they have to change.
 - Closure escape diagnostics now distinguish values actually passed to a retaining callback from unrelated heap values, while keeping conservative borrow checks for unknown callbacks.
 - The runtime now reports the same version as the compiler (`phpversion()`
   said 1.0.0 while `hphp --version` said 1.0.2).
+- Reference counts use direct updates until a worker thread starts, then switch
+  to synchronized updates; both paths share the same value representation.
+- In `declare(enforce_memory_safety=1);` files, direct local array and string
+  arguments passed only to proven read-only parameters skip the call-boundary
+  retain/release pair; escaping or unknown uses keep normal ownership.
+- The same borrow proof lets canonical counted loops keep array index checks
+  out of the body when it passes the iterated array only to a proven borrower.
+- Safety-mode functions can allocate non-escaping scalar-only array literals in
+  a function-local arena; escaping or mutable arrays continue to use RC and COW.
 
 ## 1.0.2
 

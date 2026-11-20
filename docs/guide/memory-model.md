@@ -109,13 +109,29 @@ a channel that transfers ownership. Mutable arrays and ordinary objects are not
 `Sync`; the borrow checker must reject shared mutable aliases. Atomic reference
 counts alone do not make object fields thread-safe.
 
-Phase 2 adds escape analysis. A value proven not to escape its function/request
-may be allocated in a region. Region references use the same source-level
-ownership rules, but retain/release within the region can become no-ops; region
-exit reclaims all contained allocations together. Escaping values are promoted
-or copied to reference-counted storage before the region closes. The region is
-an allocation strategy hidden from users, so `own<T>`, `Rc<T>`, borrows and
-ordinary code keep their meaning.
+The first Phase 2 escape-analysis slice is available in
+`declare(enforce_memory_safety=1);` files. For free functions, a heap parameter
+used only by `count()`, `array_sum()`, `strlen()`, or forwarded to another
+proven borrowing parameter is passed without the call-boundary retain, and the
+callee does not register a parameter drop. The analysis is conservative:
+returns, stores, writes, closures, methods, unknown calls, and function values
+keep the ordinary reference-counted path.
+
+A local binding outside loops, initialized from a scalar-only array literal,
+can use a function-local arena when all of its uses meet the same read-only
+proof. This includes bindings in nested blocks, conditional branches, and
+switch arms. Try/catch bodies are not included because they use separate
+generated functions. The arena is released through the normal cleanup path,
+including early returns.
+Canonical counted loops can also omit an index bounds check when the array and
+induction variable remain stable; in safety mode, the body may pass that array
+only to a proven borrower. These are deliberately narrow cases. Nested or
+loop-iteration regions, general escape promotion, and broad removal of
+retain/release and bounds checks are not implemented yet. Values that do not
+match a proof continue to use the existing RC/COW representation. Both safety
+and compatibility modes use the same value representation, so this remains an
+internal allocation and ownership optimization; `own<T>`, `Rc<T>`, borrows,
+and ordinary code keep their meaning.
 
 ## Test plan
 
@@ -151,11 +167,20 @@ ordinary code keep their meaning.
 
 Generated string literal sites cache their immortal runtime handle after the
 first evaluation. Owner cleanup uses a reusable per-thread vector; registration
-appends a slot and scope marks are vector indices. Escape analysis and function
-or loop regions are not implemented yet. The safety declaration currently
-enables stricter borrow checks and selected proof-based bounds-check elision,
-but it does not yet remove reference-count operations based on whole-file
-ownership proofs.
+appends a slot and scope marks are vector indices. In safety mode, the compiler
+now infers conservative borrow-only summaries for free-function parameters
+used only by `count`, `array_sum`, `strlen`, or calls to another proven
+borrow-only parameter. A direct local variable passed to such a parameter does
+not get a retain/release pair at the call boundary. Returns, stores, writes,
+closures, unknown calls, methods, and function values keep the ordinary RC
+path. A top-level function local initialized from a scalar-only array literal
+also uses a function-local arena when every use is a read-only builtin or
+proven borrowing call. These arrays have no RC or collector registration and
+the arena is released on every function exit. Escaping arrays keep the normal
+RC/COW path. The same summaries allow a canonical counted loop in safety mode
+to omit index checks when its body passes the iterated array only to a proven
+borrower. Loop-iteration regions and broader whole-file escape analysis are
+still not implemented; other indexed reads keep their runtime checks.
 
 The runtime implements reference counts and drop paths for strings, arrays,
 closures, and generated class objects. Generated code retains borrowed heap
@@ -182,7 +207,9 @@ and does not perform an indexed lookup for each element.
 The parser and semantic checker support the per-file
 `declare(enforce_memory_safety=1);` directive. It rejects unsafe blocks and
 builtin calls whose `builtins.c` entry has its unsafe flag set. Safe code
-continues to compile normally. The directive does not imply that all of the
+continues to compile normally. The borrow checker analyzes the file's script
+and functions, but proven ownership is not yet used to remove reference-count
+operations or bounds checks. The directive does not imply that all of the
 remaining guarantees in the safety plan have been implemented.
 
 Thread callbacks are checked at the point where a known closure crosses the

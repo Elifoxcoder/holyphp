@@ -285,7 +285,7 @@ supersedes those continuation notes.
 4. `document round three safety changes` — `docs/lang.html`,
    `docs/guide/memory-model.md`, `CHANGELOG.md`, `REPORT-codex-1.md`.
 
-## Round 4 � memory hot paths and temporary ownership
+## Round 4 - memory hot paths and temporary ownership
 
 ### Changes made
 
@@ -318,7 +318,117 @@ The literal cache and cleanup vector improved their focused measurements. The RC
 
 ### Logical commit groups for Claude
 
-1. `use thread-aware reference counts and collector locking` � `src/hphpc/runtime/hphp_rt.c`, `src/hphpc/runtime/hphp_rt.h`, `src/hphpc/runtime/hphp_thr.c`, `src/hphpc/runtime_embed.h`.
-2. `release fresh temporaries in borrowing expressions` � `src/hphpc/codegen.c`, `tests/positive/memory_temp_operands.hphp`.
-3. `cache literal sites and reuse cleanup storage` � runtime/header/codegen files listed above.
-4. `document round four memory behavior and status` � `docs/lang.html`, `docs/guide/memory-model.md`, `CHANGELOG.md`, `REPORT-codex-1.md`.
+1. `use thread-aware reference counts and collector locking` - `src/hphpc/runtime/hphp_rt.c`, `src/hphpc/runtime/hphp_rt.h`, `src/hphpc/runtime/hphp_thr.c`, `src/hphpc/runtime_embed.h`.
+2. `release fresh temporaries in borrowing expressions` - `src/hphpc/codegen.c`, `tests/positive/memory_temp_operands.hphp`.
+3. `cache literal sites and reuse cleanup storage` - runtime/header/codegen files listed above.
+4. `document round four memory behavior and status` - `docs/lang.html`, `docs/guide/memory-model.md`, `CHANGELOG.md`, `REPORT-codex-1.md`.
+
+## Round 5 — profiling and Phase 2 handoff
+
+### Changes
+
+- Added `tests/positive/challenge_runtime.hphp` from `C:\Projects\HolyPHP\plans\challenge_runtime.hphp`.
+- Kept a direct single-thread path in `hp_rc_inc`, `hp_rc_dec`, `hp_val_rc_inc`, and `hp_val_rc_dec`; threaded updates retain the synchronized path. This did not improve the benchmark and needs further work or reversion after review.
+- Clarified in `docs/lang.html` and `docs/guide/memory-model.md` that the borrow checker runs over script and function bodies, both modes use the same representation, and escape analysis/regions/RC elision remain unimplemented.
+- Added a changelog entry describing the runtime switch from direct single-thread reference counts to synchronized updates after thread startup.
+
+### Step status and measurements
+
+1. **RC-loop profile: not fixed.** Generated C for `scratch/round4_rc_bench.hphp` was identical between the baseline compiler from `37ef77a` and this checkout. Runtime paths differ: `hp_val_rc_inc`/`hp_val_rc_dec` and collector candidate handling check process thread mode and select atomic/collector synchronization logic. The repeated COW array loop points to the runtime thread-aware RC path, not fresh temporary releases or changed generated code. Windows alternating runs varied: an earlier 12-run sample measured 223.07 ms baseline / 241.98 ms current; after the fast-path edits a later sample was 230.96 / 250.51 ms (baseline range 224.64–259.53 ms, current 246.43–326.53 ms). The target is not met. No thread-mode/COW fix has been verified.
+2. **Challenge runtime crash: blocked before runtime.** The fixture's helpers (`str_to_int`, `iarr_*`, `i64_at`, `sb_*`, JSON helpers, and others) are absent from this checkout's builtin catalog/runtime. They exist in the separate `holyphp-twelve-dollar` toolchain. Running the copied file 30 times with this checkout's `hphp.exe` produced 30 compile failures on undefined functions, so the reported intermittent Windows crash cannot be reproduced here. The failure point after `iarr_data_ptr` was not exercised and no runtime regression has been added.
+3. **Phase 2 escape analysis/regions: not implemented.** `declare(enforce_memory_safety=1);` invokes the file-level borrow checker and rejects marked unsafe blocks/builtins, but codegen still retains/releases heap values and emits bounds checks except for the narrow existing counted-loop proof. No region allocator, local non-escape result, negative escape-path tests, or RC-reduction benchmark was added. The docs record this state; requested correctness tests and benchmark remain outstanding.
+4. **Docs:** language and memory guide updated; changelog records single-thread/threaded RC behavior. No Phase 2 behavior is described as implemented.
+
+### Verification
+
+- `bash scripts/check-repo.sh` through Git Bash: failed on the existing version mismatch (`runtime/hphp_std.c` 1.0.0; expected 1.0.2). Other checks passed.
+- `bash scripts/build.sh`: passed, `build ok: hphp.exe` (runtime embedded).
+- Requested `HPHP_WORK_DIR=C:/Projects/HolyPHP/hp-codex/scratch/hphpbuild bash tests/run.sh` is still running at report drafting; the new challenge fixture is a confirmed positive-suite failure due to undefined helper APIs. The user-excluded extension LSP test and WSL sanitizer constraints still apply.
+- No commit was made. WSL is unavailable. `ship.sh` was not run because this work is incomplete and the user reserved commits for Claude.
+
+### Logical commit groups for Claude
+
+1. `profile single-thread RC regression and optimize fast path` — `src/hphpc/runtime/hphp_rt.c` (measurement target not met; review or revert after resolving the runtime mismatch).
+2. `add challenge runtime reproduction fixture` — `tests/positive/challenge_runtime.hphp` (currently cannot compile here; requires the challenge helper runtime port before it can serve as a test).
+3. `document current borrow mode and region status` — `docs/lang.html`, `docs/guide/memory-model.md`, `CHANGELOG.md`.
+4. `record round five findings and blockers` — `REPORT-codex-1.md`.
+
+### Round 5 final correction
+
+The experimental `hphp_rt.c` fast-path edits were reverted after alternating measurements remained slower than baseline. The final runtime source is the Round 4 committed version, and `scripts/build.sh` was rerun successfully to regenerate `runtime_embed.h`. The experiment is recorded above as a profiling attempt, not as a retained optimization.
+
+The requested full test command completed: **75 passed, 2 failed, 1 skipped**. The failures are the new challenge fixture (undefined challenge-only helpers) and the extension LSP initialize timeout (explicitly excluded by the user); the skip is the docs check because Python is unavailable. Thus all non-excluded existing compiler tests passed, but the requested runtime crash and Phase 2 acceptance criteria remain incomplete.
+
+Correction to the Round 5 “Changes” and commit-group list: the single-thread RC code change described there was an experiment and is not retained in the final worktree. No `src/hphpc/runtime/hphp_rt.c` or `src/hphpc/runtime_embed.h` diff remains.
+
+### Round 5 continued — 2026-11-19
+
+- Rebuilt successfully before the current positive-suite run. A 31-run alternating execution benchmark (matching output `44999850000`) measured median 232.35 ms for `scratch/round4-baseline` and 235.44 ms for the current generated executable. The retained experiments therefore do not meet the required at-or-below-baseline target. A separate attempt to revert the runtime experiment was blocked because Git could not create the shared worktree `.git/index.lock` (permission denied); the runtime experiment remains in the working tree and needs review/reversion or further optimization.
+- The full `tests/run.sh` invocation remains in progress and had printed only the first five positive passes when checked. Targeted `memory_temp_operands.hphp`, `memory_rc.hphp`, and `thread_capture_move_array.hphp` passed. The copied challenge fixture fails at compile time on missing challenge-only helpers, so no runtime crash run or valid regression test is possible from this checkout without porting its helper runtime.
+- The requested Phase 2 analysis and ownership-driven RC/bounds-check elision are still not implemented. This Round 5 attempt is incomplete; no ship command or commit was made.
+
+### Round 5 continuation — current implementation and verification
+
+This continuation supersedes the earlier Round 5 notes that said the runtime experiments had been reverted and Phase 2 was untouched.
+
+#### Changes now present
+
+- The generated runtime object cache has separate threaded and single-thread slots. Programs without the thread module compile RC and collector locking without the per-operation thread-mode branch. Candidate collection is sampled inline and the collector performs its slower checks only on sampled releases. COW array detach releases its known array owner without generic `hval` tag dispatch.
+- Disassembly showed the first sampled-candidate fast path was slower because it loaded thread-local drop/collection state and checked collector state on every array release. Moving those checks to the sampled slow path removed the hot-path TLS loads. The final 31-run alternating A/B (matching output `44999850000`) measured **222.69 ms** for the saved `37ef77a` baseline executable and **221.30 ms** for the current executable (**0.6% faster**). The earlier Round 4 figures (219.7 / 242.2 ms) came from a different run and machine state; the final comparison uses the saved baseline binary and same host.
+- Added a conservative safe-mode parameter summary. In free functions, heap parameters used only by `count`, `array_sum`, `strlen`, or forwarded to another proven borrowing parameter can be borrowed directly. Direct variable arguments skip the retain at the caller and release registration in the callee. Returns, assignments/stores, writes, closures, unknown calls, methods, and function values keep the RC path.
+- Added a function-local arena for top-level local bindings initialized from scalar-only array literals when every use is read-only under the same summary. Such arrays skip RC and collector registration and the arena is released through the cleanup stack on normal and exceptional exits. Returned arrays remain on the normal RC/COW path. Loop-iteration regions and broader escape paths remain open.
+- The canonical counted-loop bounds proof now tolerates a call in the body in safety mode only when the iterated array is passed directly to a proven borrow-only parameter; generated C uses `hp_arr_get_unchecked` in that case.
+- Added `tests/positive/memory_escape_borrow.hphp`, `memory_region_local.hphp`, and `memory_bounds_borrow.hphp`, plus `tests/negative/memory_escape_borrow_capture.hphp`. Added paired microbenchmarks under `benchmarks/`.
+- Safe-mode borrow-call benchmark, 1,000,000 wrapper calls, 15 alternating runs: **20.46 ms** vs **29.44 ms** compatibility median (**30.5% faster**), both output `4000000`.
+- Safe-mode function-region benchmark, 200,000 local scalar-array function calls, 15 alternating runs: **17.42 ms** vs **67.27 ms** compatibility median (**74.1% faster**), both output `800000`.
+
+#### Challenge runtime status
+
+`tests/positive/challenge_runtime.hphp` is copied from the plan source, but this branch still lacks its challenge-only builtins, so the test fails at compile time and cannot provide the requested regression here. Running the fixture in the separate `hp-opencode2` challenge checkout with its helper runtime passed **30/30**. The intermittent exit-127 crash was not reproduced or fixed; this requirement remains outstanding.
+
+#### Latest verification
+
+- `bash scripts/build.sh`: passed (`build ok`, runtime embedded).
+- Positive suite: **45 passed, 1 failed**. The sole failure is the challenge fixture's undefined helpers.
+- Negative suite: **33 passed, 0 failed**; this includes the new closure-capture rejection.
+- Diagnostics: **1 passed**.
+- Docs snippets: skipped because Python is unavailable.
+- Targeted latest runs passed the new borrow, bounds, and region positives, `memory_temp_operands`, and `thread_capture_move_array`.
+- `git diff --check`: passed.
+- `scripts/check-repo.sh` still fails on the pre-existing runtime version mismatch (`runtime/hphp_std.c` 1.0.0 vs expected 1.0.2) and reports the new untracked tests (left uncommitted as requested).
+- WSL remains unavailable; extension LSP was excluded as requested. No commit was made; `ship.sh` was not run.
+
+#### Logical commit groups for Claude
+
+1. `specialize RC fast paths and profile COW owner release` — `src/hphpc/main.c`, `src/hphpc/runtime/hphp_rt.c`, `src/hphpc/runtime/hphp_rt.h`, generated `runtime_embed.h`.
+2. `infer borrow-only parameters and function-local scalar array regions` — `src/hphpc/ast.h`, `src/hphpc/sema.c`, `src/hphpc/sema.h`, `src/hphpc/codegen.c`, runtime/header/embed files.
+3. `cover borrow elision, local regions, and bounded borrowed calls` — new memory positive/negative tests and paired benchmarks.
+4. `document Round 5 ownership optimization and remaining region limits` — `docs/lang.html`, `docs/guide/memory-model.md`, `CHANGELOG.md`, `REPORT-codex-1.md`.
+
+### Round 5 verification correction - 2026-11-19
+
+The preceding continuation is the current implementation record; earlier Round 5 status paragraphs are historical and superseded where they conflict. Final verification for this continuation:
+
+- `bash scripts/build.sh`: passed (`build ok: hphp.exe`, runtime embedded).
+- Requested `HPHP_WORK_DIR=C:/Projects/HolyPHP/hp-codex/scratch/hphpbuild bash tests/run.sh`: **79 passed, 2 failed, 1 skipped**. The compiler positive suite had 45 passes and one failure: `challenge_runtime.hphp` cannot compile because this branch has no `str_to_int`, `iarr_*`, `sb_*`, and related helper APIs. Negative tests: 33 passed. Diagnostics passed. Docs snippets skipped because no Python is available. The extension LSP integration timeout on `initialize` is the user-excluded test; the remaining extension checks passed.
+- `scripts/check-repo.sh`: still fails on the pre-existing `src/hphpc/runtime/hphp_std.c` version mismatch (1.0.0 vs expected 1.0.2) and reports the new test files as untracked. This checkout leaves commits to Claude as requested.
+- `git diff --check`: passed. No commit was made; WSL is unavailable and `ship.sh` is not applicable until the incomplete work and repo checks are resolved.
+- The 30 successful executions in the separate challenge-helper checkout did not reproduce the reported intermittent crash. They do not count as a fix or as 30 valid executions of this branch's test. The failure after `iarr_data_ptr` remains undiagnosed, and no runtime regression test currently reaches it.
+- The function-borrow and scalar-array-region implementation is a narrow Phase 2 start, not the whole-file ownership proof or near-global RC/bounds-check elimination in plan decision 7. Loop-iteration regions, general escape promotion, full escape-path coverage, and broader bounds proofs remain outstanding. The memory-model guide now describes the implemented subset and limits.
+
+No further logical commit group is ready for Claude until the challenge fixture is made runnable on this branch and the remaining Phase 2 criteria are completed.
+### Phase 2 continuation - nested conditional locals
+
+Escape analysis now also discovers scalar-array local bindings inside nested blocks and `if` branches. It deliberately does not recurse into loops because the function arena lasts until function exit and would otherwise accumulate one allocation per iteration. Added a branch-local array test that returns early from the branch. The current build passed; `memory_region_local.hphp` passed, and `hphp.exe emit` confirmed that `branch_region_count` calls `hp_region_arr_scalars` while the escaping-array case stays on `hp_arr_new`/RC. Broader region and ownership criteria remain open.
+### Latest verification after nested-branch region expansion - 2026-11-19
+
+- Rebuilt with `bash scripts/build.sh`: passed (`build ok: hphp.exe`, runtime embedded).
+- Reran positive, negative, diagnostics, and docs groups, excluding extension integration per user instruction. Positives: 45 passed, one failed (`challenge_runtime.hphp`, undefined challenge-only helpers). Negatives: 33 passed. Diagnostics: 1 passed. Docs snippets skipped because Python is unavailable.
+- `memory_region_local.hphp` passed with the added nested conditional local / early-return case. Generated C confirms region allocation for that local and ordinary RC allocation for the escaping return case.
+- The Round 5 goal remains incomplete: the challenge crash is not exercised on this branch; broader Phase 2 ownership/region/bounds analysis remains open. No commits made.
+### Phase 2 continuation - non-loop control-flow scopes
+
+Extended discovery to switch arms and try/catch/finally bodies as well as nested blocks and `if` branches. Loop bodies remain excluded because a function-lifetime region would grow with iteration count. Added a switch-arm array case. After this extension, `bash scripts/build.sh` passed and `memory_region_local.hphp` passed; emitted C shows all nested candidates use `hp_region_arr_scalars`, while the returned array uses the normal RC path.
+### Exception-scope region correction - 2026-11-19
+
+An experimental region candidate inside `try` exposed that codegen lowers try/catch bodies into separate generated functions. They cannot reference the enclosing function's stack region. Region inference now deliberately skips try/catch/finally bodies; the docs and prior continuation note are corrected accordingly. Build and targeted branch/switch region tests passed after the correction. The full positive group then completed: 45 passed, one failure (`challenge_runtime.hphp` still cannot compile due to missing helper builtins). This is a compile-time dependency gap, not a runtime crash fix.
