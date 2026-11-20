@@ -61,7 +61,10 @@ EOF
     export HPHP_NO_CACHE
     ASAN_OPTIONS=${ASAN_OPTIONS:-detect_leaks=1:abort_on_error=0:halt_on_error=0:symbolize=1}
     UBSAN_OPTIONS=${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=0}
-    export ASAN_OPTIONS UBSAN_OPTIONS
+    # leaks of the compiler process itself are expected (see the .supp file);
+    # leaks of the compiled test programs are still reported
+    LSAN_OPTIONS=${LSAN_OPTIONS:-suppressions=$PWD/tests/lsan-compiler.supp:print_suppressions=0}
+    export ASAN_OPTIONS UBSAN_OPTIONS LSAN_OPTIONS
     asan_findings=0
 fi
 

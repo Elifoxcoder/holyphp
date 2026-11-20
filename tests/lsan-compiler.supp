@@ -1,0 +1,6 @@
+# LeakSanitizer suppressions for `tests/run.sh --asan`.
+# The compiler (build/hphp_asan) is a short-lived batch process that keeps its
+# AST and output buffers until exit by design. Its leaks would bury the ones
+# that matter: leaks in the compiled test programs, which are a separate
+# module and are still reported.
+leak:hphp_asan
