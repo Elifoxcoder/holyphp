@@ -790,7 +790,7 @@ hp_i128 hp_str_to_i128(hstr *s) {
     }
     for (; i < n && isdigit((unsigned char)p[i]); i++)
         u = u * 10u + (hp_u128)(p[i] - '0');
-    return neg ? -(hp_i128)u : (hp_i128)u;
+    return hp_i128_from_u(neg ? (hp_u128)0 - u : u);
 }
 
 hval hp_of_i128_str(hp_i128 v) {
@@ -799,13 +799,13 @@ hval hp_of_i128_str(hp_i128 v) {
 
 hp_i128 hp_i128_pow(hp_i128 a, hp_i128 b) {
     if (b < 0) return 0;   /* integer pow truncates a negative exponent to 0 */
-    hp_i128 r = 1, base = a;
+    hp_u128 r = 1, base = (hp_u128)a;
     while (b) {
         if (b & 1) r *= base;
         base *= base;
         b >>= 1;
     }
-    return r;
+    return hp_i128_from_u(r);
 }
 
 hval hp_i128_var_dump(hp_i128 v) {
@@ -1905,26 +1905,26 @@ hval hp_add(hval a, hval b) {
             double da = hp_val_to_float(a), db = hp_val_to_float(b);
             if (a.tag != HV_FLOAT && b.tag != HV_FLOAT &&
                 da == (double)(int64_t)da && db == (double)(int64_t)db)
-                return hp_of_int((int64_t)da + (int64_t)db);
+                return hp_of_int(hp_i64_add_wrap((int64_t)da, (int64_t)db));
             return hp_of_float(da + db);
         }
         return hp_of_str(hp_str_join_v(a, b));
     }
     if (a.tag == HV_FLOAT || b.tag == HV_FLOAT)
         return hp_of_float(hp_val_to_float(a) + hp_val_to_float(b));
-    return hp_of_int(hp_val_to_int(a) + hp_val_to_int(b));
+    return hp_of_int(hp_i64_add_wrap(hp_val_to_int(a), hp_val_to_int(b)));
 }
 
 hval hp_sub(hval a, hval b) {
     if (a.tag == HV_FLOAT || b.tag == HV_FLOAT)
         return hp_of_float(hp_val_to_float(a) - hp_val_to_float(b));
-    return hp_of_int(hp_val_to_int(a) - hp_val_to_int(b));
+    return hp_of_int(hp_i64_sub_wrap(hp_val_to_int(a), hp_val_to_int(b)));
 }
 
 hval hp_mul(hval a, hval b) {
     if (a.tag == HV_FLOAT || b.tag == HV_FLOAT)
         return hp_of_float(hp_val_to_float(a) * hp_val_to_float(b));
-    return hp_of_int(hp_val_to_int(a) * hp_val_to_int(b));
+    return hp_of_int(hp_i64_mul_wrap(hp_val_to_int(a), hp_val_to_int(b)));
 }
 
 hval hp_divv(hval a, hval b) {
@@ -1983,29 +1983,31 @@ int64_t hp_cmp(hval a, hval b) { return hp_val_cmp(a, b); }
 
 int64_t hp_mod(int64_t a, int64_t b) {
     if (b == 0) hp_throw_str("Modulo by zero");
+    if (a == INT64_MIN && b == -1) return 0;
     return a % b;
 }
 
 int64_t hp_pow_i(int64_t a, int64_t b) {
     if (b < 0) return 0; /* PHP: 2 ** -1 is float; ints truncate to 0 */
-    int64_t r = 1, base = a;
+    uint64_t r = 1, base = (uint64_t)a;
     while (b) {
         if (b & 1) r *= base;
         base *= base;
         b >>= 1;
     }
-    return r;
+    return hp_i64_from_u(r);
 }
 
 hval hp_powv(hval a, hval b) {
     if (a.tag == HV_INT && b.tag == HV_INT && b.u.i >= 0) {
-        int64_t r = 1, base = a.u.i, e = b.u.i;
+        uint64_t r = 1, base = (uint64_t)a.u.i;
+        int64_t e = b.u.i;
         while (e) {
             if (e & 1) r *= base;
             base *= base;
             e >>= 1;
         }
-        return hp_of_int(r);
+        return hp_of_int(hp_i64_from_u(r));
     }
     return hp_of_float(pow(hp_val_to_float(a), hp_val_to_float(b)));
 }

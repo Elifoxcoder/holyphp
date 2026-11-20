@@ -60,6 +60,11 @@ behaves differently, what they have to change.
 - Installing a bundled library into a brand-new package home no longer fails
   with "cannot write .../cache/.embedded/...".
 
+- Environment variables set with `putenv()` now remain valid after the input
+  string leaves scope. Integer overflow for 64-bit and 128-bit arithmetic wraps
+  without relying on signed-overflow undefined behavior. Top-level locals and
+  fresh strings inserted by array-returning builtins are released at the right
+  ownership boundary.
 - Fixed unsafe pointer cleanup and immortal string literal handling. Builtin
   temporary release now respects borrowed results, and io_uring receive values
   remain stable after the ring reuses its buffer.

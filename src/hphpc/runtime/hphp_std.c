@@ -316,7 +316,7 @@ hval hpbi_explode(hval sep, hval s) {
                        (c & 0xF0) == 0xE0 ? 3 :
                        (c & 0xF8) == 0xF0 ? 4 : 1;
             if (i + n > x->len) n = 1;   /* truncated tail: take one byte */
-            hp_arr_push(r, hp_of_str(hp_str_new(x->data + i, n)));
+            hp_arr_push_take(r, hp_of_str(hp_str_new(x->data + i, n)));
             i += n;
         }
         return hp_of_arr(r);
@@ -324,12 +324,12 @@ hval hpbi_explode(hval sep, hval s) {
     size_t start = 0;
     for (size_t i = 0; i + d->len <= x->len;) {
         if (memcmp(x->data + i, d->data, d->len) == 0) {
-            hp_arr_push(r, hp_of_str(hp_str_new(x->data + start, i - start)));
+            hp_arr_push_take(r, hp_of_str(hp_str_new(x->data + start, i - start)));
             i += d->len;
             start = i;
         } else i++;
     }
-    hp_arr_push(r, hp_of_str(hp_str_new(x->data + start, x->len - start)));
+    hp_arr_push_take(r, hp_of_str(hp_str_new(x->data + start, x->len - start)));
     return hp_of_arr(r);
 }
 hval hpbi_split(hval sep, hval s) { return hpbi_explode(sep, s); }
@@ -932,7 +932,7 @@ hval hpbi_str_split(hval s, hval n) {
     harr *r = hp_arr_new();
     for (size_t i = 0; i < x->len; i += (size_t)k) {
         size_t l = x->len - i < (size_t)k ? x->len - i : (size_t)k;
-        hp_arr_push(r, hp_of_str(hp_str_new(x->data + i, l)));
+        hp_arr_push_take(r, hp_of_str(hp_str_new(x->data + i, l)));
     }
     return hp_of_arr(r);
 }
@@ -1652,7 +1652,26 @@ hval hpbi_getenv(hval name) {
     const char *v = getenv(hp_val_to_str(name)->data);
     RETS(v ? hp_str_lit(v) : hp_str_lit(""));
 }
-hval hpbi_putenv(hval kv) { RETB(putenv(hp_val_to_str(kv)->data) == 0); }
+hval hpbi_putenv(hval kv) {
+    hstr *entry = hp_val_to_str(kv);
+    if (!entry) RETB(false);
+    const char *eq = memchr(entry->data, '=', entry->len);
+    if (!eq || eq == entry->data) RETB(false);
+    size_t name_len = (size_t)(eq - entry->data);
+    size_t value_len = entry->len - name_len - 1;
+    char *name = (char *)malloc(name_len + 1);
+    char *value = (char *)malloc(value_len + 1);
+    if (!name || !value) { free(name); free(value); RETB(false); }
+    memcpy(name, entry->data, name_len); name[name_len] = 0;
+    memcpy(value, eq + 1, value_len); value[value_len] = 0;
+#if defined(_WIN32)
+    int rc = _putenv_s(name, value);
+#else
+    int rc = setenv(name, value, 1);
+#endif
+    free(name); free(value);
+    RETB(rc == 0);
+}
 hval hpbi_php_uname(void) {
 #if defined(_WIN32)
     RETS(hp_str_lit("Windows NT"));
@@ -2237,7 +2256,7 @@ hval hpbi_scandir(hval path) {
     if (h == INVALID_HANDLE_VALUE) return hp_of_arr(out);
     do {
         if (strcmp(fd.cFileName, ".") && strcmp(fd.cFileName, ".."))
-            hp_arr_push(out, hp_of_str(hp_str_new(fd.cFileName, strlen(fd.cFileName))));
+            hp_arr_push_take(out, hp_of_str(hp_str_new(fd.cFileName, strlen(fd.cFileName))));
     } while (FindNextFileA(h, &fd));
     FindClose(h);
 #else
@@ -2246,7 +2265,7 @@ hval hpbi_scandir(hval path) {
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         if (strcmp(ent->d_name, ".") && strcmp(ent->d_name, ".."))
-            hp_arr_push(out, hp_of_str(hp_str_new(ent->d_name, strlen(ent->d_name))));
+            hp_arr_push_take(out, hp_of_str(hp_str_new(ent->d_name, strlen(ent->d_name))));
     }
     closedir(d);
 #endif
@@ -3156,18 +3175,19 @@ hval hpbi_pathinfo(hval path, hval flags) {
     harr *m = hp_arr_new();
     m->is_map = true;
     hp_arr_set(m, hp_of_str(hp_str_lit("basename")), hp_of_str(base));
-    hp_arr_set(m, hp_of_str(hp_str_lit("dirname")), hpbi_dirname(hp_of_str(p)));
+    hp_arr_set_take(m, hp_of_str(hp_str_lit("dirname")), hpbi_dirname(hp_of_str(p)));
     const char *dot = memchr(base->data, '.', base->len);
     if (dot && dot != base->data) {
-        hp_arr_set(m, hp_of_str(hp_str_lit("extension")),
+        hp_arr_set_take(m, hp_of_str(hp_str_lit("extension")),
                    hp_of_str(hp_str_new(dot + 1, base->len - (size_t)(dot - base->data) - 1)));
-        hp_arr_set(m, hp_of_str(hp_str_lit("filename")),
+        hp_arr_set_take(m, hp_of_str(hp_str_lit("filename")),
                    hp_of_str(hp_str_new(base->data, (size_t)(dot - base->data))));
     }
     if (flags.tag == HV_INT && flags.u.i == 2) {
         hp_arr_free(m);   /* the map is not returned in this mode */
         return hp_of_str(base);
     }
+    hp_val_rc_dec(hp_of_str(base));
     return hp_of_arr(m);
 }
 hval hpbi_realpath(hval path) {
@@ -3938,7 +3958,7 @@ hval hpbi_preg_split(hval pat, hval subj) {
     Rx *tree; int ng;
     if (!rx_split_pattern(p, &tree, &ng)) {
         harr *one = hp_arr_new();
-        hp_arr_push(one, hp_of_str(hp_str_copy(x)));
+        hp_arr_push_take(one, hp_of_str(hp_str_copy(x)));
         return hp_of_arr(one);
     }
     harr *parts = hp_arr_new();
@@ -3950,10 +3970,10 @@ hval hpbi_preg_split(hval pat, hval subj) {
             off = ms + 1;
             continue;
         }
-        hp_arr_push(parts, hp_of_str(hp_str_new(x->data + off, ms - off)));
+        hp_arr_push_take(parts, hp_of_str(hp_str_new(x->data + off, ms - off)));
         off = me;
     }
-    hp_arr_push(parts, hp_of_str(hp_str_new(x->data + off, x->len - off)));
+    hp_arr_push_take(parts, hp_of_str(hp_str_new(x->data + off, x->len - off)));
     rx_free(tree);
     return hp_of_arr(parts);
 }

@@ -1,0 +1,6 @@
+$value = "";
+for ($i = 0; $i < 100000; $i++) {
+    $value = "iteration=" . $i;
+}
+if ($value != "iteration=99999") { exit(1); }
+echo "memory top-level loops ok\n";

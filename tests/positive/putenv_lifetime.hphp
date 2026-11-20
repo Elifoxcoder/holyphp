@@ -1,0 +1,11 @@
+function set_temporary_environment_value(): void {
+    $value = "HPHP_PUTENV_LIFETIME=" . "kept-after-scope";
+    if (!putenv($value)) { exit(1); }
+}
+
+set_temporary_environment_value();
+if (getenv("HPHP_PUTENV_LIFETIME") != "kept-after-scope") {
+    echo "FAIL putenv owns a copy of its input\n";
+    exit(1);
+}
+echo "OK   putenv owns a copy of its input\n";
