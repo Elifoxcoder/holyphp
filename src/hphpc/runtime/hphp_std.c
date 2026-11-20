@@ -35,7 +35,7 @@ static hstr *hp_str_take_buf(Buf *b) {
 }
 
 #ifndef HPHP_VERSION
-#define HPHP_VERSION "1.0.2"
+#define HPHP_VERSION "1.1.0"
 #endif
 
 static void hbuf_json_r(hval v, Buf *b);

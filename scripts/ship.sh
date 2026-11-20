@@ -60,7 +60,10 @@ TAG="v$VERSION"
 # Files this script may change; only these are committed in step 12.
 GENERATED=(CHANGELOG.md src/hphpc/main.c src/hphpc/runtime/hphp_std.c
   packaging/windows/holyphp.iss packaging/linux packaging/winget/manifests
-  docs extension/hphp/data packages/extension/hphp/data tests/known-failures.txt)
+  docs extension/hphp/data packages/extension/hphp/data tests/known-failures.txt
+  src/hphpc/runtime_embed.h packages/extension/hphp/extension.bundle.js
+  packages/extension/hphp/server.bundle.js packages/extension/hphp/syntaxes
+  packages/extension/hphp/package.json packages/extension/hphp/holyphp-*.vsix)
 
 # ---------------------------------------------------------------- 1
 step 1 "preflight"

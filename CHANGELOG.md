@@ -9,6 +9,8 @@ behaves differently, what they have to change.
 
 ## Unreleased
 
+## 1.1.0 — 2026-11-20
+
 - Array fixes found by running every documented builtin example:
   - `[1, "a" => true]` (plain values mixed with keys) lost entries; plain
     values now get the next integer key, as in PHP. `array(...)` with

@@ -44,3 +44,6 @@ Thumbs.db
 
 # server address and credentials (see AGENTS.md: Server)
 /scripts/vps.env
+
+# npm dependencies of the VS Code extension (npm ci)
+node_modules/

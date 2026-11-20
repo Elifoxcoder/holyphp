@@ -58,20 +58,22 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <div class="crumbs"><a href="../builtins.html">&larr; All built-ins</a> / fgetc()</div>
   <h1><span class="n">fgetc</span>()</h1>
   
-  <div class="sig"><span class="n">fgetc</span>(...$args): <span class="r">string</span></div>
+  <div class="sig"><span class="n">fgetc</span>(resource $handle): <span class="r">mixed</span></div>
   <h2>Parameters</h2><table>
 <tr><th>Name</th><th>Type</th><th>Description</th></tr>
 <tr><td class="pn">$handle</td><td class="pt">resource</td><td>handle from fopen()</td></tr>
 </table>
   <h2>Return value</h2><p class="ret">One character per call.</p>
-  <h2>Example</h2><pre>file_put_contents(&quot;/tmp/hphp_doc_gc.txt&quot;, &quot;ab&quot;);
-$fh = fopen(&quot;/tmp/hphp_doc_gc.txt&quot;, &quot;r&quot;);
+  <h2>Example</h2><pre>$f = sys_get_temp_dir() . &quot;/hphp_doc_gc.txt&quot;;
+file_put_contents($f, &quot;ab&quot;);
+$fh = fopen($f, &quot;r&quot;);
 echo fgetc($fh), fgetc($fh);
-fclose($fh);</pre><pre class="out">ab</pre>
+fclose($fh);
+unlink($f);</pre><pre class="out">ab</pre>
   <h2>See also</h2><div class="see"><a href="fgets.html">fgets()</a><a href="fread.html">fread()</a></div>
   <div class="nav">
   <a href="random_int.html">&larr; random_int()</a>
-  <span class="mid">139 / 305</span>
+  <span class="mid">139 / 547</span>
   <a href="abs.html">abs() &rarr;</a>
 </div>
 </main>

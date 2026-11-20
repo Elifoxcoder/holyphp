@@ -34,7 +34,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#define HPHP_VERSION "1.0.2"
+#define HPHP_VERSION "1.1.0"
 
 /* Used by install/search/publish when the user has not configured a registry
  * (no registry_url file, no $HPHP_REGISTRY). Hosted alongside the project;

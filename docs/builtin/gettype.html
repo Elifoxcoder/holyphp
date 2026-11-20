@@ -58,17 +58,17 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <div class="crumbs"><a href="../builtins.html">&larr; All built-ins</a> / gettype()</div>
   <h1><span class="n">gettype</span>()</h1>
   
-  <div class="sig"><span class="n">gettype</span>(mixed $number): <span class="r">string</span></div>
+  <div class="sig"><span class="n">gettype</span>(mixed $v): <span class="r">string</span></div>
   <h2>Parameters</h2><table>
 <tr><th>Name</th><th>Type</th><th>Description</th></tr>
 <tr><td class="pn">$v</td><td class="pt">mixed</td><td>value to inspect</td></tr>
 </table>
   <h2>Return value</h2><p class="ret">Type name string: &quot;int&quot;, &quot;float&quot;, &quot;string&quot;, &quot;bool&quot;, &quot;array&quot;, &quot;null&quot;.</p>
-  <h2>Example</h2><pre>echo gettype(1), &quot; &quot;, gettype(1.5), &quot; &quot;, gettype(&quot;x&quot;), &quot; &quot;, gettype(true), &quot; &quot;, gettype([]), &quot; &quot;, gettype(null);</pre><pre class="out">int float string bool array null</pre>
+  <h2>Example</h2><pre>echo gettype(1), &quot; &quot;, gettype(1.5), &quot; &quot;, gettype(&quot;x&quot;), &quot; &quot;, gettype(true), &quot; &quot;, gettype([]), &quot; &quot;, gettype(null);</pre><pre class="out">integer double string boolean array null</pre>
   <h2>See also</h2><div class="see"><a href="is_int.html">is_int()</a><a href="var_dump.html">var_dump()</a></div>
   <div class="nav">
   <a href="boolval.html">&larr; boolval()</a>
-  <span class="mid">181 / 305</span>
+  <span class="mid">181 / 547</span>
   <a href="var_dump.html">var_dump() &rarr;</a>
 </div>
 </main>

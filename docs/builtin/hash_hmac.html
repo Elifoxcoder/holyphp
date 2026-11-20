@@ -58,7 +58,7 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <div class="crumbs"><a href="../builtins.html">&larr; All built-ins</a> / hash_hmac()</div>
   <h1><span class="n">hash_hmac</span>()</h1>
   
-  <div class="sig"><span class="n">hash_hmac</span>(...$args): <span class="r">mixed</span></div>
+  <div class="sig"><span class="n">hash_hmac</span>(string $algo, string $data, string $key): <span class="r">mixed</span></div>
   <h2>Parameters</h2><table>
 <tr><th>Name</th><th>Type</th><th>Description</th></tr>
 <tr><td class="pn">$algo</td><td class="pt">string</td><td>&quot;sha256&quot;</td></tr>
@@ -67,12 +67,12 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
 </table>
   <h2>Return value</h2><p class="ret">HMAC digest as hex — proves the message came from someone holding $key.</p>
   <h2>Example</h2><pre>$sig = hash_hmac(&quot;sha256&quot;, &quot;order:42&quot;, &quot;secret-key&quot;);
-echo strlen($sig) == 64 ? &quot;signed&quot; : &quot;bad&quot;;
-echo hash_hmac(&quot;sha256&quot;, &quot;order:42&quot;, &quot;secret-key&quot;) == $sig ? &quot; matches&quot; : &quot; nope&quot;;</pre><pre class="out">signed matches</pre>
+$again = hash_hmac(&quot;sha256&quot;, &quot;order:42&quot;, &quot;secret-key&quot;);
+echo strlen($sig) == 64 ? &quot;signed&quot; : &quot;bad&quot;, $again == $sig ? &quot; matches&quot; : &quot; nope&quot;;</pre><pre class="out">signed matches</pre>
   <h2>See also</h2><div class="see"><a href="sha256.html">sha256()</a><a href="hash_equals.html">hash_equals()</a></div>
   <div class="nav">
   <a href="sha256.html">&larr; sha256()</a>
-  <span class="mid">43 / 305</span>
+  <span class="mid">43 / 547</span>
   <a href="password_hash.html">password_hash() &rarr;</a>
 </div>
 </main>

@@ -58,17 +58,20 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <div class="crumbs"><a href="../builtins.html">&larr; All built-ins</a> / var_export()</div>
   <h1><span class="n">var_export</span>()</h1>
   
-  <div class="sig"><span class="n">var_export</span>(...$args): <span class="r">string</span></div>
+  <div class="sig"><span class="n">var_export</span>(mixed $v): <span class="r">string</span></div>
   <h2>Parameters</h2><table>
 <tr><th>Name</th><th>Type</th><th>Description</th></tr>
 <tr><td class="pn">$v</td><td class="pt">mixed</td><td>value to export</td></tr>
 </table>
   <h2>Return value</h2><p class="ret">String of HolyPHP code that would recreate the value.</p>
-  <h2>Example</h2><pre>echo var_export([1, 2]);</pre><pre class="out">array(1, 2)</pre>
+  <h2>Example</h2><pre>echo var_export([1, &quot;a&quot; =&gt; true], true);</pre><pre class="out">array (
+  0 =&gt; 1,
+  'a' =&gt; true,
+)</pre>
   <h2>See also</h2><div class="see"><a href="var_dump.html">var_dump()</a><a href="print_r.html">print_r()</a><a href="serialize.html">serialize()</a></div>
   <div class="nav">
   <a href="print_r.html">&larr; print_r()</a>
-  <span class="mid">184 / 305</span>
+  <span class="mid">184 / 547</span>
   <a href="serialize.html">serialize() &rarr;</a>
 </div>
 </main>

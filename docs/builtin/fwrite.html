@@ -58,7 +58,7 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <div class="crumbs"><a href="../builtins.html">&larr; All built-ins</a> / fwrite()</div>
   <h1><span class="n">fwrite</span>()</h1>
   
-  <div class="sig"><span class="n">fwrite</span>(string $haystack, string $needle): <span class="r">int</span></div>
+  <div class="sig"><span class="n">fwrite</span>(resource $handle, string $data): <span class="r">int</span></div>
   <h2>Parameters</h2><table>
 <tr><th>Name</th><th>Type</th><th>Description</th></tr>
 <tr><td class="pn">$handle</td><td class="pt">resource</td><td>handle from fopen() in write mode</td></tr>
@@ -72,7 +72,7 @@ echo $n, &quot; &quot;, file_get_contents(&quot;/tmp/hphp_doc_fw.txt&quot;);</pr
   <h2>See also</h2><div class="see"><a href="fopen.html">fopen()</a><a href="file_put_contents.html">file_put_contents()</a></div>
   <div class="nav">
   <a href="fgets.html">&larr; fgets()</a>
-  <span class="mid">199 / 305</span>
+  <span class="mid">199 / 547</span>
   <a href="fopen.html">fopen() &rarr;</a>
 </div>
 </main>

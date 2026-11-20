@@ -17,7 +17,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."          # repo root
 
-VERSION=1.0.2
+VERSION=1.1.0
 STAGE=/tmp/holyphp-deb-stage
 OUT=packaging/linux/out/holyphp_${VERSION}_amd64.deb
 

@@ -58,19 +58,19 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <div class="crumbs"><a href="../builtins.html">&larr; All built-ins</a> / exit()</div>
   <h1><span class="n">exit</span>()</h1>
   
-  <div class="sig"><span class="n">exit</span>(...$args): <span class="r">void</span></div>
+  <div class="sig"><span class="n">exit</span>([int $code]): <span class="r">void</span></div>
   <h2>Parameters</h2><table>
 <tr><th>Name</th><th>Type</th><th>Description</th></tr>
 <tr><td class="pn">$code</td><td class="pt">int</td><td>process exit code (default 0)<span class="opt">optional</span></td></tr>
 </table>
   <h2>Return value</h2><p class="ret">Terminates the program immediately.</p>
-  <h2>Example</h2><pre>echo &quot;before&quot;;
+  <h2>Example</h2><pre>echo &quot;before\n&quot;;
 if (true) { exit(0); }
 echo &quot;unreachable&quot;;</pre><pre class="out">before</pre>
   <h2>See also</h2><div class="see"><a href="die.html">die()</a></div>
   <div class="nav">
   <a href="sleep.html">&larr; sleep()</a>
-  <span class="mid">252 / 305</span>
+  <span class="mid">252 / 547</span>
   <a href="die.html">die() &rarr;</a>
 </div>
 </main>

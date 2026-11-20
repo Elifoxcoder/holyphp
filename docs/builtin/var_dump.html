@@ -58,7 +58,7 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <div class="crumbs"><a href="../builtins.html">&larr; All built-ins</a> / var_dump()</div>
   <h1><span class="n">var_dump</span>()</h1>
   
-  <div class="sig"><span class="n">var_dump</span>(...$args): <span class="r">void</span></div>
+  <div class="sig"><span class="n">var_dump</span>(mixed $v): <span class="r">void</span></div>
   <h2>Parameters</h2><table>
 <tr><th>Name</th><th>Type</th><th>Description</th></tr>
 <tr><td class="pn">$v</td><td class="pt">mixed</td><td>value to dump (one per call)</td></tr>
@@ -67,15 +67,17 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <h2>Example</h2><pre>var_dump([1, &quot;a&quot; =&gt; true]);
 var_dump(42);
 var_dump(&quot;hi&quot;);</pre><pre class="out">array(2) {
-  [0] =&gt; int(1)
-  [&quot;a&quot;] =&gt; bool(true)
+  [0]=&gt;
+  int(1)
+  [&quot;a&quot;]=&gt;
+  bool(true)
 }
 int(42)
 string(2) &quot;hi&quot;</pre>
   <h2>See also</h2><div class="see"><a href="print_r.html">print_r()</a><a href="var_export.html">var_export()</a><a href="gettype.html">gettype()</a></div>
   <div class="nav">
   <a href="gettype.html">&larr; gettype()</a>
-  <span class="mid">182 / 305</span>
+  <span class="mid">182 / 547</span>
   <a href="print_r.html">print_r() &rarr;</a>
 </div>
 </main>

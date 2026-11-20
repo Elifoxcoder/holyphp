@@ -1335,7 +1335,7 @@
     }
    ],
    "returns": "HMAC digest as hex — proves the message came from someone holding $key.",
-   "example": "$sig = hash_hmac(\"sha256\", \"order:42\", \"secret-key\");\necho strlen($sig) == 64 ? \"signed\" : \"bad\";\necho hash_hmac(\"sha256\", \"order:42\", \"secret-key\") == $sig ? \" matches\" : \" nope\";",
+   "example": "$sig = hash_hmac(\"sha256\", \"order:42\", \"secret-key\");\n$again = hash_hmac(\"sha256\", \"order:42\", \"secret-key\");\necho strlen($sig) == 64 ? \"signed\" : \"bad\", $again == $sig ? \" matches\" : \" nope\";",
    "exampleOutput": "signed matches",
    "seeAlso": [
     "sha256",
@@ -1821,7 +1821,7 @@
    ],
    "returns": "Escaped string (' \" \\ NUL) safe for SQL literals.",
    "example": "echo mysql_escape(\"it's O'Brien\");",
-   "exampleOutput": "it\\\\'s O\\\\'Brien",
+   "exampleOutput": "it\\'s O\\'Brien",
    "seeAlso": [
     "mysql_query",
     "addslashes"
@@ -1846,7 +1846,7 @@
    ],
    "returns": "32-character hex MD5 digest. Broken for security — checksums only.",
    "example": "echo md5(\"holy\");",
-   "exampleOutput": "REPLACE_MD5_HOLY",
+   "exampleOutput": "ff0eca571f7670efa4ac4a2c37214c6b",
    "seeAlso": [
     "sha1",
     "sha256",
@@ -1872,7 +1872,7 @@
    ],
    "returns": "40-character hex SHA-1 digest (legacy — prefer sha256).",
    "example": "echo sha1(\"holy\");",
-   "exampleOutput": "REPLACE_SHA1_HOLY",
+   "exampleOutput": "c6c8286ae5ed496fd5e6633f25700f79d9223fdb",
    "seeAlso": [
     "sha256",
     "md5"
@@ -2047,7 +2047,7 @@
    ],
    "returns": "The text with only the five HTML-critical characters (& \" ' < >) escaped.",
    "example": "echo htmlspecialchars(\"<a href=\\\"x\\\">link</a>\");",
-   "exampleOutput": "&lt;a href=\\\"x\\\"&gt;link&lt;/a&gt;",
+   "exampleOutput": "&lt;a href=&quot;x&quot;&gt;link&lt;/a&gt;",
    "seeAlso": [
     "htmlentities",
     "html_entity_decode"
@@ -3158,8 +3158,8 @@
     }
    ],
    "returns": "true; visits leaves of nested arrays only.",
-   "example": "$a = [1, [2, 3]];\narray_walk_recursive($a, fn(&$v, $k) => $v = $v + 10);\necho $a[0], \" \", $a[1][0];",
-   "exampleOutput": "11 12",
+   "example": "$sum = 0;\narray_walk_recursive([1, [2, 3]], function($v, $k) use (&$sum) { $sum = $sum + $v; });\necho $sum;",
+   "exampleOutput": "6",
    "seeAlso": [
     "array_walk",
     "array_map"
@@ -4136,7 +4136,7 @@
   },
   {
    "name": "fgetc",
-   "sig": "fgetc(resource $handle): string",
+   "sig": "fgetc(resource $handle): mixed",
    "args": -2,
    "desc": "Reads a single character from a file handle.",
    "unsafe": false,
@@ -4150,7 +4150,7 @@
     }
    ],
    "returns": "One character per call.",
-   "example": "file_put_contents(\"/tmp/hphp_doc_gc.txt\", \"ab\");\n$fh = fopen(\"/tmp/hphp_doc_gc.txt\", \"r\");\necho fgetc($fh), fgetc($fh);\nfclose($fh);",
+   "example": "$f = sys_get_temp_dir() . \"/hphp_doc_gc.txt\";\nfile_put_contents($f, \"ab\");\n$fh = fopen($f, \"r\");\necho fgetc($fh), fgetc($fh);\nfclose($fh);\nunlink($f);",
    "exampleOutput": "ab",
    "seeAlso": [
     "fgets",
@@ -4502,7 +4502,7 @@
   {
    "name": "atan2",
    "sig": "atan2(float|int $y, float|int $x): float",
-   "args": 1,
+   "args": -2,
    "desc": "Angle of the point (y, x) — note the argument order.",
    "unsafe": false,
    "params": [
@@ -4583,7 +4583,7 @@
   {
    "name": "log",
    "sig": "log(float|int $number[, float|int $base]): float",
-   "args": 1,
+   "args": -2,
    "desc": "Natural logarithm (ln). Optional second argument is the base.",
    "unsafe": false,
    "params": [
@@ -4772,7 +4772,7 @@
    "params": [],
    "returns": "π as float. The constant M_PI is equivalent.",
    "example": "echo pi(), \" \", round(pi(), 2);",
-   "exampleOutput": "3.141592653589793 3.14",
+   "exampleOutput": "3.1415926535898 3.14",
    "seeAlso": [
     "M_PI",
     "sin",
@@ -5239,7 +5239,7 @@
    ],
    "returns": "Type name string: \"int\", \"float\", \"string\", \"bool\", \"array\", \"null\".",
    "example": "echo gettype(1), \" \", gettype(1.5), \" \", gettype(\"x\"), \" \", gettype(true), \" \", gettype([]), \" \", gettype(null);",
-   "exampleOutput": "int float string bool array null",
+   "exampleOutput": "integer double string boolean array null",
    "seeAlso": [
     "is_int",
     "var_dump",
@@ -5265,7 +5265,7 @@
    ],
    "returns": "Prints type and value, recursively for arrays; returns nothing. The main debugging tool.",
    "example": "var_dump([1, \"a\" => true]);\nvar_dump(42);\nvar_dump(\"hi\");",
-   "exampleOutput": "array(2) {\n  [0] => int(1)\n  [\"a\"] => bool(true)\n}\nint(42)\nstring(2) \"hi\"",
+   "exampleOutput": "array(2) {\n  [0]=>\n  int(1)\n  [\"a\"]=>\n  bool(true)\n}\nint(42)\nstring(2) \"hi\"",
    "seeAlso": [
     "print_r",
     "var_export",
@@ -5291,7 +5291,7 @@
    ],
    "returns": "Human-readable rendering of the value. Prints it AND returns the text (unlike PHP, where a second argument is needed for that).",
    "example": "print_r([\"a\" => 1, \"b\" => [2, 3]]);",
-   "exampleOutput": "Array\n(\n  [a] => 1\n  [b] => Array\n  (\n    [0] => 2\n    [1] => 3\n  )\n)",
+   "exampleOutput": "Array\n(\n  [a] => 1\n  [b] => Array\n  (\n    [0] => 2\n    [1] => 3\n  )\n\n)",
    "seeAlso": [
     "var_dump",
     "var_export"
@@ -5315,8 +5315,8 @@
     }
    ],
    "returns": "String of HolyPHP code that would recreate the value.",
-   "example": "echo var_export([1, 2]);",
-   "exampleOutput": "array(1, 2)",
+   "example": "echo var_export([1, \"a\" => true], true);",
+   "exampleOutput": "array (\n  0 => 1,\n  'a' => true,\n)",
    "seeAlso": [
     "var_dump",
     "print_r",
@@ -5564,7 +5564,7 @@
     }
    ],
    "returns": "true on success.",
-   "example": "mkdir(\"/tmp/hphp_doc_m/deep\", true);\nvar_dump(is_dir(\"/tmp/hphp_doc_m/deep\"));\nrmdir(\"/tmp/hphp_doc_m/deep\");\nrmdir(\"/tmp/hphp_doc_m\");",
+   "example": "$d = sys_get_temp_dir() . \"/hphp_doc_m\";\nmkdir($d . \"/deep\", 0777, true);\nvar_dump(is_dir($d . \"/deep\"));\nrmdir($d . \"/deep\");\nrmdir($d);",
    "exampleOutput": "bool(true)",
    "seeAlso": [
     "rmdir",
@@ -5819,8 +5819,8 @@
     }
    ],
    "returns": "Array of entry names (including \".\" and \"..\").",
-   "example": "mkdir(\"/tmp/hphp_doc_sc\");\nfile_put_contents(\"/tmp/hphp_doc_sc/a.txt\", \"1\");\necho count(scandir(\"/tmp/hphp_doc_sc\")) >= 3 ? \"listed\" : \"empty\";\nunlink(\"/tmp/hphp_doc_sc/a.txt\");\nrmdir(\"/tmp/hphp_doc_sc\");",
-   "exampleOutput": "listed",
+   "example": "$d = sys_get_temp_dir() . \"/hphp_doc_sc\";\nmkdir($d);\nfile_put_contents($d . \"/a.txt\", \"1\");\necho implode(\",\", scandir($d));   // without . and ..\nunlink($d . \"/a.txt\");\nrmdir($d);",
+   "exampleOutput": "a.txt",
    "seeAlso": [
     "opendir",
     "is_dir"
@@ -6419,7 +6419,7 @@
    "name": "stream_recv",
    "sig": "stream_recv(resource $sock[, int $max]): string",
    "args": -2,
-   "desc": "stream_recv($sock[, $max]) — receives up to $max bytes (default 4096) from the socket as a string.",
+   "desc": "stream_recv($sock[, $max]) - receives up to $max bytes (default 4096) from the socket as a string. In direct io_uring mode the string borrows the ring buffer and is only valid until the next recv or stream_recv_release on that socket; copy it to keep it.",
    "unsafe": false,
    "params": [
     {
@@ -6880,7 +6880,7 @@
    "unsafe": false,
    "params": [],
    "returns": "Peak bytes allocated so far.",
-   "example": "$peak = memory_get_peak_usage();\necho $peak >= memory_get_usage() ? \"peak-ok\" : \"peak-broke\";",
+   "example": "$used = memory_get_usage();\n$peak = memory_get_peak_usage();\necho $peak >= $used ? \"peak-ok\" : \"peak-broke\";",
    "exampleOutput": "peak-ok",
    "seeAlso": [
     "memory_get_usage"
@@ -6959,8 +6959,8 @@
     }
    ],
    "returns": "The formatted date/time string (local time).",
-   "example": "echo date(\"Y-m-d\", strtotime(\"2024-03-15 12:30:00\")), \"\n\";\necho date(\"H:i:s\", strtotime(\"2024-03-15 12:30:00\")), \"\n\";\necho date(\"Y-m-d H:i:s\", 1710508200), \"\n\";",
-   "exampleOutput": "2024-03-15\n12:30:00\n2024-03-15 12:30:00",
+   "example": "$t = strtotime(\"2024-03-15 12:30:00\");\necho date(\"Y-m-d\", $t);\necho date(\"H:i:s\", $t);\necho date(\"D, d M Y\", $t);",
+   "exampleOutput": "2024-03-15\n12:30:00\nFri, 15 Mar 2024",
    "seeAlso": [
     "strtotime",
     "mktime",
@@ -7610,7 +7610,12 @@
    "sig": "ui_select_all(...$args): int",
    "args": -2,
    "desc": "ui_select_all($h) — selects the whole text of an edit control, as if Ctrl+A were pressed.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_items",
@@ -8450,238 +8455,408 @@
    "sig": "ui_theme(...$args): int",
    "args": -2,
    "desc": "ui_theme($win, $bg, $surface, $elevated, $text, $muted, $accent, $onAccent, $border, $radius, $fontPt, $titlePt, $rowH, $dark) — sets the look of a window and every control in it.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_style",
    "sig": "ui_style(...$args): int",
    "args": -2,
    "desc": "ui_style($h, $role) — assigns a style role to a control, i.e. how it is painted.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_accent",
    "sig": "ui_accent(...$args): int",
    "args": -2,
    "desc": "ui_accent($h, $rgb) — accent colour of a control, e.g. 0xFF8C00.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_radius",
    "sig": "ui_radius(...$args): int",
    "args": -2,
    "desc": "ui_radius($h, $px) — corner radius of a control in pixels.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_range",
    "sig": "ui_range(...$args): int",
    "args": -2,
    "desc": "ui_range($h, $lo, $hi) — minimum and maximum of a slider or progress control.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_repaint",
    "sig": "ui_repaint(...$args): int",
    "args": -2,
    "desc": "ui_repaint($h) — schedules a redraw of the window/control.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_input_margin",
    "sig": "ui_input_margin(...$args): int",
    "args": -2,
    "desc": "ui_input_margin($h, $left, $right) — insets the text of an edit control (room for an icon, e.g. in an address bar).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_raise",
    "sig": "ui_raise(...$args): int",
    "args": -2,
    "desc": "ui_raise($h) — brings a window or control to the front.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_svg",
    "sig": "ui_svg(...$args): int",
    "args": -2,
    "desc": "ui_svg($h, $source) — sets the SVG markup drawn by a picture control.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_picture",
    "sig": "ui_picture(...$args): int",
    "args": -2,
    "desc": "ui_picture($h, $path) — loads an image file into a picture control.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_text_px",
    "sig": "ui_text_px(...$args): int",
    "args": -2,
    "desc": "ui_text_px($text, $pt, $bold) — measured width of that string in pixels.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_text_lines",
    "sig": "ui_text_lines(...$args): int",
    "args": -2,
    "desc": "ui_text_lines($text, $pt, $bold, $maxWidth) — how many lines the text wraps to at that width.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_enabled",
    "sig": "ui_enabled(...$args): bool",
    "args": -2,
    "desc": "ui_enabled($h) — true when the control still accepts input (ui_enable() toggles it).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_rect",
    "sig": "ui_rect(...$args): mixed",
    "args": -2,
    "desc": "ui_rect($h) — [x, y, w, h] of a control in its parent's coordinates, or null.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_client_size",
    "sig": "ui_client_size(...$args): mixed",
    "args": -2,
    "desc": "ui_client_size($win) — [width, height] of a window's client area.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_scroll",
    "sig": "ui_scroll(...$args): mixed",
    "args": -2,
    "desc": "ui_scroll($win, $dy, $to) — scrolls by $dy (or to $to) and returns [offset, contentHeight, viewportHeight].",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_count",
    "sig": "ui_count(...$args): int",
    "args": -2,
    "desc": "ui_count($h) — number of items in a list or combo control.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_progress_get",
    "sig": "ui_progress_get(...$args): int",
    "args": -2,
    "desc": "ui_progress_get($h) — current value of a progress bar.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_hwnd",
    "sig": "ui_hwnd(...$args): int",
    "args": -2,
    "desc": "ui_hwnd($win) — the native window handle (HWND) of a window.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_font_new",
    "sig": "ui_font_new(...$args): int",
    "args": -2,
    "desc": "ui_font_new($family, $pt, $bold, $italic) — creates a font for canvas drawing and returns its id.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_font_width",
    "sig": "ui_font_width(...$args): int",
    "args": -2,
    "desc": "ui_font_width($font, $text) — width of that string in the given font, in pixels.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_font_height",
    "sig": "ui_font_height(...$args): int",
    "args": -2,
    "desc": "ui_font_height($font) — line height of the given font, in pixels.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_draw_clear",
    "sig": "ui_draw_clear(...$args): int",
    "args": -2,
    "desc": "ui_draw_clear($cv, $rgb) — fills the whole canvas with one colour.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_draw_rect",
    "sig": "ui_draw_rect(...$args): int",
    "args": -2,
    "desc": "ui_draw_rect($cv, …) — draws a rectangle on the canvas.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_draw_round",
    "sig": "ui_draw_round(...$args): int",
    "args": -2,
    "desc": "ui_draw_round($cv, …) — draws a rectangle with rounded corners on the canvas.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_draw_line",
    "sig": "ui_draw_line(...$args): int",
    "args": -2,
    "desc": "ui_draw_line($cv, …) — draws a line on the canvas.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_draw_text",
    "sig": "ui_draw_text(...$args): int",
    "args": -2,
    "desc": "ui_draw_text($cv, …) — draws text on the canvas with the current font and colour.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_draw_clip",
    "sig": "ui_draw_clip(...$args): int",
    "args": -2,
    "desc": "ui_draw_clip($cv, …) — restricts further drawing to a rectangle.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_draw_unclip",
    "sig": "ui_draw_unclip(...$args): int",
    "args": -2,
    "desc": "ui_draw_unclip($cv) — removes the clip rectangle again.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_canvas_size",
    "sig": "ui_canvas_size(...$args): mixed",
    "args": -2,
    "desc": "ui_canvas_size($cv) — [width, height] of the drawing surface in pixels.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_canvas_pixel",
    "sig": "ui_canvas_pixel(...$args): int",
    "args": -2,
    "desc": "ui_canvas_pixel($cv, $x, $y) — RGB value of the pixel at that position.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_canvas_invalidate",
    "sig": "ui_canvas_invalidate(...$args): int",
    "args": -2,
    "desc": "ui_canvas_invalidate($cv, …) — marks a region dirty so it is repainted.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_canvas_flush",
    "sig": "ui_canvas_flush(...$args): int",
    "args": -2,
    "desc": "ui_canvas_flush($cv) — pushes everything drawn since the last flush to the screen.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_cursor",
    "sig": "ui_cursor(...$args): int",
    "args": -2,
    "desc": "ui_cursor($cv, $shape) — sets the mouse cursor shown over the canvas.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "shell_exec",
@@ -8739,7 +8914,12 @@
    "sig": "passthru(string $s): void",
    "args": 1,
    "desc": "Runs an external command and forwards its raw binary output to stdout.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "RESET",
@@ -8747,580 +8927,971 @@
    "args": -2,
    "desc": "Colour constant: the terminal's default colour. Pass it as the second argument of print()/println()/input() to end a coloured line.",
    "unsafe": false,
-   "params": [
-    {
-     "name": "$a",
-     "type": "array",
-     "description": "array"
-    }
-   ],
-   "returns": "The value of the first element.",
-   "example": "echo reset([7, 8, 9]);",
-   "exampleOutput": "7",
-   "seeAlso": [
-    "end",
-    "array_key_first"
-   ]
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "BLACK",
    "sig": "BLACK(...$args): int",
    "args": -2,
    "desc": "Colour constant: black — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "RED",
    "sig": "RED(...$args): int",
    "args": -2,
    "desc": "Colour constant: red — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "GREEN",
    "sig": "GREEN(...$args): int",
    "args": -2,
    "desc": "Colour constant: green — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "YELLOW",
    "sig": "YELLOW(...$args): int",
    "args": -2,
    "desc": "Colour constant: yellow — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "BLUE",
    "sig": "BLUE(...$args): int",
    "args": -2,
    "desc": "Colour constant: blue — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "MAGENTA",
    "sig": "MAGENTA(...$args): int",
    "args": -2,
    "desc": "Colour constant: magenta — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "CYAN",
    "sig": "CYAN(...$args): int",
    "args": -2,
    "desc": "Colour constant: cyan — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "WHITE",
    "sig": "WHITE(...$args): int",
    "args": -2,
    "desc": "Colour constant: white — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "BRIGHT_BLACK",
    "sig": "BRIGHT_BLACK(...$args): int",
    "args": -2,
    "desc": "Colour constant: bright black (dark grey) — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "BRIGHT_RED",
    "sig": "BRIGHT_RED(...$args): int",
    "args": -2,
    "desc": "Colour constant: bright red — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "BRIGHT_GREEN",
    "sig": "BRIGHT_GREEN(...$args): int",
    "args": -2,
    "desc": "Colour constant: bright green — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "BRIGHT_YELLOW",
    "sig": "BRIGHT_YELLOW(...$args): int",
    "args": -2,
    "desc": "Colour constant: bright yellow — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "BRIGHT_BLUE",
    "sig": "BRIGHT_BLUE(...$args): int",
    "args": -2,
    "desc": "Colour constant: bright blue — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "BRIGHT_MAGENTA",
    "sig": "BRIGHT_MAGENTA(...$args): int",
    "args": -2,
    "desc": "Colour constant: bright magenta — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "BRIGHT_CYAN",
    "sig": "BRIGHT_CYAN(...$args): int",
    "args": -2,
    "desc": "Colour constant: bright cyan — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "BRIGHT_WHITE",
    "sig": "BRIGHT_WHITE(...$args): int",
    "args": -2,
    "desc": "Colour constant: bright white — optional second argument of print()/println()/input().",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "print",
    "sig": "print(mixed $value[, int $colour]): void",
    "args": -1,
    "desc": "print($value[, $colour]) — writes to stdout without a newline. The optional second argument is one of the colour constants below.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "println",
    "sig": "println(mixed $value[, int $colour]): void",
    "args": -1,
    "desc": "println($value[, $colour]) — like print() but ends the line. A colour wraps only this one line and is reset afterwards.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "input",
    "sig": "input(string $prompt[, int $colour]): string",
    "args": -1,
    "desc": "input($prompt[, $colour]) — prints the prompt (optionally coloured), reads one line from stdin and returns it without the newline.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "proc_open",
    "sig": "proc_open(...$args): mixed",
    "args": -2,
    "desc": "Starts an external process with separate pipes — advanced process control.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "proc_get_status",
    "sig": "proc_get_status(...$args): mixed",
    "args": -2,
    "desc": "proc_get_status($h) — status array of a process started with proc_start() (still running, exit code, …).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "proc_start",
    "sig": "proc_start(...$args): int",
    "args": -2,
    "desc": "proc_start($cmd[, $cwd]) — starts a process without blocking; returns its handle, or 0 when it could not start.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "proc_read",
    "sig": "proc_read(...$args): string",
    "args": -2,
    "desc": "proc_read($h[, $max]) — what the process has written to stdout so far; empty string when nothing is pending.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "proc_read_err",
    "sig": "proc_read_err(...$args): string",
    "args": -2,
    "desc": "proc_read_err($h[, $max]) — the same for stderr.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "proc_write",
    "sig": "proc_write(...$args): int",
    "args": -2,
    "desc": "proc_write($h, $data) — writes to the process's stdin; returns the number of bytes written.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "proc_alive",
    "sig": "proc_alive(...$args): bool",
    "args": -2,
    "desc": "proc_alive($h) — true while the process is still running.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "proc_exit",
    "sig": "proc_exit(...$args): int",
    "args": -2,
    "desc": "proc_exit($h) — exit code once it finished, -1 while it is still running.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "proc_close",
    "sig": "proc_close(...$args): int",
    "args": -2,
    "desc": "proc_close($h) — releases the handle slot of a process.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "proc_kill",
    "sig": "proc_kill(...$args): int",
    "args": -2,
    "desc": "proc_kill($h) — terminates the process and its children.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_ready",
    "sig": "ui_browser_ready(): bool",
    "args": 0,
    "desc": "true when the embedded Chromium runtime (WebView2) is available on this machine.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_loader",
    "sig": "ui_browser_loader(): string",
    "args": 0,
    "desc": "HTML of the loading splash shown while a page starts; empty string when none is set.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_new",
    "sig": "ui_browser_new(...$args): int",
    "args": -2,
    "desc": "ui_browser_new($parent, $dir) — creates an embedded browser inside a window; returns its handle.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_free",
    "sig": "ui_browser_free(...$args): int",
    "args": -2,
    "desc": "ui_browser_free($b) — destroys a browser handle.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_fit",
    "sig": "ui_browser_fit(...$args): int",
    "args": -2,
    "desc": "ui_browser_fit($b, $top, $width) — resizes the browser area inside its window.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_go",
    "sig": "ui_browser_go(...$args): int",
    "args": -2,
    "desc": "ui_browser_go($b, $url) — navigates the browser to a URL.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_html",
    "sig": "ui_browser_html(...$args): int",
    "args": -2,
    "desc": "ui_browser_html($b, $html) — shows a document directly instead of loading a URL.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_back",
    "sig": "ui_browser_back(...$args): int",
    "args": -2,
    "desc": "Goes back in the session history.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_forward",
    "sig": "ui_browser_forward(...$args): int",
    "args": -2,
    "desc": "Goes forward in the session history.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_reload",
    "sig": "ui_browser_reload(...$args): int",
    "args": -2,
    "desc": "Reloads the current page.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_stop",
    "sig": "ui_browser_stop(...$args): int",
    "args": -2,
    "desc": "Stops loading the current page.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_can_back",
    "sig": "ui_browser_can_back(...$args): bool",
    "args": -2,
    "desc": "true when there is a page to go back to.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_can_forward",
    "sig": "ui_browser_can_forward(...$args): bool",
    "args": -2,
    "desc": "true when there is a page to go forward to.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_url",
    "sig": "ui_browser_url(...$args): string",
    "args": -2,
    "desc": "Current URL of the page.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_favicon",
    "sig": "ui_browser_favicon(...$args): string",
    "args": -2,
    "desc": "URL of the current page's favicon.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_title",
    "sig": "ui_browser_title(...$args): string",
    "args": -2,
    "desc": "Title of the current document.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_zoom",
    "sig": "ui_browser_zoom(...$args): int",
    "args": -2,
    "desc": "ui_browser_zoom($b, $factor) — sets the page zoom, 1.0 = 100 %.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_zoom_get",
    "sig": "ui_browser_zoom_get(...$args): float",
    "args": -2,
    "desc": "Current zoom factor of the browser.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_devtools",
    "sig": "ui_browser_devtools(...$args): int",
    "args": -2,
    "desc": "ui_browser_devtools($b, $on) — opens or closes the developer tools.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_devtools_fit",
    "sig": "ui_browser_devtools_fit(...$args): int",
    "args": -2,
    "desc": "Keeps the browser area sized correctly while the devtools panel is docked.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_devtools_ready",
    "sig": "ui_browser_devtools_ready(...$args): int",
    "args": -2,
    "desc": "true once the devtools window is up.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_print",
    "sig": "ui_browser_print(...$args): int",
    "args": -2,
    "desc": "Opens the print dialog for the current page.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_post",
    "sig": "ui_browser_post(...$args): int",
    "args": -2,
    "desc": "ui_browser_post($b, $url, …) — performs an HTTP POST from the browser context.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_on",
    "sig": "ui_browser_on(...$args): int",
    "args": -2,
    "desc": "ui_browser_on($b, $event, $callback) — registers a closure for browser events (navigation, load, …).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_key",
    "sig": "ui_browser_key(...$args): int",
    "args": -2,
    "desc": "ui_browser_key($b, $mod, $vk, $cmd, $callback) — binds a keyboard shortcut inside the browser.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "ui_browser_visible",
    "sig": "ui_browser_visible(...$args): int",
    "args": -2,
    "desc": "ui_browser_visible($b, $on) — shows or hides the embedded browser.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "thr_spawn",
    "sig": "thr_spawn(...$args): mixed",
    "args": -2,
    "desc": "thr_spawn($closure[, $args]) — runs the closure on a new thread; returns the thread id or false.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "thr_join",
    "sig": "thr_join(...$args): mixed",
    "args": -2,
    "desc": "thr_join($tid) — waits for a spawned thread; true when it was still joinable.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "thr_current",
    "sig": "thr_current(): int",
    "args": 0,
    "desc": "Id of the calling thread.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "thr_id",
    "sig": "thr_id(): int",
    "args": 0,
    "desc": "OS-level id of the calling thread.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "thr_sleep_ms",
    "sig": "thr_sleep_ms(int $n): void",
    "args": 1,
    "desc": "thr_sleep_ms($ms) — sleeps the current thread.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "thr_cpu_count",
    "sig": "thr_cpu_count(): int",
    "args": 0,
    "desc": "Number of hardware threads — use it to size a worker pool.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "thr_parallel_map",
    "sig": "thr_parallel_map(...$args): mixed",
    "args": -2,
    "desc": "thr_parallel_map($closure, $items[, $workers]) — maps the closure over the array on several threads and returns the results in order.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "chan_new",
    "sig": "chan_new(int $n): int",
    "args": 1,
    "desc": "chan_new($capacity) — creates a channel; capacity 0 means unbuffered (rendezvous, Go style).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "chan_send",
    "sig": "chan_send(...$args): bool",
    "args": -2,
    "desc": "chan_send($ch, $value) — blocks until the value is taken; throws when the channel is closed.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "chan_recv",
    "sig": "chan_recv(...$args): mixed",
    "args": -2,
    "desc": "chan_recv($ch) — blocks for the next value; false once the channel is closed and drained.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "chan_try_send",
    "sig": "chan_try_send(...$args): bool",
    "args": -2,
    "desc": "Like chan_send() but returns false instead of blocking.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "chan_try_recv",
    "sig": "chan_try_recv(...$args): mixed",
    "args": -2,
    "desc": "Like chan_recv() but returns false instead of blocking.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "chan_close",
    "sig": "chan_close(...$args): bool",
    "args": -2,
    "desc": "Closes the channel: further sends fail, receives drain what is left and then return false.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "mutex_new",
    "sig": "mutex_new(): int",
    "args": 0,
    "desc": "Creates a mutex and returns its id.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "mutex_lock",
    "sig": "mutex_lock(...$args): bool",
    "args": -2,
    "desc": "Locks the mutex, blocking until it is free.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "mutex_trylock",
    "sig": "mutex_trylock(...$args): bool",
    "args": -2,
    "desc": "Locks the mutex only if it is free right now; false otherwise.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "mutex_unlock",
    "sig": "mutex_unlock(...$args): bool",
    "args": -2,
    "desc": "Unlocks the mutex.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "mutex_free",
    "sig": "mutex_free(...$args): bool",
    "args": -2,
    "desc": "Releases the mutex id for reuse.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "barrier_new",
    "sig": "barrier_new(int $n): int",
    "args": 1,
    "desc": "barrier_new($n) — creates a barrier that releases once n threads have arrived.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "barrier_wait",
    "sig": "barrier_wait(...$args): int",
    "args": -2,
    "desc": "Waits at the barrier; returns the arrival index of the last thread to arrive.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "atomic_new",
    "sig": "atomic_new(...$args): int",
    "args": -2,
    "desc": "atomic_new([$init]) — creates an atomic int (default 0) and returns its id.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "atomic_get",
    "sig": "atomic_get(...$args): int",
    "args": -2,
    "desc": "Reads an atomic value.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "atomic_set",
    "sig": "atomic_set(...$args): bool",
    "args": -2,
    "desc": "atomic_set($a, $value) — stores a value atomically.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "atomic_add",
    "sig": "atomic_add(...$args): int",
    "args": -2,
    "desc": "atomic_add($a, $delta) — adds and returns the previous value.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "atomic_cas",
    "sig": "atomic_cas(...$args): bool",
    "args": -2,
    "desc": "atomic_cas($a, $expect, $set) — compare-and-set; true when the value was $expect and became $set.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "malloc",
@@ -9511,11 +10082,11 @@
    "name": "heap_dump",
    "sig": "heap_dump(): string",
    "args": -2,
-   "desc": "Returns a debug dump of the runtime heap (allocation count, sizes).",
+   "desc": "Unsafe: returns a debug dump of the runtime heap with raw allocation addresses (allocation count, sizes).",
    "unsafe": true,
    "params": [],
    "returns": "Debug dump of the runtime heap (allocation count, sizes).",
-   "example": "echo strlen(heap_dump()) > 0 ? \"heap-info\" : \"empty\";",
+   "example": "unsafe {\n    echo strlen(heap_dump()) > 0 ? \"heap-info\" : \"empty\";\n}",
    "exampleOutput": "heap-info",
    "seeAlso": [
     "memory_get_usage",
@@ -9529,7 +10100,12 @@
    "sig": "accept_emfile(...$args): bool",
    "args": -2,
    "desc": "Whether the last accept failed because the process ran out of descriptors.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "arr_clear",
@@ -9559,8 +10135,8 @@
    "name": "arr_free",
    "sig": "arr_free(array $a): bool",
    "args": -2,
-   "desc": "Frees an array and its element storage early (the values themselves are not released).",
-   "unsafe": false,
+   "desc": "Unsafe: frees an array and its element storage early (the values themselves are not released). A second call is a double free.",
+   "unsafe": true,
    "params": [
     {
      "name": "$a",
@@ -9571,7 +10147,7 @@
     }
    ],
    "returns": "true.",
-   "example": "$a = [1, 2, 3];\narr_free($a);\necho \"freed\\n\";",
+   "example": "$a = [1, 2, 3];\nunsafe {\n    arr_free($a);\n}\necho \"freed\";",
    "exampleOutput": "freed",
    "seeAlso": [
     "arr_clear"
@@ -9584,231 +10160,396 @@
    "sig": "bt_close(...$args): bool",
    "args": -2,
    "desc": "Closes a B-tree cursor.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_col_int",
    "sig": "bt_col_int(...$args): int",
    "args": -2,
    "desc": "Integer value of a column inside the current record.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_col_int_at",
    "sig": "bt_col_int_at(...$args): int",
    "args": -2,
    "desc": "Integer value of a column of another cursor's current record.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_col_len",
    "sig": "bt_col_len(...$args): int",
    "args": -2,
-   "desc": "Byte length of a column inside the current record.",
-   "unsafe": true
+   "desc": "Unsafe: byte length of a column inside the current record, taken from the cached decoder without re-checking the record.",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_col_off",
    "sig": "bt_col_off(...$args): int",
    "args": -2,
-   "desc": "Byte offset of a column inside the current record.",
-   "unsafe": true
+   "desc": "Unsafe: byte offset of a column inside the current record, taken from the cached decoder without re-checking the record.",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_cols",
    "sig": "bt_cols(...$args): int",
    "args": -2,
    "desc": "Number of columns in the current record.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_count_key",
    "sig": "bt_count_key(...$args): int",
    "args": -2,
    "desc": "Counts entries with the given key in an index cursor.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_count_range",
    "sig": "bt_count_range(...$args): int",
    "args": -2,
    "desc": "Counts entries per key in [lo,hi] with one index walk; writes the counts into a typed int array and returns 0 on success.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_first",
    "sig": "bt_first(...$args): int",
    "args": -2,
    "desc": "Moves a cursor to the first entry (1 = found).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_last",
    "sig": "bt_last(...$args): int",
    "args": -2,
    "desc": "Moves a cursor to the last entry (1 = found).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_multi_keys",
    "sig": "bt_multi_keys(...$args): int",
    "args": -2,
    "desc": "Fills a typed int array with the rowids of a batch result and returns their count.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_multi_payloads",
    "sig": "bt_multi_payloads(...$args): bool",
    "args": -2,
-   "desc": "Fills a typed int array with found/pointer/size triples from a batch result.",
-   "unsafe": false
+   "desc": "Unsafe: fills a typed int array with found/pointer/size triples; the pointers are raw SQLite page addresses valid only until bt_multi_release.",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_multi_release",
    "sig": "bt_multi_release(...$args): bool",
    "args": -2,
-   "desc": "Releases a batch result.",
-   "unsafe": false
+   "desc": "Unsafe: releases a batch result and the raw pages it pins. Using the result afterwards is a use-after-free.",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_multi_seek",
    "sig": "bt_multi_seek(...$args): int",
    "args": -2,
-   "desc": "Resolves many rowids with one batch of cursor positions and returns a result handle.",
-   "unsafe": true
+   "desc": "Unsafe: resolves many rowids with one batch of cursor positions and returns a raw result pointer that must go through bt_multi_release.",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_next",
    "sig": "bt_next(...$args): int",
    "args": -2,
    "desc": "Moves a cursor forward (1 = found, 0 = end).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_open",
    "sig": "bt_open(...$args): int",
    "args": -2,
    "desc": "Opens a cursor on a table or index and returns a handle. Unsafe: raw B-tree access.",
-   "unsafe": true
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_page_release",
    "sig": "bt_page_release(...$args): bool",
    "args": -2,
-   "desc": "Releases a token returned by bt_payload_pin.",
-   "unsafe": false
+   "desc": "Unsafe: releases a raw page token returned by bt_payload_pin. Releasing it twice corrupts the page cache.",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_payload_pin",
    "sig": "bt_payload_pin(...$args): int",
    "args": -2,
-   "desc": "Pins the current payload page and returns a release token.",
-   "unsafe": true
+   "desc": "Unsafe: pins the current payload page and returns a raw page pointer that only bt_page_release may consume.",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_payload_ptr",
    "sig": "bt_payload_ptr(...$args): int",
    "args": -2,
    "desc": "Unsafely returns the address of the current record's payload bytes.",
-   "unsafe": true
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_payload_size",
    "sig": "bt_payload_size(...$args): int",
    "args": -2,
    "desc": "Byte length of the current record's payload.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_prev",
    "sig": "bt_prev(...$args): int",
    "args": -2,
    "desc": "Moves a cursor backward (1 = found, 0 = start).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_read",
    "sig": "bt_read(...$args): int",
    "args": -2,
-   "desc": "Decodes several columns of the current record into a typed int array (offsets, lengths and integers) and returns the column count.",
-   "unsafe": true
+   "desc": "Unsafe: decodes several columns of the current record into a typed int array (offsets, lengths and integers) and returns the column count; it trusts the cached record layout.",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_root",
    "sig": "bt_root(...$args): int",
    "args": -2,
    "desc": "Root page number of a table or index (0 when it cannot be resolved). Unsafe: raw B-tree access.",
-   "unsafe": true
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_rowid",
    "sig": "bt_rowid(...$args): int",
    "args": -2,
    "desc": "Rowid at the current cursor position.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_seek",
    "sig": "bt_seek(...$args): int",
    "args": -2,
    "desc": "Seeks a table cursor to a rowid (1 = found).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "bt_tail",
    "sig": "bt_tail(...$args): int",
    "args": -2,
-   "desc": "Reads the last n entries of a table into a batch result handle.",
-   "unsafe": false
+   "desc": "Unsafe: reads the last n entries of a table into a raw batch result pointer that must go through bt_multi_release.",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "epoll_add",
    "sig": "epoll_add(...$args): int",
    "args": -2,
    "desc": "Adds a socket to the readiness set (io_uring poll or epoll, whichever is active).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "epoll_del",
    "sig": "epoll_del(...$args): int",
    "args": -2,
    "desc": "Removes a socket from the readiness set.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "epoll_mod",
    "sig": "epoll_mod(...$args): int",
    "args": -2,
    "desc": "Changes the interest mask of a socket: 1 = readable, 2 = writable.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "epoll_wait2",
    "sig": "epoll_wait2(...$args): int",
    "args": -2,
    "desc": "Waits for readiness and fills the two arrays with readable and writable handles.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "epoll_wait_iarr2",
    "sig": "epoll_wait_iarr2(...$args): bool",
    "args": -2,
-   "desc": "Typed-array variant of epoll_wait2 (no hval boxing per fd).",
-   "unsafe": true
+   "desc": "Unsafe: typed-array variant of epoll_wait2; writes through a raw typed int array without boxing or lifetime checks.",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "epoll_wait_into",
    "sig": "epoll_wait_into(...$args): int",
    "args": -2,
    "desc": "Waits for readability and appends ready handles to an array.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "http_request_bounds",
    "sig": "http_request_bounds(...$args): int",
    "args": -2,
    "desc": "Scans an HTTP request head once and packs the request-line and header end offsets into one integer (0 = not complete, -1/-2 = error/overflow).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "iarr_data_ptr",
@@ -9889,7 +10630,7 @@
     }
    ],
    "returns": "The value without a bounds check.",
-   "example": "$a = iarr_new(2);\niarr_set($a, 1, 8);\necho iarr_get_fast($a, 1), \"\\n\";",
+   "example": "$a = iarr_new(2);\niarr_set($a, 1, 8);\nunsafe {\n    echo iarr_get_fast($a, 1);\n}",
    "exampleOutput": "8",
    "seeAlso": [
     "iarr_get"
@@ -9913,8 +10654,8 @@
     }
    ],
    "returns": "Number of elements.",
-   "example": "$a = iarr_new(4);\necho iarr_len($a), \"\\n\";",
-   "exampleOutput": "4",
+   "example": "$a = iarr_new(4);          // room for 4, nothing stored yet\necho iarr_len($a);\niarr_set($a, 2, 77);\necho iarr_get($a, 2);",
+   "exampleOutput": "0\n77",
    "seeAlso": [
     "iarr_new"
    ],
@@ -9937,8 +10678,8 @@
     }
    ],
    "returns": "Handle of a zeroed int64 array.",
-   "example": "$a = iarr_new(3);\necho iarr_len($a), \" \", iarr_get($a, 0), \"\\n\";",
-   "exampleOutput": "3 0",
+   "example": "$a = iarr_new(3);\necho iarr_len($a), \" \", iarr_get($a, 0);",
+   "exampleOutput": "0 0",
    "seeAlso": [
     "iarr_set",
     "iarr_release"
@@ -9950,8 +10691,8 @@
    "name": "iarr_new_uninit",
    "sig": "iarr_new_uninit(int $n): int",
    "args": -2,
-   "desc": "Creates a typed int64 array without initialising it (fill it before reading).",
-   "unsafe": false,
+   "desc": "Unsafe: creates a typed int64 array with uninitialised storage (fill it before reading; reading first is undefined).",
+   "unsafe": true,
    "params": [
     {
      "name": "$n",
@@ -9962,7 +10703,7 @@
     }
    ],
    "returns": "Handle of an uninitialised int64 array.",
-   "example": "$a = iarr_new_uninit(2);\niarr_set($a, 1, 9);\necho iarr_get($a, 1), \"\\n\";",
+   "example": "unsafe {\n    $a = iarr_new_uninit(2);\n    iarr_set($a, 1, 9);\n    echo iarr_get($a, 1);\n}",
    "exampleOutput": "9",
    "seeAlso": [
     "iarr_new"
@@ -9974,8 +10715,8 @@
    "name": "iarr_release",
    "sig": "iarr_release(int $h): bool",
    "args": -2,
-   "desc": "Releases a typed int array back to the runtime pool.",
-   "unsafe": false,
+   "desc": "Unsafe: releases a typed int array back to the runtime pool; using the handle afterwards, or releasing it twice, is a use-after-free.",
+   "unsafe": true,
    "params": [
     {
      "name": "$h",
@@ -9986,7 +10727,7 @@
     }
    ],
    "returns": "true; the array returns to the pool.",
-   "example": "$a = iarr_new(4);\niarr_release($a);\necho \"released\\n\";",
+   "example": "$a = iarr_new(4);\nunsafe {\n    iarr_release($a);\n}\necho \"released\";",
    "exampleOutput": "released",
    "seeAlso": [
     "iarr_new"
@@ -10062,7 +10803,7 @@
     }
    ],
    "returns": "true.",
-   "example": "$a = iarr_new(2);\niarr_set_fast($a, 0, 4);\necho iarr_get($a, 0), \"\\n\";",
+   "example": "$a = iarr_new(2);\nunsafe {\n    iarr_set_fast($a, 0, 4);\n}\necho iarr_get($a, 0);",
    "exampleOutput": "4",
    "seeAlso": [
     "iarr_set"
@@ -10161,63 +10902,108 @@
    "sig": "jwt_verifier_new(...$args): string",
    "args": -2,
    "desc": "Precomputes the key state for repeated JWT verification.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "jwt_verify",
    "sig": "jwt_verify(...$args): string",
    "args": -2,
    "desc": "Verifies an HS256 JWT (signature, alg, exp) and returns the decoded payload, or an empty string.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "jwt_verify_prepared",
    "sig": "jwt_verify_prepared(...$args): string",
    "args": -2,
    "desc": "Verifies a JWT with a prepared verifier.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "live_allocs",
    "sig": "live_allocs(...$args): mixed",
    "args": -2,
    "desc": "Number of live blocks tracked by the runtime allocator (0 when the core has no counter).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "live_bytes",
    "sig": "live_bytes(...$args): mixed",
    "args": -2,
    "desc": "Bytes currently allocated by the runtime (0 when the core has no counter).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "nofile_limit",
    "sig": "nofile_limit(...$args): int",
    "args": -2,
    "desc": "Current RLIMIT_NOFILE (0 when unknown).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "object_free",
    "sig": "object_free(...$args): bool",
    "args": -2,
-   "desc": "Frees the object struct itself, not the values it references.",
-   "unsafe": false
+   "desc": "Unsafe: frees the object struct itself, not the values it references; a second call is a double free.",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "runtime_diag_write",
    "sig": "runtime_diag_write(...$args): bool",
    "args": -2,
    "desc": "Writes one diagnostic line to stderr when HPHP_DIAG=1.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "runtime_stats",
    "sig": "runtime_stats(...$args): string",
    "args": -2,
    "desc": "JSON snapshot of the runtime counters (requests, io_uring enters, allocations).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sb_bytes",
@@ -10285,8 +11071,8 @@
    "name": "sb_discard",
    "sig": "sb_discard(int $h): bool",
    "args": -2,
-   "desc": "Releases a builder without taking its contents.",
-   "unsafe": false,
+   "desc": "Unsafe: releases a builder without taking its contents. Using the handle afterwards is a use-after-free.",
+   "unsafe": true,
    "params": [
     {
      "name": "$h",
@@ -10297,7 +11083,7 @@
     }
    ],
    "returns": "true; the builder is released.",
-   "example": "$sb = sb_new();\nsb_put($sb, \"gone\");\nsb_discard($sb);\necho \"discarded\\n\";",
+   "example": "$sb = sb_new();\nsb_put($sb, \"gone\");\nunsafe {\n    sb_discard($sb);\n}\necho \"discarded\";",
    "exampleOutput": "discarded",
    "seeAlso": [
     "sb_take"
@@ -10342,7 +11128,12 @@
    "sig": "sb_json(...$args): int",
    "args": -2,
    "desc": "Appends JSON string escaping for len bytes at a raw address (the value must already be UTF-8 text).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sb_json_str",
@@ -10422,7 +11213,12 @@
    "sig": "sb_prepend(...$args): bool",
    "args": -2,
    "desc": "Inserts a string before the current contents.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sb_put",
@@ -10492,7 +11288,12 @@
    "sig": "scalar_binop(...$args): mixed",
    "args": -2,
    "desc": "Runtime support builtin ported with the io_uring/SQLite modules.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "scope_begin",
@@ -10514,11 +11315,11 @@
    "name": "scope_end",
    "sig": "scope_end(): bool",
    "args": -2,
-   "desc": "Ends a request scope. Compatibility builtin: no-op here; counters only.",
-   "unsafe": false,
+   "desc": "Unsafe: ends a request scope and invalidates every value allocated inside it. Compatibility builtin: no-op in this core; counters only (phase 2 removes the calls).",
+   "unsafe": true,
    "params": [],
    "returns": "true (no-op in this core).",
-   "example": "scope_begin(); echo scope_end() ? \"ok\\n\" : \"no\\n\";",
+   "example": "scope_begin();\nunsafe {\n    echo scope_end() ? \"ok\" : \"no\";\n}",
    "exampleOutput": "ok",
    "seeAlso": [
     "scope_begin"
@@ -10531,168 +11332,288 @@
    "sig": "sqlite_bg_checkpoint_active(...$args): mixed",
    "args": -2,
    "desc": "Whether the background checkpoint worker is currently running.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_bg_checkpoint_hold",
    "sig": "sqlite_bg_checkpoint_hold(...$args): mixed",
    "args": -2,
    "desc": "Lets the event loop ask the checkpoint worker to hold off briefly so the WAL can restart.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_bg_checkpoint_start",
    "sig": "sqlite_bg_checkpoint_start(...$args): mixed",
    "args": -2,
    "desc": "Starts the optional background WAL checkpoint worker for a database.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_bg_checkpoint_tick",
    "sig": "sqlite_bg_checkpoint_tick(...$args): mixed",
    "args": -2,
    "desc": "One cheap event-loop tick for the checkpoint worker; call it once per poll cycle.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_bind_int",
    "sig": "sqlite_bind_int(...$args): bool",
    "args": -2,
    "desc": "Binds an integer to a 1-based statement parameter.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_bind_text",
    "sig": "sqlite_bind_text(...$args): bool",
    "args": -2,
    "desc": "Binds a string to a 1-based statement parameter.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_busy_timeout",
    "sig": "sqlite_busy_timeout(...$args): bool",
    "args": -2,
    "desc": "Milliseconds SQLite waits for a lock before returning SQLITE_BUSY.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_changes",
    "sig": "sqlite_changes(...$args): int",
    "args": -2,
    "desc": "Rows changed by the most recent write statement.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_clear_bindings",
    "sig": "sqlite_clear_bindings(...$args): bool",
    "args": -2,
    "desc": "Clears all bound parameters of a statement.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_close",
    "sig": "sqlite_close(...$args): mixed",
    "args": -2,
    "desc": "Closes a SQLite database handle.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_column_int",
    "sig": "sqlite_column_int(...$args): int",
    "args": -2,
    "desc": "Integer value of a column in the current row.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_column_text",
    "sig": "sqlite_column_text(...$args): string",
    "args": -2,
    "desc": "Text value of a column in the current row.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_errmsg",
    "sig": "sqlite_errmsg(...$args): mixed",
    "args": -2,
    "desc": "Last error message of the connection.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_exec",
    "sig": "sqlite_exec(...$args): bool",
    "args": -2,
    "desc": "Runs one or more SQL statements; true when SQLite reports SQLITE_OK.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_extended_errcode",
    "sig": "sqlite_extended_errcode(...$args): int",
    "args": -2,
    "desc": "Extended SQLite error code of the connection.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_finalize",
    "sig": "sqlite_finalize(...$args): bool",
    "args": -2,
    "desc": "Finalises a prepared statement.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_is_lock_error",
    "sig": "sqlite_is_lock_error(...$args): bool",
    "args": -2,
    "desc": "Whether the last error was a busy/locked condition worth retrying.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_last_insert_rowid",
    "sig": "sqlite_last_insert_rowid(...$args): int",
    "args": -2,
    "desc": "Rowid of the most recent successful insert.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_open",
    "sig": "sqlite_open(...$args): int",
    "args": -2,
    "desc": "Opens a SQLite database file and returns a handle (0 on failure). Unsafe: the handle is a raw library pointer.",
-   "unsafe": true
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_open_vfs",
    "sig": "sqlite_open_vfs(...$args): int",
    "args": -2,
-   "desc": "Opens a SQLite database through a named VFS (for example unix-excl).",
-   "unsafe": true
+   "desc": "Unsafe: opens a SQLite database through a named VFS and returns a raw library handle (0 on failure).",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_prepare",
    "sig": "sqlite_prepare(...$args): int",
    "args": -2,
    "desc": "Compiles one SQL statement and returns a statement handle (0 on error). Unsafe: raw pointer.",
-   "unsafe": true
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_reset",
    "sig": "sqlite_reset(...$args): int",
    "args": -2,
    "desc": "Resets a statement so it can be stepped again; bindings are kept.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_status",
    "sig": "sqlite_status(...$args): string",
    "args": -2,
    "desc": "Returns a compact JSON string with the connection's SQLite status counters.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sqlite_step",
    "sig": "sqlite_step(...$args): int",
    "args": -2,
    "desc": "Advances a statement: 100 = row, 101 = done, anything else is an error.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "str_at_eq",
@@ -10781,8 +11702,13 @@
    "name": "str_free",
    "sig": "str_free(...$args): bool",
    "args": -2,
-   "desc": "Frees a string early. Unsafe-adjacent: only call it on a value you own.",
-   "unsafe": false
+   "desc": "Unsafe: frees a string early. Only call it on a value you own; a second call, or freeing a borrowed string, is a use-after-free.",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "str_from_bytes",
@@ -10963,8 +11889,8 @@
     }
    ],
    "returns": "The integer, or 0.",
-   "example": "echo str_to_int(\"42\"), \" \", str_to_int(\"x\"), \"\\n\";",
-   "exampleOutput": "42 0",
+   "example": "echo str_to_int(\"42\"), \" \", str_to_int(\"x\");   // -1: not a number",
+   "exampleOutput": "42 -1",
    "seeAlso": [
     "str_to_int_range",
     "intval"
@@ -11052,91 +11978,151 @@
    "name": "stream_ready_into",
    "sig": "stream_ready_into(...$args): bool",
    "args": -2,
-   "desc": "Waits until any of the handles is readable and appends the ready ones.",
-   "unsafe": true
+   "desc": "Unsafe: waits until any of the handles is readable, resets the caller's array in place and appends the ready handles.",
+   "unsafe": true,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "stream_recv_release",
    "sig": "stream_recv_release(...$args): int",
    "args": -2,
-   "desc": "Releases the receive buffer of a connection back to the runtime pool.",
-   "unsafe": false
+   "desc": "Releases the receive buffer of a connection back to the runtime pool. In direct io_uring mode every string returned by stream_recv since the last release becomes invalid, so copy what you keep.",
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "stream_send2",
    "sig": "stream_send2(...$args): int",
    "args": -2,
    "desc": "Blocking variant of stream_send2_nb.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "stream_send2_nb",
    "sig": "stream_send2_nb(...$args): int",
    "args": -2,
    "desc": "Non-blocking writev of two buffers: bytes written, -1 would block, -2 error.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "stream_send_nb",
    "sig": "stream_send_nb(...$args): int",
    "args": -2,
    "desc": "Non-blocking send: bytes written, -1 would block, -2 error.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "stream_send_sb",
    "sig": "stream_send_sb(...$args): int",
    "args": -2,
    "desc": "Sends a whole string-builder response without copying it and consumes the builder.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "stream_set_nodelay",
    "sig": "stream_set_nodelay(...$args): bool",
    "args": -2,
    "desc": "Disables Nagle on a connected socket (accepted sockets inherit it on Linux).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "stream_set_socket_buffers",
    "sig": "stream_set_socket_buffers(...$args): bool",
    "args": -2,
    "desc": "Sets TCP receive/send buffer sizes on a listening or connected socket (0 = kernel default).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "stream_socket_server_reuseport",
    "sig": "stream_socket_server_reuseport(...$args): int",
    "args": -2,
    "desc": "Creates a listening SO_REUSEPORT socket (one of N accepts the connection).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "uring_active",
    "sig": "uring_active(...$args): bool",
    "args": -2,
    "desc": "Whether the io_uring backend is in use.",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "uring_direct",
    "sig": "uring_direct(...$args): bool",
    "args": -2,
    "desc": "Whether ring-owned direct descriptors are in use (they need no process fd).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "uring_direct_slots",
    "sig": "uring_direct_slots(...$args): int",
    "args": -2,
    "desc": "Number of registered direct-descriptor slots (0 when direct mode is off).",
-   "unsafe": false
+   "unsafe": false,
+   "params": [],
+   "returns": "",
+   "example": "",
+   "exampleOutput": "",
+   "seeAlso": []
   },
   {
    "name": "sb_take",
    "sig": "sb_take(int $h): string",
    "args": -2,
-   "desc": "Returns the builder contents as a string and releases the builder.",
+   "desc": "Unsafe: returns the builder contents as a string and releases the builder; a second call is a use-after-free.",
    "unsafe": true,
    "params": [
     {

@@ -58,21 +58,22 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <div class="crumbs"><a href="../builtins.html">&larr; All built-ins</a> / scandir()</div>
   <h1><span class="n">scandir</span>()</h1>
   
-  <div class="sig"><span class="n">scandir</span>(string $s): <span class="r">mixed</span></div>
+  <div class="sig"><span class="n">scandir</span>(string $path): <span class="r">mixed</span></div>
   <h2>Parameters</h2><table>
 <tr><th>Name</th><th>Type</th><th>Description</th></tr>
 <tr><td class="pn">$path</td><td class="pt">string</td><td>directory path</td></tr>
 </table>
   <h2>Return value</h2><p class="ret">Array of entry names (including &quot;.&quot; and &quot;..&quot;).</p>
-  <h2>Example</h2><pre>mkdir(&quot;/tmp/hphp_doc_sc&quot;);
-file_put_contents(&quot;/tmp/hphp_doc_sc/a.txt&quot;, &quot;1&quot;);
-echo count(scandir(&quot;/tmp/hphp_doc_sc&quot;)) &gt;= 3 ? &quot;listed&quot; : &quot;empty&quot;;
-unlink(&quot;/tmp/hphp_doc_sc/a.txt&quot;);
-rmdir(&quot;/tmp/hphp_doc_sc&quot;);</pre><pre class="out">listed</pre>
+  <h2>Example</h2><pre>$d = sys_get_temp_dir() . &quot;/hphp_doc_sc&quot;;
+mkdir($d);
+file_put_contents($d . &quot;/a.txt&quot;, &quot;1&quot;);
+echo implode(&quot;,&quot;, scandir($d));   // without . and ..
+unlink($d . &quot;/a.txt&quot;);
+rmdir($d);</pre><pre class="out">a.txt</pre>
   <h2>See also</h2><div class="see"><a href="is_dir.html">is_dir()</a></div>
   <div class="nav">
   <a href="fclose.html">&larr; fclose()</a>
-  <span class="mid">202 / 305</span>
+  <span class="mid">202 / 547</span>
   <a href="dirname.html">dirname() &rarr;</a>
 </div>
 </main>

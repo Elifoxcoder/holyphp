@@ -12,8 +12,8 @@ hphp pkg install <name>
 ## Build (on Linux or WSL)
 
 ```bash
-bash packaging/linux/make-deb.sh        # -> packaging/linux/out/holyphp_1.0.2_amd64.deb
-bash packaging/linux/make-appimage.sh   # -> packaging/linux/out/HolyPHP-1.0.2-x86_64.AppImage
+bash packaging/linux/make-deb.sh        # -> packaging/linux/out/holyphp_1.1.0_amd64.deb
+bash packaging/linux/make-appimage.sh   # -> packaging/linux/out/HolyPHP-1.1.0-x86_64.AppImage
 ```
 
 Both scripts build `./hphp` themselves if it's missing
@@ -24,7 +24,7 @@ which is Windows/MinGW-only). The Linux builder needs `gcc`, `dpkg-deb`,
 ## The `.deb` — system install
 
 ```bash
-sudo apt install ./holyphp_1.0.2_amd64.deb
+sudo apt install ./holyphp_1.1.0_amd64.deb
 ```
 
 | Installs | Role |
@@ -42,9 +42,9 @@ installed via the manager live in `~/.local/share/hphp` and survive removal.
 ## The AppImage — portable + optional install wizard
 
 ```bash
-./HolyPHP-1.0.2-x86_64.AppImage run hello.hphp   # zero-install: runs from anywhere
-./HolyPHP-1.0.2-x86_64.AppImage install          # wizard: adds to PATH, checks gcc
-./HolyPHP-1.0.2-x86_64.AppImage uninstall        # undo the PATH entries
+./HolyPHP-1.1.0-x86_64.AppImage run hello.hphp   # zero-install: runs from anywhere
+./HolyPHP-1.1.0-x86_64.AppImage install          # wizard: adds to PATH, checks gcc
+./HolyPHP-1.1.0-x86_64.AppImage uninstall        # undo the PATH entries
 ```
 
 `install` (in `AppDir/AppRun`) prepends the AppImage's own directory to `PATH`

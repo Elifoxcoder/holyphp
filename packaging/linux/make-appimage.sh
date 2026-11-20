@@ -17,7 +17,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."          # repo root
 
-VERSION=1.0.2
+VERSION=1.1.0
 ARCH=x86_64
 APPDIR=packaging/linux/AppDir
 OUT=packaging/linux/out/HolyPHP-$VERSION-$ARCH.AppImage

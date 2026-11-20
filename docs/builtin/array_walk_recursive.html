@@ -58,20 +58,20 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <div class="crumbs"><a href="../builtins.html">&larr; All built-ins</a> / array_walk_recursive()</div>
   <h1><span class="n">array_walk_recursive</span>()</h1>
   
-  <div class="sig"><span class="n">array_walk_recursive</span>(...$args): <span class="r">bool</span></div>
+  <div class="sig"><span class="n">array_walk_recursive</span>(array $a, closure $fn): <span class="r">bool</span></div>
   <h2>Parameters</h2><table>
 <tr><th>Name</th><th>Type</th><th>Description</th></tr>
 <tr><td class="pn">$a</td><td class="pt">array</td><td>(possibly nested) array</td></tr>
 <tr><td class="pn">$fn</td><td class="pt">closure</td><td>fn(&amp;$value, $key)</td></tr>
 </table>
   <h2>Return value</h2><p class="ret">true; visits leaves of nested arrays only.</p>
-  <h2>Example</h2><pre>$a = [1, [2, 3]];
-array_walk_recursive($a, fn(&amp;$v, $k) =&gt; $v = $v + 10);
-echo $a[0], &quot; &quot;, $a[1][0];</pre><pre class="out">11 12</pre>
+  <h2>Example</h2><pre>$sum = 0;
+array_walk_recursive([1, [2, 3]], function($v, $k) use (&amp;$sum) { $sum = $sum + $v; });
+echo $sum;</pre><pre class="out">6</pre>
   <h2>See also</h2><div class="see"><a href="array_walk.html">array_walk()</a><a href="array_map.html">array_map()</a></div>
   <div class="nav">
   <a href="array_walk.html">&larr; array_walk()</a>
-  <span class="mid">105 / 305</span>
+  <span class="mid">105 / 547</span>
   <a href="substr_count.html">substr_count() &rarr;</a>
 </div>
 </main>

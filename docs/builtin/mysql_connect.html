@@ -58,7 +58,7 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <div class="crumbs"><a href="../builtins.html">&larr; All built-ins</a> / mysql_connect()</div>
   <h1><span class="n">mysql_connect</span>()</h1>
   
-  <div class="sig"><span class="n">mysql_connect</span>(...$args): <span class="r">mixed</span></div>
+  <div class="sig"><span class="n">mysql_connect</span>(string $host[, int $port, string $user, string $pass, string $db]): <span class="r">mixed</span></div>
   <h2>Parameters</h2><table>
 <tr><th>Name</th><th>Type</th><th>Description</th></tr>
 <tr><td class="pn">$host</td><td class="pt">string</td><td>MySQL/MariaDB host (TCP)</td></tr>
@@ -74,7 +74,7 @@ if ($c) { mysql_close($c); }</pre><pre class="out">no-server (ok offline)</pre><
   <h2>See also</h2><div class="see"><a href="mysql_query.html">mysql_query()</a><a href="mysql_exec.html">mysql_exec()</a><a href="mysql_escape.html">mysql_escape()</a></div>
   <div class="nav">
   <a href="http_build_query.html">&larr; http_build_query()</a>
-  <span class="mid">53 / 305</span>
+  <span class="mid">53 / 547</span>
   <a href="mysql_query.html">mysql_query() &rarr;</a>
 </div>
 </main>

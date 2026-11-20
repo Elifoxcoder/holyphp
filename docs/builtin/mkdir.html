@@ -58,21 +58,22 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <div class="crumbs"><a href="../builtins.html">&larr; All built-ins</a> / mkdir()</div>
   <h1><span class="n">mkdir</span>()</h1>
   
-  <div class="sig"><span class="n">mkdir</span>(...$args): <span class="r">bool</span></div>
+  <div class="sig"><span class="n">mkdir</span>(string $path[, bool $recursive]): <span class="r">bool</span></div>
   <h2>Parameters</h2><table>
 <tr><th>Name</th><th>Type</th><th>Description</th></tr>
 <tr><td class="pn">$path</td><td class="pt">string</td><td>directory to create</td></tr>
 <tr><td class="pn">$recursive</td><td class="pt">bool</td><td>true = create parent directories too<span class="opt">optional</span></td></tr>
 </table>
   <h2>Return value</h2><p class="ret">true on success.</p>
-  <h2>Example</h2><pre>mkdir(&quot;/tmp/hphp_doc_m/deep&quot;, true);
-var_dump(is_dir(&quot;/tmp/hphp_doc_m/deep&quot;));
-rmdir(&quot;/tmp/hphp_doc_m/deep&quot;);
-rmdir(&quot;/tmp/hphp_doc_m&quot;);</pre><pre class="out">bool(true)</pre>
+  <h2>Example</h2><pre>$d = sys_get_temp_dir() . &quot;/hphp_doc_m&quot;;
+mkdir($d . &quot;/deep&quot;, 0777, true);
+var_dump(is_dir($d . &quot;/deep&quot;));
+rmdir($d . &quot;/deep&quot;);
+rmdir($d);</pre><pre class="out">bool(true)</pre>
   <h2>See also</h2><div class="see"><a href="rmdir.html">rmdir()</a><a href="is_dir.html">is_dir()</a></div>
   <div class="nav">
   <a href="filesize.html">&larr; filesize()</a>
-  <span class="mid">193 / 305</span>
+  <span class="mid">193 / 547</span>
   <a href="rmdir.html">rmdir() &rarr;</a>
 </div>
 </main>

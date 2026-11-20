@@ -58,25 +58,23 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <div class="crumbs"><a href="../builtins.html">&larr; All built-ins</a> / date()</div>
   <h1><span class="n">date</span>()</h1>
   
-  <div class="sig"><span class="n">date</span>(...$args): <span class="r">string</span></div>
+  <div class="sig"><span class="n">date</span>(string $format[, int $timestamp]): <span class="r">string</span></div>
   <h2>Parameters</h2><table>
 <tr><th>Name</th><th>Type</th><th>Description</th></tr>
 <tr><td class="pn">$format</td><td class="pt">string</td><td>format letters: Y y m n d j H G i s a A D l M N W t L U</td></tr>
 <tr><td class="pn">$timestamp</td><td class="pt">int</td><td>Unix timestamp (default: now)<span class="opt">optional</span></td></tr>
 </table>
   <h2>Return value</h2><p class="ret">The formatted date/time string (local time).</p>
-  <h2>Example</h2><pre>echo date(&quot;Y-m-d&quot;, strtotime(&quot;2024-03-15 12:30:00&quot;)), &quot;
-&quot;;
-echo date(&quot;H:i:s&quot;, strtotime(&quot;2024-03-15 12:30:00&quot;)), &quot;
-&quot;;
-echo date(&quot;Y-m-d H:i:s&quot;, 1710508200), &quot;
-&quot;;</pre><pre class="out">2024-03-15
+  <h2>Example</h2><pre>$t = strtotime(&quot;2024-03-15 12:30:00&quot;);
+echo date(&quot;Y-m-d&quot;, $t);
+echo date(&quot;H:i:s&quot;, $t);
+echo date(&quot;D, d M Y&quot;, $t);</pre><pre class="out">2024-03-15
 12:30:00
-2024-03-15 12:30:00</pre>
+Fri, 15 Mar 2024</pre>
   <h2>See also</h2><div class="see"><a href="strtotime.html">strtotime()</a><a href="mktime.html">mktime()</a><a href="checkdate.html">checkdate()</a></div>
   <div class="nav">
   <a href="php_logo_guid.html">&larr; php_logo_guid()</a>
-  <span class="mid">248 / 305</span>
+  <span class="mid">248 / 547</span>
   <a href="time.html">time() &rarr;</a>
 </div>
 </main>

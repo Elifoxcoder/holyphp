@@ -58,15 +58,17 @@ pre.out::before { content: "output"; display: block; font-size: 10px; text-trans
   <div class="crumbs"><a href="../builtins.html">&larr; All built-ins</a> / heap_dump()</div>
   <h1><span class="n">heap_dump</span>()</h1>
   <span class="badge">unsafe</span>
-  <div class="sig"><span class="n">heap_dump</span>(...$args): <span class="r">string</span></div>
+  <div class="sig"><span class="n">heap_dump</span>(): <span class="r">string</span></div>
   <h2>Parameters</h2><p class="muted">Takes no arguments.</p>
   <h2>Return value</h2><p class="ret">Debug dump of the runtime heap (allocation count, sizes).</p>
-  <h2>Example</h2><pre>echo strlen(heap_dump()) &gt; 0 ? &quot;heap-info&quot; : &quot;empty&quot;;</pre><pre class="out">heap-info</pre>
+  <h2>Example</h2><pre>unsafe {
+    echo strlen(heap_dump()) &gt; 0 ? &quot;heap-info&quot; : &quot;empty&quot;;
+}</pre><pre class="out">heap-info</pre>
   <h2>See also</h2><div class="see"><a href="memory_get_usage.html">memory_get_usage()</a><a href="gc_collect_cycles.html">gc_collect_cycles()</a></div>
   <div class="nav">
   <a href="ffi_call.html">&larr; ffi_call()</a>
-  <span class="mid">305 / 305</span>
-  <a href="strlen.html">strlen() &rarr;</a>
+  <span class="mid">424 / 547</span>
+  <a href="accept_emfile.html">accept_emfile() &rarr;</a>
 </div>
 </main>
 <script src="../assets/theme.js?v=1"></script>
