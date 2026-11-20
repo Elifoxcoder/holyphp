@@ -5,6 +5,9 @@
 
 # Scripts that must keep LF line endings (bash/CI).
 *.sh text eol=lf
+# Linux desktop files: appimagetool rejects CRLF line endings
+*.desktop text eol=lf
+AppRun text eol=lf
 
 # Vendored sources are verified by hash in their README, so Git must not
 # rewrite their line endings.

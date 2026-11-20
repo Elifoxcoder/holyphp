@@ -39,6 +39,8 @@ fi
 mkdir -p "$APPDIR/usr/bin"
 cp hphp "$APPDIR/usr/bin/hphp"
 chmod 755 "$APPDIR/AppRun" "$APPDIR/usr/bin/hphp"
+# a Windows checkout may have CRLF line endings; appimagetool rejects them
+sed -i 's/\r$//' "$APPDIR/hphp.desktop" "$APPDIR/AppRun"
 
 # icon (any 256x256 png works; skip gracefully if absent)
 if [ -f packaging/linux/hphp.png ]; then
