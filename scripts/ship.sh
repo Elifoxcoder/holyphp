@@ -136,6 +136,7 @@ echo "  no new failures ($(echo "$known" | grep -c . || true) known)"
 step 7 "docs"
 node scripts/genext.js
 node scripts/gendocs.js
+node scripts/gensite.js     # libraries/, docs.html, redirects (after gendocs: reads builtins.html)
 node scripts/genbuiltinsites.js
 [[ -f scripts/gen-playground-completions.mjs ]] && node scripts/gen-playground-completions.mjs
 node scripts/check-examples.js

@@ -324,13 +324,17 @@
   <url><loc>https://hphp.ch/guide.html</loc></url>
   <url><loc>https://hphp.ch/index.html</loc></url>
   <url><loc>https://hphp.ch/lang.html</loc></url>
-  <url><loc>https://hphp.ch/lib-async.html</loc></url>
-  <url><loc>https://hphp.ch/lib-html.html</loc></url>
-  <url><loc>https://hphp.ch/lib-ide.html</loc></url>
-  <url><loc>https://hphp.ch/lib-sqlite.html</loc></url>
-  <url><loc>https://hphp.ch/lib-thread.html</loc></url>
-  <url><loc>https://hphp.ch/lib-ui.html</loc></url>
-  <url><loc>https://hphp.ch/lib-websocket.html</loc></url>
   <url><loc>https://hphp.ch/pkg.html</loc></url>
   <url><loc>https://hphp.ch/playground.html</loc></url>
+  <url><loc>https://hphp.ch/libraries/</loc></url>
+  <url><loc>https://hphp.ch/libraries/http/</loc></url>
+  <url><loc>https://hphp.ch/libraries/async/</loc></url>
+  <url><loc>https://hphp.ch/libraries/testing/</loc></url>
+  <url><loc>https://hphp.ch/libraries/cli/</loc></url>
+  <url><loc>https://hphp.ch/libraries/thread/</loc></url>
+  <url><loc>https://hphp.ch/libraries/dotenv/</loc></url>
+  <url><loc>https://hphp.ch/libraries/websocket/</loc></url>
+  <url><loc>https://hphp.ch/libraries/ui/</loc></url>
+  <url><loc>https://hphp.ch/libraries/html/</loc></url>
+  <url><loc>https://hphp.ch/libraries/ide/</loc></url>
 </urlset>

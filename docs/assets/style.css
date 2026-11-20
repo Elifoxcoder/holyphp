@@ -471,3 +471,5 @@ body.has-guide-sidebar .run-btn { min-height:36px; color:#24140f!important; text
 body.has-guide-sidebar .run-btn:focus-visible { outline:3px solid #6153bc; outline-offset:2px }
 body.has-guide-sidebar .challenge ol { margin:.8em 0; padding-left:1.4em }
 body.has-guide-sidebar .challenge li { padding:.15em 0 }
+.site-links a.active { color:var(--ember)!important }
+html[data-theme="dark"] .site-links a.active { color:var(--ember)!important }

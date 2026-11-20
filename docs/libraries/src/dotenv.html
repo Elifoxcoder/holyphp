@@ -1,0 +1,63 @@
+<!-- docs/libraries/src/dotenv.html: source of hphp.ch/libraries/dotenv/ (scripts/gensite.js) -->
+<section data-tab="overview">
+<p class="lead">Keep configuration out of your code: load <code>.env</code> files into the
+environment and read values with typed getters. Real environment variables win, so the same
+program runs locally with a <code>.env</code> file and in production with real variables.</p>
+<div>
+  <span class="pill e">bundled — works offline</span>
+  <span class="pill">.env files</span>
+  <span class="pill">env_int, env_bool</span>
+  <span class="pill">${VAR} expansion</span>
+</div>
+<h2>Quick start</h2>
+<pre><code class="bash"># .env
+PORT=8080
+DEBUG=true
+DATABASE_URL=sqlite:app.db</code></pre>
+<pre><code class="hphp">import "dotenv";
+
+env_load();                              // reads ./.env when it exists
+$port = env_int("PORT", 3000);
+$debug = env_bool("DEBUG", false);
+$db = env("DATABASE_URL", "sqlite:dev.db");</code></pre>
+</section>
+
+<section data-tab="documentation">
+<h2>Functions</h2>
+<table>
+  <tr><th>Function</th><th>What it does</th></tr>
+  <tr><td><code>env_load($path = ".env", $override = false)</code></td><td>loads a file into the environment; returns how many keys it set (0 when the file is missing). Existing variables are kept unless <code>$override</code></td></tr>
+  <tr><td><code>env($key, $default = "")</code></td><td>the value, or the default when unset or empty</td></tr>
+  <tr><td><code>env_int($key, $default = 0)</code></td><td>the value as an int (default when not numeric)</td></tr>
+  <tr><td><code>env_bool($key, $default = false)</code></td><td>true/yes/on/1 and false/no/off/0, any case</td></tr>
+  <tr><td><code>env_has($key)</code></td><td>whether the variable is set and not empty</td></tr>
+  <tr><td><code>env_required($key)</code></td><td>the value; throws <code>"missing environment variable: KEY"</code> when unset</td></tr>
+  <tr><td><code>env_parse($text)</code></td><td>parses .env text into a map, without touching the environment</td></tr>
+</table>
+<h2>.env syntax</h2>
+<pre><code class="bash"># comments start with #
+export APP_NAME=Demo App          # "export " is allowed, spaces inside are kept
+PORT=8080
+GREETING="Hello\nWorld"           # double quotes: \n and \" escapes, ${VAR} expansion
+PATTERN='${NOT_EXPANDED}'         # single quotes: taken literally
+URL=http://localhost:${PORT}/api  # expansion also works without quotes</code></pre>
+<p>Loaded values go into the process environment with <code>putenv</code>, so
+<code>getenv()</code> and child processes started with <code>exec()</code> see them too.</p>
+</section>
+
+<section data-tab="examples">
+<h2>Local file, production variables</h2>
+<pre><code class="hphp">import "dotenv";
+import "http";
+
+env_load();                       // .env for development
+env_load(".env.local", true);     // personal overrides, not committed
+
+$app = new HttpRouter();
+$app->get("/", function(HttpRequest $r): HttpResponse {
+    return http_text("running in " . env("APP_ENV", "development"));
+});
+http_serve($app, "tcp://127.0.0.1:" . env_int("PORT", 8080));</code></pre>
+<p>In production, set <code>APP_ENV</code> and <code>PORT</code> as real environment variables;
+they take precedence over the file.</p>
+</section>

@@ -1,0 +1,90 @@
+<!-- docs/libraries/src/cli.html: source of hphp.ch/libraries/cli/ (scripts/gensite.js) -->
+<section data-tab="overview">
+<p class="lead">Everything a command-line program needs: parse <code>--options</code> and
+arguments, ask questions, print aligned tables and progress bars, and color the output.</p>
+<div>
+  <span class="pill e">bundled — works offline</span>
+  <span class="pill">--name=value, flags, -abc</span>
+  <span class="pill">ask / confirm / choose</span>
+  <span class="pill">tables, progress, colors</span>
+</div>
+<h2>Quick start</h2>
+<pre><code class="hphp">import "cli";
+
+$args = cli_args();                       // tool --out=dist -v build
+if ($args->has("v")) {
+    echo cli_color("verbose mode", "gray");
+}
+$target = $args->arg(0, "build");
+$out = $args->get("out", "build");
+echo "building " . $target . " into " . $out;
+
+echo cli_table(["file", "bytes"], [["main.hphp", "812"], ["lib.hphp", "2048"]]);</code></pre>
+</section>
+
+<section data-tab="documentation">
+<h2>Arguments</h2>
+<p><code>cli_args()</code> parses the program's own arguments (<code>$argv</code> without the
+program name); <code>cli_parse($list)</code> parses any list, which is handy in tests.</p>
+<table>
+  <tr><th>Input</th><th>Result</th></tr>
+  <tr><td><code>--out=dist</code></td><td><code>get("out")</code> → <code>"dist"</code></td></tr>
+  <tr><td><code>--verbose</code></td><td><code>has("verbose")</code>, <code>get("verbose")</code> → <code>"true"</code></td></tr>
+  <tr><td><code>-xz</code></td><td>flags <code>x</code> and <code>z</code></td></tr>
+  <tr><td><code>build src</code></td><td><code>arg(0)</code> → <code>"build"</code>, <code>arg(1)</code> → <code>"src"</code></td></tr>
+  <tr><td><code>-- --not-an-option</code></td><td>everything after <code>--</code> is positional</td></tr>
+  <tr><td><code>-5</code></td><td>negative numbers stay positional</td></tr>
+</table>
+<table>
+  <tr><th>CliArgs method</th><th>Returns</th></tr>
+  <tr><td><code>has($name)</code></td><td>whether the option was given</td></tr>
+  <tr><td><code>get($name, $default = "")</code></td><td>the value as a string</td></tr>
+  <tr><td><code>int($name, $default = 0)</code></td><td>the value as an int</td></tr>
+  <tr><td><code>arg($i, $default = "")</code></td><td>positional argument <code>$i</code></td></tr>
+  <tr><td><code>count()</code></td><td>number of positional arguments</td></tr>
+</table>
+<h2>Questions</h2>
+<table>
+  <tr><th>Function</th><th>What it does</th></tr>
+  <tr><td><code>cli_ask($question, $default = "")</code></td><td>a line of input; Enter keeps the default</td></tr>
+  <tr><td><code>cli_confirm($question, $default = false)</code></td><td>y/n (also j for German keyboards)</td></tr>
+  <tr><td><code>cli_choose($question, $options, $default = 0)</code></td><td>numbered menu; returns the chosen index</td></tr>
+</table>
+<h2>Output</h2>
+<table>
+  <tr><th>Function</th><th>What it does</th></tr>
+  <tr><td><code>cli_table($headers, $rows)</code></td><td>aligned columns with a rule under the header</td></tr>
+  <tr><td><code>cli_progress($done, $total, $width = 30)</code></td><td><code>[#######.......]  25%</code></td></tr>
+  <tr><td><code>cli_color($text, $color)</code></td><td>red, green, yellow, blue, magenta, cyan, gray, bold, dim, underline</td></tr>
+  <tr><td><code>cli_strip($text)</code></td><td>removes color codes</td></tr>
+  <tr><td><code>cli_width($text)</code> / <code>cli_pad($text, $n)</code></td><td>visible width (ignores colors, counts UTF-8 characters)</td></tr>
+</table>
+</section>
+
+<section data-tab="examples">
+<h2>An interactive setup</h2>
+<pre><code class="hphp">import "cli";
+
+$name = cli_ask("Project name", "demo");
+$kind = cli_choose("Template", ["console", "web", "library"], 0);
+if (!cli_confirm("Create " . $name . "?", true)) {
+    echo cli_color("cancelled", "yellow");
+    exit(1);
+}
+for ($i = 1; $i &lt;= 20; $i++) {
+    echo cli_progress($i, 20);
+    usleep(50000);
+}
+echo cli_color("created " . $name, "green");</code></pre>
+
+<h2>A file listing</h2>
+<pre><code class="hphp">import "cli";
+
+$rows = [];
+foreach (scandir(".") as $f) {
+    if ($f != "." &amp;&amp; $f != "..") {
+        $rows[] = [$f, strval(filesize($f))];
+    }
+}
+echo cli_table(["name", "bytes"], $rows);</code></pre>
+</section>

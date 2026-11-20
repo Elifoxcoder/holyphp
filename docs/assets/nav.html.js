@@ -9,6 +9,11 @@ var NAV_BASE = (function () {
 })();
 
 var NAV_PATH = location.pathname;
+/* which top-level section the page belongs to (highlights the nav link) */
+var NAV_SECTION = /\/libraries\//.test(NAV_PATH) ? "libraries"
+  : /\/guide(\/|\.html)/.test(NAV_PATH) ? "tutorial"
+  : /\/(docs|lang|builtins|cli|pkg)\.html$|\/builtin\//.test(NAV_PATH) ? "docs"
+  : /\/(index\.html)?$/.test(NAV_PATH) ? "home" : "";
 var INTERACTIVE_GUIDE = /\/guide\.html$/.test(NAV_PATH);
 var BEGINNER_GUIDE = /\/guide\/(?:[^/]+\.html)?$/.test(NAV_PATH);
 var GUIDE_RAIL = "";
@@ -54,9 +59,11 @@ document.write(`
     <a class="site-brand" href="${NAV_BASE}index.html" aria-label="HolyPHP home"><span class="brand-mark">H</span><span>Holy<span>PHP</span></span></a>
     <button class="nav-burger" id="nav-burger" aria-label="Open navigation" aria-expanded="false" aria-controls="site-links"><span></span><span></span></button>
     <nav class="site-links" id="site-links" aria-label="Main navigation">
-      <a href="${NAV_BASE}docs.html" target="_blank" rel="noopener">Docs <span aria-hidden="true">↗</span></a>
+      <a href="${NAV_BASE}index.html"${NAV_SECTION === "home" ? ' class="active"' : ""}>Overview</a>
+      <a href="${NAV_BASE}guide/index.html"${NAV_SECTION === "tutorial" ? ' class="active"' : ""}>Tutorial</a>
+      <a href="${NAV_BASE}docs.html"${NAV_SECTION === "docs" ? ' class="active"' : ""}>Documentation</a>
+      <a href="${NAV_BASE}libraries/"${NAV_SECTION === "libraries" ? ' class="active"' : ""}>Libraries</a>
       <a href="${NAV_BASE}playground.html" target="_blank" rel="noopener">Playground <span aria-hidden="true">↗</span></a>
-      <a href="${NAV_BASE}development.html">Development</a>
       <a class="github-link" href="https://github.com/Elifoxcoder/holyphp" target="_blank" rel="noopener">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
     <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark mode"><span class="theme-toggle-icon" aria-hidden="true">☾</span><span class="theme-toggle-label" data-theme-label>Dark mode</span></button>

@@ -1,0 +1,127 @@
+<!-- docs/libraries/src/http.html: source of hphp.ch/libraries/http/ (scripts/gensite.js) -->
+<section data-tab="overview">
+<p class="lead">HTTP/1.1 for HolyPHP: parse requests, build responses, route
+<code>/users/{id}</code> to handlers and serve them on the <a href="../async/">async</a>
+event loop. Handlers are plain functions from a request to a response, so the
+whole app can be tested without opening a socket.</p>
+<div>
+  <span class="pill e">bundled — works offline</span>
+  <span class="pill">router with {params}</span>
+  <span class="pill">JSON, HTML, text, redirects</span>
+  <span class="pill">404 / 405 / 500 built in</span>
+  <span class="pill p">testable without sockets</span>
+</div>
+<h2>Quick start</h2>
+<pre><code class="hphp">import "http";
+
+$app = new HttpRouter();
+$app->get("/", function(HttpRequest $req): HttpResponse {
+    return http_html("&lt;h1&gt;Hello&lt;/h1&gt;");
+});
+$app->get("/users/{id}", function(HttpRequest $req): HttpResponse {
+    return http_json(["id" => intval($req->param("id"))]);
+});
+http_serve($app, "tcp://127.0.0.1:8080");</code></pre>
+<pre><code class="bash">$ curl http://127.0.0.1:8080/users/42
+{"id":42}</code></pre>
+</section>
+
+<section data-tab="documentation">
+<h2>Routing</h2>
+<p>Add routes with <code>get</code>, <code>post</code>, <code>put</code>, <code>patch</code>,
+<code>delete</code> or <code>any</code>; each returns the router, so calls chain. Routes are
+tried in the order they were added.</p>
+<table>
+  <tr><th>Pattern</th><th>Matches</th><th><code>$req->params</code></th></tr>
+  <tr><td><code>/users</code></td><td><code>/users</code>, <code>/users/</code></td><td><code>[]</code></td></tr>
+  <tr><td><code>/users/{id}</code></td><td><code>/users/7</code></td><td><code>["id" =&gt; "7"]</code></td></tr>
+  <tr><td><code>/users/{id}/posts/{p}</code></td><td><code>/users/7/posts/3</code></td><td><code>["id" =&gt; "7", "p" =&gt; "3"]</code></td></tr>
+  <tr><td><code>/files/*</code></td><td><code>/files/a/b.txt</code></td><td><code>["*" =&gt; "a/b.txt"]</code></td></tr>
+</table>
+<p>No match gives <b>404</b> (or your <code>notFound()</code> handler), a path that exists only for
+another method gives <b>405</b>, and a handler that throws gives <b>500</b> with the message.
+<code>HEAD</code> requests use the <code>GET</code> route and send no body.</p>
+
+<h2>HttpRequest</h2>
+<table>
+  <tr><th>Member</th><th>What it is</th></tr>
+  <tr><td><code>$method</code>, <code>$path</code>, <code>$query</code>, <code>$target</code>, <code>$version</code></td><td>the request line (<code>$path</code> is URL-decoded)</td></tr>
+  <tr><td><code>$headers</code></td><td>lowercase name → value</td></tr>
+  <tr><td><code>$body</code></td><td>the body, cut to <code>Content-Length</code></td></tr>
+  <tr><td><code>header($name, $default)</code></td><td>a header, any case</td></tr>
+  <tr><td><code>param($name, $default)</code></td><td>a route placeholder</td></tr>
+  <tr><td><code>input($name, $default)</code></td><td>a query parameter or a field of a urlencoded form</td></tr>
+  <tr><td><code>json()</code></td><td>the body decoded as JSON</td></tr>
+</table>
+
+<h2>HttpResponse</h2>
+<table>
+  <tr><th>Helper</th><th>Response</th></tr>
+  <tr><td><code>http_text($body, $status = 200)</code></td><td><code>text/plain</code></td></tr>
+  <tr><td><code>http_html($body, $status = 200)</code></td><td><code>text/html</code></td></tr>
+  <tr><td><code>http_json($data, $status = 200)</code></td><td><code>application/json</code>, encoded with <code>json_encode</code></td></tr>
+  <tr><td><code>http_redirect($url, $status = 302)</code></td><td>sets <code>Location</code></td></tr>
+  <tr><td><code>http_not_found($message)</code></td><td>404</td></tr>
+  <tr><td><code>new HttpResponse($status, $body, $type)</code></td><td>anything else; <code>->header($name, $value)</code> chains</td></tr>
+</table>
+<p><code>$response->toString()</code> is the raw HTTP text including <code>Content-Length</code>.</p>
+
+<h2>Without sockets</h2>
+<table>
+  <tr><th>Function</th><th>What it does</th></tr>
+  <tr><td><code>http_parse($raw)</code></td><td>raw request text → <code>HttpRequest</code></td></tr>
+  <tr><td><code>http_complete($raw)</code></td><td>true when headers and the <code>Content-Length</code> body have arrived</td></tr>
+  <tr><td><code>$router->dispatch($req)</code></td><td>request → response</td></tr>
+  <tr><td><code>$router->handle($raw)</code></td><td>raw request text → raw response text</td></tr>
+  <tr><td><code>http_parse_query("a=1&amp;b=2")</code></td><td>URL-decoded map</td></tr>
+  <tr><td><code>http_match("/u/{id}", "/u/7")</code></td><td>the params, or <code>null</code></td></tr>
+</table>
+
+<h2>Serving</h2>
+<p><code>http_serve($router, "tcp://127.0.0.1:8080", $log = true)</code> runs one event loop,
+buffers each request until it is complete (large bodies arrive in several chunks), answers
+with <code>Connection: close</code> and prints one line per request when <code>$log</code> is
+true. To combine it with timers or WebSockets, take its body as a template and add your own
+watchers to the same <code>Loop</code>.</p>
+</section>
+
+<section data-tab="examples">
+<h2>JSON API with a form and a 404 page</h2>
+<pre><code class="hphp">import "http";
+
+$todos = ["write docs", "ship it"];
+
+$app = new HttpRouter();
+$app->get("/todos", function(HttpRequest $req) use ($todos): HttpResponse {
+    return http_json(["todos" => $todos]);
+});
+$app->get("/todos/{n}", function(HttpRequest $req) use ($todos): HttpResponse {
+    $n = intval($req->param("n"));
+    if ($n &lt; 0 || $n &gt;= count($todos)) {
+        return http_json(["error" => "no such todo"], 404);
+    }
+    return http_json(["todo" => $todos[$n]]);
+});
+$app->post("/hello", function(HttpRequest $req): HttpResponse {
+    return http_text("Hello, " . $req->input("name", "stranger") . "!");
+});
+$app->notFound(function(HttpRequest $req): HttpResponse {
+    return http_html("&lt;h1&gt;Nothing at " . $req->path . "&lt;/h1&gt;", 404);
+});
+http_serve($app, "tcp://127.0.0.1:8080");</code></pre>
+<pre><code class="bash">curl http://127.0.0.1:8080/todos/1          # {"todo":"ship it"}
+curl -d "name=Ada" http://127.0.0.1:8080/hello  # Hello, Ada!</code></pre>
+
+<h2>Testing routes with the testing library</h2>
+<pre><code class="hphp">import "testing";
+import "http";
+import "../src/app.hphp";      // defines make_app(): HttpRouter
+
+$app = make_app();
+$t = new Test("routes");
+$res = $app->dispatch(http_parse("GET /todos/0 HTTP/1.1\r\n\r\n"));
+$t->equal($res->status, 200, "first todo");
+$t->contains($res->body, "write docs", "body");
+$t->equal($app->dispatch(http_parse("GET /x HTTP/1.1\r\n\r\n"))->status, 404, "unknown path");
+$t->done();</code></pre>
+</section>
