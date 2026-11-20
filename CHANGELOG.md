@@ -9,6 +9,26 @@ behaves differently, what they have to change.
 
 ## Unreleased
 
+- New bundled libraries (work offline, `import "<name>";` or
+  `hphp install <name>`):
+  - `testing`: assertions for `hphp test` (`equal`, `same`, `contains`,
+    `near`, `count`, `throws`, ...) with readable failure messages; new
+    projects use it in their tests.
+  - `cli`: argument parsing (`--name=value`, flags, positionals), questions
+    (`cli_ask`, `cli_confirm`, `cli_choose`), aligned tables, progress bars and
+    colors.
+  - `http`: HTTP/1.1 requests and responses, a router with `{param}` and
+    `*` routes (404/405/500 handled), and `http_serve()` on the async loop.
+  - `dotenv`: `.env` files and typed environment getters (`env`, `env_int`,
+    `env_bool`, `env_required`).
+- `==` on arrays now compares their key/value pairs, as in PHP. Before, two
+  equal arrays compared unequal unless they were the same array.
+- `foreach ($arr as $k => $v)` over an `array` that holds string keys gave a
+  meaningless number as `$k`; it now gives the real key.
+- Closures with class-typed parameters (`function(Request $r)`) and
+  `$value as SomeClass` / `as int` on a dynamic value no longer fail to
+  compile in the C backend.
+
 - Projects: `hphp create` asks a few questions (name, template, description,
   author, license, strict memory safety, git) and creates a ready project
   from one of four templates: console, web server, library or empty. A

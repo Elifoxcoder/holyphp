@@ -1438,18 +1438,6 @@ static char *render(const char *tpl, const char **kv, size_t nkv) {
     return b.data;
 }
 
-static const char *TPL_EXPECT =
-    "$fail = 0;\n"
-    "function expect(string $what, bool $ok): int {\n"
-    "    if ($ok) {\n"
-    "        echo \"ok   \" . $what . \"\\n\";\n"
-    "        return 0;\n"
-    "    }\n"
-    "    echo \"FAIL \" . $what . \"\\n\";\n"
-    "    return 1;\n"
-    "}\n"
-    "\n";
-
 static const char *TPL_CONSOLE_MAIN =
     "<?php\n"
     "{{declare}}"
@@ -1480,15 +1468,14 @@ static const char *TPL_CONSOLE_GREETING =
 static const char *TPL_CONSOLE_TEST =
     "<?php\n"
     "/* A test passes when it exits with 0. `hphp test` runs every file here. */\n"
+    "import \"testing\";\n"
     "import \"../src/greeting.hphp\";\n"
     "\n"
-    "{{expect}}"
-    "$fail = $fail + expect(\"greets by name\", greeting(\"Ada\") == \"Hello, Ada!\");\n"
-    "$fail = $fail + expect(\"trims input\", greeting(\"  Ada \") == \"Hello, Ada!\");\n"
-    "$fail = $fail + expect(\"empty means world\", greeting(\"\") == \"Hello, world!\");\n"
-    "if ($fail > 0) {\n"
-    "    exit(1);\n"
-    "}\n";
+    "$t = new Test(\"greeting\");\n"
+    "$t->equal(greeting(\"Ada\"), \"Hello, Ada!\", \"greets by name\");\n"
+    "$t->equal(greeting(\"  Ada \"), \"Hello, Ada!\", \"trims input\");\n"
+    "$t->equal(greeting(\"\"), \"Hello, world!\", \"empty means world\");\n"
+    "$t->done();\n";
 
 static const char *TPL_WEB_MAIN =
     "<?php\n"
@@ -1523,7 +1510,7 @@ static const char *TPL_WEB_MAIN =
     "        stream_close($sock);\n"
     "    });\n"
     "});\n"
-    "echo \"{{name}} listening on http://127.0.0.1:\" . $port . \"\\n\";\n"
+    "echo \"{{name}} listening on http://127.0.0.1:\" . $port;\n"
     "$loop->run();\n";
 
 static const char *TPL_WEB_ROUTES =
@@ -1571,15 +1558,15 @@ static const char *TPL_WEB_ROUTES =
 
 static const char *TPL_WEB_TEST =
     "<?php\n"
+    "import \"testing\";\n"
     "import \"../src/routes.hphp\";\n"
     "\n"
-    "{{expect}}"
-    "$fail = $fail + expect(\"path without query\", request_path(\"GET /api/status?x=1 HTTP/1.1\\r\\n\\r\\n\") == \"/api/status\");\n"
-    "$fail = $fail + expect(\"home page\", strpos(handle_request(\"GET / HTTP/1.1\\r\\n\\r\\n\"), \"200 OK\") !== false);\n"
-    "$fail = $fail + expect(\"unknown path\", strpos(handle_request(\"GET /nope HTTP/1.1\\r\\n\\r\\n\"), \"404\") !== false);\n"
-    "if ($fail > 0) {\n"
-    "    exit(1);\n"
-    "}\n";
+    "$t = new Test(\"routes\");\n"
+    "$t->equal(request_path(\"GET /api/status?x=1 HTTP/1.1\\r\\n\\r\\n\"), \"/api/status\", \"path without query\");\n"
+    "$t->contains(handle_request(\"GET / HTTP/1.1\\r\\n\\r\\n\"), \"200 OK\", \"home page\");\n"
+    "$t->contains(handle_request(\"GET /api/status HTTP/1.1\\r\\n\\r\\n\"), \"application/json\", \"status is JSON\");\n"
+    "$t->contains(handle_request(\"GET /nope HTTP/1.1\\r\\n\\r\\n\"), \"404\", \"unknown path\");\n"
+    "$t->done();\n";
 
 static const char *TPL_LIB_MAIN =
     "<?php\n"
@@ -1611,20 +1598,19 @@ static const char *TPL_LIB_MAIN =
 
 static const char *TPL_LIB_TEST =
     "<?php\n"
+    "import \"testing\";\n"
     "import \"../src/{{name}}.hphp\";\n"
     "\n"
-    "{{expect}}"
-    "$fail = $fail + expect(\"spaces\", {{name}}_slug(\"Hello World\") == \"hello-world\");\n"
-    "$fail = $fail + expect(\"punctuation\", {{name}}_slug(\"  A -- b!! \") == \"a-b\");\n"
-    "$fail = $fail + expect(\"empty\", {{name}}_slug(\"\") == \"\");\n"
-    "if ($fail > 0) {\n"
-    "    exit(1);\n"
-    "}\n";
+    "$t = new Test(\"{{name}}\");\n"
+    "$t->equal({{name}}_slug(\"Hello World\"), \"hello-world\", \"spaces\");\n"
+    "$t->equal({{name}}_slug(\"  A -- b!! \"), \"a-b\", \"punctuation\");\n"
+    "$t->equal({{name}}_slug(\"\"), \"\", \"empty\");\n"
+    "$t->done();\n";
 
 static const char *TPL_EMPTY_MAIN =
     "<?php\n"
     "{{declare}}"
-    "echo \"Hello from {{name}}\\n\";\n";
+    "echo \"Hello from {{name}}\";\n";
 
 static const char *TPL_README =
     "# {{name}}\n"
@@ -1744,7 +1730,7 @@ int project_cmd_create(int argc, char **argv) {
     const char *lib_cmds = lib ? "hphp pkg check    # type-check the package entry\n"
                                  "hphp pkg publish  # upload it to the registry\n" : "";
     const char *kv[] = {"name", name, "description", desc, "declare", declare,
-                        "entry", entry, "lib_cmds", lib_cmds, "expect", TPL_EXPECT};
+                        "entry", entry, "lib_cmds", lib_cmds};
     size_t nkv = sizeof kv / sizeof kv[0];
 
     printf("\ncreating %s/ (%s)\n", name, tpl);
@@ -1762,7 +1748,8 @@ int project_cmd_create(int argc, char **argv) {
     buf_puts(&mf, "\n\n# packages this project needs: name: \"version constraint\"\n");
     buf_puts(&mf, "# (\"*\" any, \"^1.2\" 1.x from 1.2, \"~1.2\" 1.2.x, \"path:../lib\" a local folder)\n");
     buf_puts(&mf, web ? "require:\n  async: \"*\"\n" : "require: {}\n");
-    buf_puts(&mf, "\n# only for development and tests\nrequire-dev: {}\n");
+    buf_puts(&mf, "\n# only for development and tests\n");
+    buf_puts(&mf, strcmp(tpl, "empty") ? "require-dev:\n  testing: \"*\"\n" : "require-dev: {}\n");
     buf_putc(&mf, 0);
     put_file(name, PROJECT_MANIFEST, mf.data);
     free(mf.data);
@@ -1801,11 +1788,12 @@ int project_cmd_create(int argc, char **argv) {
 
     char *root = p_abs_dir(name);
     int rc = 0;
-    if (web && !no_install) {
+    bool has_deps = strcmp(tpl, "empty") != 0;     /* testing, and async for web */
+    if (has_deps && !no_install) {
         printf("\ninstalling dependencies\n");
         Resolve r = {root, false, NULL, false, false};
         rc = resolve(&r);
-    } else if (!web) {
+    } else if (!has_deps) {
         Resolve r = {root, false, NULL, false, true};
         rc = resolve(&r);              /* writes an empty hphp.lock */
         printf("  created " PROJECT_LOCK "\n");
@@ -1819,7 +1807,7 @@ int project_cmd_create(int argc, char **argv) {
     }
 
     printf("\ndone. next steps:\n\n  cd %s\n", name);
-    if (web && no_install) printf("  hphp install\n");
+    if (has_deps && no_install) printf("  hphp install\n");
     if (lib) printf("  hphp test\n  hphp pkg check\n");
     else printf("  hphp run\n  hphp test\n");
     printf("\n");

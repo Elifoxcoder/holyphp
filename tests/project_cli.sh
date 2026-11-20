@@ -79,7 +79,7 @@ out=$("$HPHP" install async 2>&1)
 has "install a bundled library" "$out" "+ async"
 grep -q 'async: "^' hphp.yaml && ok "install pins a ^ range" || bad "install pins a ^ range" "$(cat hphp.yaml)"
 out=$("$HPHP" install 2>&1)
-has "install keeps locked packages" "$out" "1 up to date"
+has "install keeps locked packages" "$out" "2 up to date"
 out=$("$HPHP" deps 2>&1)
 has "deps lists the lock" "$out" "async"
 
