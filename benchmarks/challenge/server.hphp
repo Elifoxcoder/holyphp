@@ -46,19 +46,6 @@ class Json {
         return $this->i == $this->n;
     }
 
-    /* JSON values form an exclusive tree, so release nested arrays before
-     * their parent. Strings are request-scoped and are reclaimed at scope_end. */
-    public function release_value($v): void {
-        if (!is_array($v)) { return; }
-        foreach ($v as $child) { $this->release_value($child); }
-        unsafe { arr_free($v); }
-    }
-
-    public function dispose(): void {
-        $this->release_value($this->root);
-        unsafe { object_free($this); }
-    }
-
     public function ws(): void {
         while ($this->i < $this->n) {
             $c = $this->s[$this->i];
@@ -387,7 +374,6 @@ class Server {
      * and checkpoint copies. Replies still go out only after their commit. */
     pub int $writeGroupMs = 0;
     pub int $writeGroupStart = 0;
-    pub int $persistedPending = 0;
     pub int $writeWaitMs = 1;
     pub int $reqs = 0;
     pub int $reqsBase = 0;
@@ -395,13 +381,11 @@ class Server {
     /* ------------------------------------------------------- setup */
 
     public function open_bt_cursors(): void {
-        unsafe {
-        if ($this->btPosts == 0) { $this->btPosts = bt_open($this->db, "posts", 0); }
-        if ($this->btFeed == 0) { $this->btFeed = bt_open($this->db, "posts_created_at_id_idx", 1); }
-        if ($this->btLikes == 0) { $this->btLikes = bt_open($this->db, "likes_post_id_idx", 1); }
-        if ($this->btUsers == 0) { $this->btUsers = bt_open($this->db, "users", 0); }
-    
-        }}
+        if ($this->btPosts == 0) { unsafe { $this->btPosts = bt_open($this->db, "posts", 0); } }
+        if ($this->btFeed == 0) { unsafe { $this->btFeed = bt_open($this->db, "posts_created_at_id_idx", 1); } }
+        if ($this->btLikes == 0) { unsafe { $this->btLikes = bt_open($this->db, "likes_post_id_idx", 1); } }
+        if ($this->btUsers == 0) { unsafe { $this->btUsers = bt_open($this->db, "users", 0); } }
+    }
 
     public function close_bt_cursors(): void {
         if ($this->btPosts != 0) { bt_close($this->btPosts); $this->btPosts = 0; }
@@ -411,7 +395,6 @@ class Server {
     }
 
     public function open(string $host, int $port): bool {
-        unsafe {
         $path = getenv("SQLITE_PATH");
         if ($path === false || $path == "") { $path = "feed.db"; }
         $sec = getenv("JWT_SECRET");
@@ -445,8 +428,8 @@ class Server {
          * transaction. The checkpoint connection uses the same VFS. */
         $sqliteVfs = getenv("HPHP_SQLITE_VFS");
         $db = 0;
-        if ($sqliteVfs != "") { $db = sqlite_open_vfs($path, $sqliteVfs); }
-        else { $db = sqlite_open($path); }
+        if ($sqliteVfs != "") { unsafe { $db = sqlite_open_vfs($path, $sqliteVfs); } }
+        else { unsafe { $db = sqlite_open($path); } }
         if ($db == 0) {
             echo "fatal: cannot open sqlite database " . $path . "\n";
             return false;
@@ -516,7 +499,7 @@ class Server {
            . "FROM (SELECT p.id, p.body, p.created_at, u.username AS author "
            . "FROM posts p JOIN users u ON u.id = p.user_id "
            . "ORDER BY p.created_at DESC, p.id DESC LIMIT 20) p";
-        $this->feed = sqlite_prepare($db, $q);
+        unsafe { $this->feed = sqlite_prepare($db, $q); }
         if ($this->feed == 0) {
             echo "fatal: feed query: " . sqlite_errmsg($db) . "\n";
             return false;
@@ -527,25 +510,25 @@ class Server {
            . "'author', (SELECT username FROM users u WHERE u.id = p.user_id), "
            . "'like_count', (SELECT count(*) FROM likes l WHERE l.post_id = p.id)"
            . ")) FROM posts p WHERE p.id = ?1";
-        $this->post = sqlite_prepare($db, $q);
+        unsafe { $this->post = sqlite_prepare($db, $q); }
         if ($this->post == 0) {
             echo "fatal: post query: " . sqlite_errmsg($db) . "\n";
             return false;
         }
 
-        $this->health = sqlite_prepare($db, "SELECT 1");
+        unsafe { $this->health = sqlite_prepare($db, "SELECT 1"); }
         if ($this->health == 0) {
             echo "fatal: health query: " . sqlite_errmsg($db) . "\n";
             return false;
         }
         /* transaction control prepared once: sqlite3_exec re-parses the text
          * on every group commit (it showed up in the write profile) */
-        $this->beginTx = sqlite_prepare($db, "BEGIN IMMEDIATE");
-        $this->commitTx = sqlite_prepare($db, "COMMIT");
-        $this->rollbackTx = sqlite_prepare($db, "ROLLBACK");
+        unsafe { $this->beginTx = sqlite_prepare($db, "BEGIN IMMEDIATE"); }
+        unsafe { $this->commitTx = sqlite_prepare($db, "COMMIT"); }
+        unsafe { $this->rollbackTx = sqlite_prepare($db, "ROLLBACK"); }
 
         /* one post's like count for the B-tree post path (index range scan) */
-        $this->likecnt = sqlite_prepare($db, "SELECT count(*) FROM likes WHERE post_id = ?1");
+        unsafe { $this->likecnt = sqlite_prepare($db, "SELECT count(*) FROM likes WHERE post_id = ?1"); }
         if ($this->likecnt == 0) {
             echo "fatal: like count query: " . sqlite_errmsg($db) . "\n";
             return false;
@@ -553,7 +536,7 @@ class Server {
 
         $q = "INSERT INTO posts (user_id, body) VALUES (?1, ?2) "
            . "RETURNING id, created_at";
-        $this->insPost = sqlite_prepare($db, $q);
+        unsafe { $this->insPost = sqlite_prepare($db, $q); }
         if ($this->insPost == 0) {
             echo "fatal: insert post: " . sqlite_errmsg($db) . "\n";
             return false;
@@ -562,13 +545,13 @@ class Server {
         $q = "INSERT INTO likes (user_id, post_id) "
            . "SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM posts WHERE id = ?2) "
            . "ON CONFLICT (user_id, post_id) DO NOTHING";
-        $this->insLike = sqlite_prepare($db, $q);
+        unsafe { $this->insLike = sqlite_prepare($db, $q); }
         if ($this->insLike == 0) {
             echo "fatal: insert like: " . sqlite_errmsg($db) . "\n";
             return false;
         }
 
-        $this->hasPost = sqlite_prepare($db, "SELECT 1 FROM posts WHERE id = ?1 LIMIT 1");
+        unsafe { $this->hasPost = sqlite_prepare($db, "SELECT 1 FROM posts WHERE id = ?1 LIMIT 1"); }
         if ($this->hasPost == 0) {
             echo "fatal: post exists query: " . sqlite_errmsg($db) . "\n";
             return false;
@@ -712,8 +695,7 @@ class Server {
         $this->diagmode = (getenv("HPHP_DIAG") == "1");
         $this->diagNext = $this->start + 5;
         return true;
-    
-        }}
+    }
 
     /* -------------------------------------------------------- main loop */
 
@@ -734,7 +716,7 @@ class Server {
             $i = 0; $n = iarr_len($this->writableIds);
             while ($i < $n) {
                 $fd = iarr_get($this->writableIds, $i);
-                if (isset($this->out[$fd])) { $this->flush_fd($fd); }
+                if (array_key_exists($fd, $this->out)) { $this->flush_fd($fd); }
                 $i = $i + 1;
             }
             $i = 0; $n = iarr_len($this->readyIds);
@@ -745,7 +727,7 @@ class Server {
                     $i = $i + 1; continue;
                 }
                 if (!(iarr_get($this->socks, $fd) != 0)) { $i = $i + 1; continue; }
-                if (isset($this->out[$fd])) { $i = $i + 1; continue; }
+                if (array_key_exists($fd, $this->out)) { $i = $i + 1; continue; }
                 $this->read_fd($fd);
                 $i = $i + 1;
             }
@@ -762,7 +744,7 @@ class Server {
         /* finish pending responses before reading new requests */
         foreach ($this->writable as $w) {
             $fd = intval($w);
-            if (isset($this->out[$fd])) { $this->flush_fd($fd); }
+            if (array_key_exists($fd, $this->out)) { $this->flush_fd($fd); }
         }
         foreach ($this->ready as $h) {
             $fd = intval($h);
@@ -771,7 +753,7 @@ class Server {
                 continue;
             }
             if (!(iarr_get($this->socks, $fd) != 0)) { continue; }
-            if (isset($this->out[$fd])) { continue; }   /* write still pending */
+            if (array_key_exists($fd, $this->out)) { continue; }   /* write still pending */
             $this->read_fd($fd);
         }
     }
@@ -801,7 +783,7 @@ class Server {
             return;
         }
         unset($this->out[$fd]);
-        if (isset($this->closing[$fd])) {
+        if (array_key_exists($fd, $this->closing)) {
             $this->close_fd($fd);
             if ($this->diagmode) { $this->diag_flush_done($diagT); }
             return;
@@ -811,17 +793,12 @@ class Server {
     }
 
     public function run(): void {
-        unsafe {
         while (true) {
-            /* Everything allocated while serving this poll cycle is released
-             * by scope_end(): no per-request malloc survives the round. */
-            scope_begin();
-
             $pollWaitMs = 50;
             if ($this->retryingWrites) { $pollWaitMs = 1; }
             $diagT = 0;
             if ($this->diagmode) { $diagT = hrtime(true); }
-            if ($this->fdArrays) { epoll_wait_iarr2($this->readyIds, $this->writableIds, $pollWaitMs); }
+            if ($this->fdArrays) { unsafe { epoll_wait_iarr2($this->readyIds, $this->writableIds, $pollWaitMs); } }
             else { epoll_wait2($this->ready, $this->writable, $pollWaitMs); }
             if ($this->diagmode) {
                 $diagNow = hrtime(true);
@@ -842,7 +819,7 @@ class Server {
             if (!$this->retryingWrites && $n > 0 && $n < 32) {
                 if ($this->writeWaitMs > 0) {
                     if ($this->diagmode) { $diagT = hrtime(true); }
-                    if ($this->fdArrays) { epoll_wait_iarr2($this->readyIds, $this->writableIds, $this->writeWaitMs); }
+                    if ($this->fdArrays) { unsafe { epoll_wait_iarr2($this->readyIds, $this->writableIds, $this->writeWaitMs); } }
                     else { epoll_wait2($this->ready, $this->writable, $this->writeWaitMs); }
                     if ($this->diagmode) {
                         $diagNow = hrtime(true);
@@ -882,11 +859,8 @@ class Server {
             }
 
             if ($this->diagmode) { $this->diag_log(); }
-
-            scope_end();
         }
-    
-        }}
+    }
 
     /* Emits bounded, interval-based diagnostics even when /stats is delayed
      * behind a saturated event loop. Timers are disabled unless HPHP_DIAG=1. */
@@ -1029,16 +1003,15 @@ class Server {
             if ($this->diagmode) { $this->diag_read_done($diagT); }
             return;
         }
-        /* $this->bufs[$fd] is "" (static) or a heap copy of a partial
-         * request; the concatenation lives in the request scope and is
-         * either consumed here or copied back with str_persist(). */
+        /* $this->bufs[$fd] holds a partial request; strings are
+         * reference-counted, so storing the value keeps it alive. */
         /* `sweep` is refreshed once per second by run(). Reuse that cached
          * second for activity timestamps instead of calling time() for every
          * request. The +1 rounds conservatively forward, so coarse timestamps
          * can only keep an idle connection slightly longer, never expire it
          * early. */
         if ($this->idleSweep == 1) { iarr_set($this->lasts, $fd, $this->sweep + 1); }
-        if ($this->sparseBufs && !isset($this->bufs[$fd])) {
+        if ($this->sparseBufs && !array_key_exists($fd, $this->bufs)) {
             $this->parse($fd, $chunk);
             stream_recv_release($fd);
             if ($this->diagmode) { $this->diag_read_done($diagT); }
@@ -1051,7 +1024,6 @@ class Server {
             stream_recv_release($fd);
         } else {
             $buf = $old . $chunk;
-            unsafe { str_free($old); }
             if ($this->sparseBufs) { unset($this->bufs[$fd]); }
             else { $this->bufs[$fd] = ""; }
             $this->parse($fd, $buf);
@@ -1092,7 +1064,7 @@ class Server {
                     if ($this->sparseBufs) { unset($this->bufs[$fd]); }
                     else { $this->bufs[$fd] = ""; }
                 } else {
-                    $this->bufs[$fd] = str_persist($buf);
+                    $this->bufs[$fd] = $buf;
                 }
                 return;
             }
@@ -1114,7 +1086,7 @@ class Server {
                     $this->on_health($fd);
                 } else if ($this->statsmode && $pl == 6 && str_at_eq($buf, $ps, 6, "/stats")) {
                     $this->on_stats($fd);
-                } else if ($pl > 7 && str_at_eq($buf, $ps, 6, "/posts") && $buf[$ps + 6] == "/") {
+                } else if ($pl > 7 && str_at_eq($buf, $ps, 6, "/posts") && str_at_eq($buf, $ps + 6, 1, "/")) {
                     if ($this->postRangeFast) {
                         $id = str_to_int_range($buf, $ps + 7, $ps + $pl);
                         $this->on_post_id($fd, $id);
@@ -1162,7 +1134,7 @@ class Server {
 
             $start = $he + 4;
             if ($bufLen - $start < $cl) {
-                $this->bufs[$fd] = str_persist($buf);
+                $this->bufs[$fd] = $buf;
                 return;
             }
             $body = "";
@@ -1406,7 +1378,6 @@ class Server {
         }
 
         if (!$ok) {
-            if ($sb != 0) { sb_discard($sb); }
             bt_multi_release($multi);
             bt_multi_release($postMulti);
             iarr_release($ids); iarr_release($uids); iarr_release($hits);
@@ -2132,27 +2103,23 @@ class Server {
 
     public function on_create(int $fd, string $auth, string $body): void {
         $a = $this->authenticate($auth);
-        if ($a[0] == 1) { unsafe { arr_free($a); } $this->send_json($fd, 401, '{"error":"missing bearer token"}'); return; }
-        if ($a[0] == 2) { unsafe { arr_free($a); } $this->send_json($fd, 401, '{"error":"invalid or expired token"}'); return; }
-        if ($a[0] == 3) { unsafe { arr_free($a); } $this->send_json($fd, 401, '{"error":"invalid token payload"}'); return; }
+        if ($a[0] == 1) { $this->send_json($fd, 401, '{"error":"missing bearer token"}'); return; }
+        if ($a[0] == 2) { $this->send_json($fd, 401, '{"error":"invalid or expired token"}'); return; }
+        if ($a[0] == 3) { $this->send_json($fd, 401, '{"error":"invalid token payload"}'); return; }
         $uid = $a[1];
         $uname = $a[2];
-        unsafe { arr_free($a); }
 
         $j = new Json($body);
         if (!$j->parse()) {
-            $j->dispose();
             $this->send_json($fd, 400, '{"error":"malformed JSON body"}');
             return;
         }
         $v = $j->root;
         if (!is_array($v) || !isset($v["body"]) || !is_string($v["body"])) {
-            $j->dispose();
             $this->send_json($fd, 400, '{"error":"body is required"}');
             return;
         }
         $text = trim($v["body"]);
-        $j->dispose();
         if ($text == "") {
             $this->send_json($fd, 400, '{"error":"body is required"}');
             return;
@@ -2176,11 +2143,10 @@ class Server {
 
     public function on_like(int $fd, string $auth, string $ids): void {
         $a = $this->authenticate($auth);
-        if ($a[0] == 1) { unsafe { arr_free($a); } $this->send_json($fd, 401, '{"error":"missing bearer token"}'); return; }
-        if ($a[0] == 2) { unsafe { arr_free($a); } $this->send_json($fd, 401, '{"error":"invalid or expired token"}'); return; }
-        if ($a[0] == 3) { unsafe { arr_free($a); } $this->send_json($fd, 401, '{"error":"invalid token payload"}'); return; }
+        if ($a[0] == 1) { $this->send_json($fd, 401, '{"error":"missing bearer token"}'); return; }
+        if ($a[0] == 2) { $this->send_json($fd, 401, '{"error":"invalid or expired token"}'); return; }
+        if ($a[0] == 3) { $this->send_json($fd, 401, '{"error":"invalid token payload"}'); return; }
         $uid = $a[1];
-        unsafe { arr_free($a); }
 
         $id = $this->parse_id($ids);
         if ($id <= 0) {
@@ -2324,26 +2290,21 @@ class Server {
     }
 
     public function execute_writes(): void {
-        unsafe {
         $n = count($this->pending);
         if ($n == 0) { return; }
         if ($this->writeGroupMs > 0 && $n < 256) {
             $now = hrtime(true);
             if ($this->writeGroupStart == 0) { $this->writeGroupStart = $now; }
             if ($now - $this->writeGroupStart < $this->writeGroupMs * 1000000) {
-                /* keep collecting: the queued strings must outlive this scope */
-                $this->persist_pending_posts();
+                /* keep collecting; the queue owns its strings */
                 $this->retryingWrites = true;
                 return;
             }
         }
         $this->writeGroupStart = 0;
         if ($this->bgCheckpoint && sqlite_bg_checkpoint_hold($this->db)) {
-            /* A checkpoint can defer this batch across poll cycles. Strings
-             * copied from the current request live only until scope_end(),
-             * while $pending survives. Move deferred post fields to heap
-             * storage before leaving this scope. */
-            $this->persist_pending_posts();
+            /* A checkpoint can defer this batch across poll cycles; the
+             * queue owns its values, so nothing has to be copied. */
             $this->retryingWrites = true;
             return;
         }
@@ -2353,7 +2314,6 @@ class Server {
         $this->close_bt_cursors();
         if (!$this->txn($this->beginTx)) {
             if (sqlite_is_lock_error($this->db)) {
-                $this->persist_pending_posts();
                 $this->retryingWrites = true;
                 return;
             }
@@ -2409,7 +2369,7 @@ class Server {
                 sb_put($sb, ',"author":');
                 sb_json_str($sb, $r["name"]);
                 sb_put($sb, ',"like_count":0}}');
-                $r["body"] = sb_take($sb);
+                unsafe { $r["body"] = sb_take($sb); }
                 $r["code"] = 201;
                 $this->pending[$i] = $r;
             } else if ($r["kind"] == 2) {
@@ -2468,35 +2428,12 @@ class Server {
             $retryLockError = sqlite_is_lock_error($this->db);
             $this->txn($this->rollbackTx);
             if ($retryLockError) {
-                $this->persist_pending_posts();
                 $this->retryingWrites = true;
                 return;
             }
             $this->fail_writes($failWhere, $failDetail, $failCode);
         }
         $this->flush();
-    
-        }}
-
-    public function persist_pending_posts(): void {
-        /* Pending requests outlive the current request scope while a SQLite
-         * lock/checkpoint clears. Copy request-backed strings before returning
-         * to the event loop so the next write attempt sees valid data. The
-         * queue only grows until flush(), so resume at the first unpersisted
-         * entry instead of rescanning the whole batch on each 1 ms retry. */
-        $n = count($this->pending);
-        $i = $this->persistedPending;
-        if ($i >= $n) { return; }
-        while ($i < $n) {
-            $r = $this->pending[$i];
-            if ($r["kind"] == 1) {
-                $r["text"] = str_persist($r["text"]);
-                $r["name"] = str_persist($r["name"]);
-                $this->pending[$i] = $r;
-            }
-            $i = $i + 1;
-        }
-        $this->persistedPending = $n;
     }
 
     public function fail_writes(string $where, string $detail, int $code): void {
@@ -2519,10 +2456,8 @@ class Server {
             if ($r["conn"] != 0 && iarr_get($this->socks, $r["fd"]) == $r["conn"]) {
                 $this->write_response($r["fd"], $r["code"], $r["body"]);
             }
-            unsafe { arr_free($r); }
         }
         arr_clear($this->pending);
-        $this->persistedPending = 0;
         $this->retryingWrites = false;
     }
 
@@ -2545,7 +2480,7 @@ class Server {
             ? "\r\nConnection: close\r\n\r\n"
             : "\r\n\r\n");
         $total = strlen($h) + $blen;
-        if (isset($this->out[$fd])) {
+        if (array_key_exists($fd, $this->out)) {
             /* A previous response is still being written: queue behind it so a
              * pipelining client does not lose one. Cap the queue: a peer that
              * pipelines megabytes without reading must not grow the process. */
