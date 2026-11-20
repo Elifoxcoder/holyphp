@@ -93,6 +93,37 @@ require-dev: {}</code></pre>
   <code>hphp.json</code> to the archive, so registries and older clients understand
   it; <code>.hphp/</code>, <code>.git/</code> and <code>build/</code> are left out.</p>
 
+  <h2>Official and community packages</h2>
+  <p>Every package is one of three kinds; <code>hphp deps</code> and <code>hphp.lock</code>
+  show which (<code>trust:</code>).</p>
+  <table>
+    <tr><th>Kind</th><th>Where it comes from</th><th>On install</th></tr>
+    <tr><td><b>official</b></td><td>the <a href="libraries/">libraries</a> bundled with <code>hphp</code></td><td>installed from the compiler itself, never from a registry: a registry package can not take an official name, and the registry refuses to publish one</td></tr>
+    <tr><td><b>community</b></td><td>a registry or a <code>.hpx</code> file</td><td>reviewed first: you see where it is from, its author (as it claims), and what its code can do, then answer <code>y</code> to install</td></tr>
+    <tr><td><b>local</b></td><td><code>path:../mylib</code></td><td>your own code, installed without asking</td></tr>
+  </table>
+<pre><code class="bash">$ hphp install leftpad
+
+  ! community package: leftpad 1.2.0
+    from:    registry http://hphp.ch:8930
+    author:  someone   (as written in its manifest, not verified)
+    files:   2 (1 HolyPHP source)
+    it can:  run shell commands         leftpad.hphp:4  shell_exec("curl ... | sh");
+             write or delete files      leftpad.hphp:5  unlink("/tmp/x");
+
+    Official libraries ship with hphp and are reviewed with it. Community
+    packages are written by anyone: install only what you trust. The list
+    above is a hint from reading the source, not a guarantee.
+
+  Install leftpad 1.2.0? [y/N]</code></pre>
+  <p>The review looks for shell commands, file writes and deletes, network connections,
+  <code>unsafe</code> code, native libraries (FFI), environment changes and file reads.
+  Answering anything but <code>y</code> installs nothing and leaves <code>hphp.yaml</code> as it
+  was. Once accepted, the package's checksum is in <code>hphp.lock</code>: a fresh clone runs
+  <code>hphp install</code> without asking again, and a package that changed under the same
+  version asks again. Without a terminal (CI) nothing is installed unless you pass
+  <code>--trust</code>: <code>hphp install --trust</code>.</p>
+
   <h2>Quick start</h2>
 <pre><code class="hphp">hphp pkg init                     # create hphp.json skeleton in this folder
 hphp pkg check                    # typecheck the package's entry file

@@ -9,6 +9,19 @@ behaves differently, what they have to change.
 
 ## Unreleased
 
+- Package trust: official libraries (bundled with `hphp`) always install
+  from the compiler, never from a registry, and no community package may use
+  their names; the registry refuses to publish them too. Community packages
+  (from a registry or a `.hpx` file) are reviewed before they are installed:
+  `hphp install` shows where the package comes from, its author and what its
+  code can do (shell commands, file writes, network, `unsafe`, FFI, ...), and
+  installs only after `y`. Declining leaves `hphp.yaml` unchanged. Accepted
+  packages are pinned by checksum in `hphp.lock` (with `trust:`), so later
+  installs of the same archive do not ask again. `--trust` installs without
+  asking (CI). `hphp deps` shows each package's trust level.
+- Website: the menu on phones and small tablets is a fullscreen menu, with
+  a quieter menu button.
+
 - New bundled libraries (work offline, `import "<name>";` or
   `hphp install <name>`):
   - `testing`: assertions for `hphp test` (`equal`, `same`, `contains`,
