@@ -140,7 +140,7 @@ ${rows}
 <script src="../assets/theme.js?v=1"></script>
 </body>
 </html>
-`;
+`.replace(/^[ \t]+$/gm, "");
 }
 
 /* generate all pages */

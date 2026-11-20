@@ -531,6 +531,7 @@ void builtins_init(void) {
     add("bt_multi_seek",              B_MISC,  ty_int, true, false);
     add("bt_next",                    B_MISC,  ty_int, false, false);
     add("bt_open",                    B_MISC,  ty_int, true, false);
+    add("bt_open_safe",               B_MISC,  ty_int, false, false);
     add("bt_page_release",            B_MISC,  ty_bool, true, false);
     add("bt_payload_pin",             B_MISC,  ty_int, true, false);
     add("bt_payload_ptr",             B_MISC,  ty_int, true, false);
@@ -546,6 +547,7 @@ void builtins_init(void) {
     add("epoll_mod",                  B_MISC,  ty_int, false, false);
     add("epoll_wait2",                B_MISC,  ty_int, false, false);
     add("epoll_wait_iarr2",           B_MISC,  ty_bool, true, false);
+    add("epoll_wait_iarr2_safe",      B_MISC,  ty_bool, false, false);
     add("epoll_wait_into",            B_MISC,  ty_int, false, false);
     add("http_request_bounds",        B_MISC,  ty_int, false, false);
     add("iarr_data_ptr",              B_MISC,  ty_int, true, false);
@@ -602,8 +604,10 @@ void builtins_init(void) {
     add("sqlite_is_lock_error",       B_MISC,  ty_bool, false, false);
     add("sqlite_last_insert_rowid",   B_MISC,  ty_int, false, false);
     add("sqlite_open",                B_MISC,  ty_int, true, false);
+    add("sqlite_open_safe",           B_MISC,  ty_int, false, false);
     add("sqlite_open_vfs",            B_MISC,  ty_int, true, false);
     add("sqlite_prepare",             B_MISC,  ty_int, true, false);
+    add("sqlite_prepare_safe",        B_MISC,  ty_int, false, false);
     add("sqlite_reset",               B_MISC,  ty_int, false, false);
     add("sqlite_status",              B_MISC,  ty_string, false, false);
     add("sqlite_step",                B_MISC,  ty_int, false, false);
@@ -633,9 +637,12 @@ void builtins_init(void) {
 
     /* raw-memory accessors for programs that used *($p + n) */
     add("sb_take",                    B_MISC,  ty_string, true, false);
+    add("sb_take_safe",               B_MISC,  ty_string, false, false);
     add("u8_at",                      B_MISC,  ty_int, true, false);
+    add("str_u8_at",                  B_MISC,  ty_int, false, false);
     add("u8_set",                     B_MISC,  ty_int, true, false);
     add("i64_at",                     B_MISC,  ty_int, true, false);
+    add("str_i64_at",                 B_MISC,  ty_int, false, false);
     add("i64_set",                    B_MISC,  ty_int, true, false);
 }
 

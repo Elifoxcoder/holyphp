@@ -3873,6 +3873,11 @@ hval hpbi_epoll_wait_iarr2(hval inv, hval outv, hval timeout_ms) {
     return hp_of_bool(hp_epoll_wait_iarr2_impl(
         hp_val_to_int(inv), hp_val_to_int(outv), (int)hp_val_to_int(timeout_ms)));
 }
+hval hpbi_epoll_wait_iarr2_safe(hval inv, hval outv, hval timeout_ms) {
+    if (inv.tag != HV_INT || outv.tag != HV_INT || inv.u.i == 0 || outv.u.i == 0)
+        return hp_of_bool(false);
+    return hpbi_epoll_wait_iarr2(inv, outv, timeout_ms);
+}
 bool hp_epoll_wait_iarr2_t(int64_t in, int64_t out, int64_t timeout_ms) {
     return hp_epoll_wait_iarr2_impl(in, out, (int)timeout_ms);
 }

@@ -604,6 +604,7 @@ hval hpbi_array_key_exists(hval k, hval a);
 hval hpbi_isset(hval v);
 hval hpbi_isset_raw(harr **slot, hval key);
 hval hpbi_isset_val(hval *slot, hval key);
+hval hpbi_isset_index(hval container, hval key);
 hval hpbi_range(hval lo, hval hi);
 hval hpbi_array_map(hval fn, hval a);
 hval hpbi_array_filter(hval a, hval fn);

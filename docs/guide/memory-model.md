@@ -149,6 +149,27 @@ copy even when the Linux io_uring backend reads into a reusable ring buffer.
 Builtin temporary release also respects borrowed array elements and aliases.
 Literal-pool strings are immortal; internal cleanup leaves them alone.
 
+### Safe server-facing builtin forms
+
+The raw `sqlite_open`, `sqlite_prepare`, `bt_open`, `epoll_wait_iarr2`, and
+`sb_take` entry points remain marked unsafe for code that opts into
+`declare(enforce_memory_safety=1);`. Their `_safe` forms are available for
+server code: `sqlite_open_safe`, `sqlite_prepare_safe`, `bt_open_safe`,
+`epoll_wait_iarr2_safe`, and `sb_take_safe`. They check argument tags and
+reject null/zero handles before forwarding to the same runtime operations.
+Handles are opaque capabilities by convention: pass only values returned by
+the matching constructor, do not perform arithmetic on them, and consume them
+at most once where the API says so. The compiler does not yet track native
+handle provenance, so this convention is required even in safety mode.
+
+For bounded reads from managed byte strings, use `str_u8_at($bytes, $offset)`
+or `str_i64_at($bytes, $word_index)`. Both check the complete access against
+the string length and throw on an out-of-range access. `str_i64_at` reads a
+native-endian 64-bit word. For owned typed integer arrays, use the existing
+`iarr_get`/`iarr_set` operations, which check their indices. The raw `u8_at`
+and `i64_at` address accessors stay unsafe; safety-mode programs should keep
+buffers as managed strings or typed arrays rather than expose raw addresses.
+
 ## Test plan
 
 1. Runtime unit tests for retain/release of strings, nested arrays, closures,

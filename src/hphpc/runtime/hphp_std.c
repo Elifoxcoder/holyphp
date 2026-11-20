@@ -384,6 +384,14 @@ hval hpbi_isset_val(hval *slot, hval key) {
     RETB(hp_arr_get(slot->u.a, key).tag != HV_NULL);
 }
 
+hval hpbi_isset_index(hval container, hval key) {
+    if (container.tag == HV_ARR) RETB(hp_arr_has(container.u.a, key));
+    if (container.tag == HV_STR && key.tag == HV_INT && container.u.s &&
+        key.u.i >= 0 && (uint64_t)key.u.i < (uint64_t)container.u.s->len)
+        RETB(true);
+    RETB(false);
+}
+
 hval hpbi_number_format(hval n, hval dec, hval dsep, hval tsep) {
     int64_t d = hp_val_to_int(dec);
     if (d < 0) d = 0;
@@ -6004,6 +6012,23 @@ hval hpbi_i64_set(hval p, hval off, hval v) {
     if (b) memcpy(b + hp_val_to_int(off) * 8, &x, sizeof x);
     return hp_of_int(x);
 }
+hval hpbi_str_u8_at(hval s, hval off) {
+    if (s.tag != HV_STR || !s.u.s) hp_throw_str("str_u8_at expects a string");
+    int64_t i = hp_val_to_int(off);
+    if (i < 0 || (uint64_t)i >= (uint64_t)s.u.s->len)
+        hp_throw_str("string byte index out of bounds");
+    return hp_of_int((unsigned char)s.u.s->data[i]);
+}
+hval hpbi_str_i64_at(hval s, hval off) {
+    if (s.tag != HV_STR || !s.u.s) hp_throw_str("str_i64_at expects a string");
+    int64_t i = hp_val_to_int(off);
+    if (i < 0 || (uint64_t)i > (uint64_t)s.u.s->len / 8 ||
+        s.u.s->len - (size_t)i * 8 < 8)
+        hp_throw_str("string i64 index out of bounds");
+    int64_t value;
+    memcpy(&value, s.u.s->data + (size_t)i * 8, sizeof value);
+    return hp_of_int(value);
+}
 hval hpbi_sb_take(hval h) {
     HpSb *s = sb_h(h);
     size_t head = s->head;
@@ -6013,6 +6038,10 @@ hval hpbi_sb_take(hval h) {
     free(p);
     hp_free(s);
     return hp_of_str(r);
+}
+hval hpbi_sb_take_safe(hval h) {
+    if (h.tag != HV_INT || h.u.i == 0) return hp_null;
+    return hpbi_sb_take(h);
 }
 
 /* ---- request scope (compatibility) ---------------------------------------

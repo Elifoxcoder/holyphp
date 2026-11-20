@@ -1,0 +1,29 @@
+declare(enforce_memory_safety=1);
+
+if (false) {
+    $unused_db = sqlite_open_safe(":memory:");
+    $unused_cursor = bt_open_safe($unused_db, "items", false);
+    $unused_in = iarr_new(1);
+    $unused_out = iarr_new(1);
+    epoll_wait_iarr2_safe($unused_in, $unused_out, 0);
+}
+
+$db = sqlite_open_safe(":memory:");
+if ($db == 0) { throw new Exception("sqlite open"); }
+$stmt = sqlite_prepare_safe($db, "SELECT 42");
+if ($stmt == 0) { throw new Exception("sqlite prepare"); }
+if (sqlite_step($stmt) != 100 || sqlite_column_int($stmt, 0) != 42) {
+    throw new Exception("sqlite result");
+}
+sqlite_finalize($stmt);
+sqlite_close($db);
+
+$bytes = chr(42) . chr(0) . chr(0) . chr(0) . chr(0) . chr(0) . chr(0) . chr(0);
+if (str_u8_at($bytes, 0) != 42 || str_i64_at($bytes, 0) != 42) {
+    throw new Exception("bounded byte reads");
+}
+
+$builder = sb_new();
+sb_put($builder, "safe");
+if (sb_take_safe($builder) != "safe") { throw new Exception("builder take"); }
+echo "safe wrappers ok\n";

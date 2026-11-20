@@ -1,0 +1,12 @@
+class IssetIndexBox {
+    pub array $items = [];
+    public function has(int $key): bool { return isset($this->items[$key]); }
+}
+
+$box = new IssetIndexBox();
+if ($box->has(4)) { throw new Exception("empty list isset"); }
+$box->items[4] = "value";
+if (!$box->has(4)) { throw new Exception("present index isset"); }
+unset($box->items[4]);
+if ($box->has(4)) { throw new Exception("removed index isset"); }
+echo "isset property index ok\n";
