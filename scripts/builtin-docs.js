@@ -1,6 +1,6 @@
 /* builtin-docs.js — hand-written explanations for every HolyPHP builtin.
  * Consumed by scripts/gendocs.js (docs/builtins.html) and scripts/genext.js
- * (extension/hphp/data/builtins.json). Keyed by function name.
+ * (packages/extension/hphp/data/builtins.json). Keyed by function name.
  * Convention: one or two sentences — what it does, what it returns,
  * notable arguments/edge cases. Written for a developer who knows PHP.
  */
@@ -25,6 +25,7 @@ module.exports = {
   bt_multi_seek: "Unsafe: resolves many rowids with one batch of cursor positions and returns a raw result pointer that must go through bt_multi_release.",
   bt_next: "Moves a cursor forward (1 = found, 0 = end).",
   bt_open: "Opens a cursor on a table or index and returns a handle. Unsafe: raw B-tree access.",
+  bt_open_safe: "Opens a cursor from a live database handle returned by sqlite_open_safe. It checks argument types; keep the native handle opaque and never forge or modify it.",
   bt_page_release: "Unsafe: releases a raw page token returned by bt_payload_pin. Releasing it twice corrupts the page cache.",
   bt_payload_pin: "Unsafe: pins the current payload page and returns a raw page pointer that only bt_page_release may consume.",
   bt_payload_ptr: "Unsafely returns the address of the current record's payload bytes.",
@@ -40,6 +41,7 @@ module.exports = {
   epoll_mod: "Changes the interest mask of a socket: 1 = readable, 2 = writable.",
   epoll_wait2: "Waits for readiness and fills the two arrays with readable and writable handles.",
   epoll_wait_iarr2: "Unsafe: typed-array variant of epoll_wait2; writes through a raw typed int array without boxing or lifetime checks.",
+  epoll_wait_iarr2_safe: "Typed-array epoll wait for live handles returned by the matching constructors. It rejects null or wrongly typed arguments; keep native handles opaque and never forge or modify them.",
   epoll_wait_into: "Waits for readability and appends ready handles to an array.",
   http_request_bounds: "Scans an HTTP request head once and packs the request-line and header end offsets into one integer (0 = not complete, -1/-2 = error/overflow).",
   iarr_data_ptr: "Unsafely returns the address of the array's first element for pointer-style access.",
@@ -96,8 +98,10 @@ module.exports = {
   sqlite_is_lock_error: "Whether the last error was a busy/locked condition worth retrying.",
   sqlite_last_insert_rowid: "Rowid of the most recent successful insert.",
   sqlite_open: "Opens a SQLite database file and returns a handle (0 on failure). Unsafe: the handle is a raw library pointer.",
+  sqlite_open_safe: "Opens a SQLite database and returns an opaque handle (0 on failure). Use only with the matching SQLite/B-tree operations and close it with sqlite_close; do not forge or modify handles.",
   sqlite_open_vfs: "Unsafe: opens a SQLite database through a named VFS and returns a raw library handle (0 on failure).",
   sqlite_prepare: "Compiles one SQL statement and returns a statement handle (0 on error). Unsafe: raw pointer.",
+  sqlite_prepare_safe: "Prepares one SQL statement from a live sqlite_open_safe handle and returns an opaque statement handle (0 on error). Use only with statement operations and finalize it once; do not forge or modify handles.",
   sqlite_reset: "Resets a statement so it can be stepped again; bindings are kept.",
   sqlite_status: "Returns a compact JSON string with the connection's SQLite status counters.",
   sqlite_step: "Advances a statement: 100 = row, 101 = done, anything else is an error.",
@@ -125,9 +129,12 @@ module.exports = {
   uring_direct: "Whether ring-owned direct descriptors are in use (they need no process fd).",
   uring_direct_slots: "Number of registered direct-descriptor slots (0 when direct mode is off).",
   sb_take: "Unsafe: returns the builder contents as a string and releases the builder; a second call is a use-after-free.",
+  sb_take_safe: "Consumes a live builder returned by sb_new and returns its contents. It rejects null or wrongly typed handles; pass a real handle only once and do not forge or modify it.",
   u8_at: "Unsafely reads one byte at address+offset.",
+  str_u8_at: "Reads one unsigned byte from a string at a checked byte offset; throws when the offset is outside the string.",
   u8_set: "Unsafely writes one byte at address+offset.",
   i64_at: "Unsafely reads a 64-bit integer at address+8*offset.",
+  str_i64_at: "Reads a native-endian signed 64-bit word from a string at a checked word index; throws unless all eight bytes are present.",
   i64_set: "Unsafely writes a 64-bit integer at address+8*offset.",
 
   /* ============ Strings ============ */

@@ -1,0 +1,9 @@
+$s = "GET /posts/1 HTTP/1.1\r\n\r\n";
+$matches = 0;
+$before = live_bytes();
+for ($i = 0; $i < 20000; $i++) {
+    if ($s[4] == "/") { $matches++; }
+}
+if ($matches != 20000) { throw new Exception("string index comparison"); }
+if (live_bytes() > $before + 8192) { throw new Exception("string index temporary leak"); }
+echo "string index comparison ok\n";

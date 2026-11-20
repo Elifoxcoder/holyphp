@@ -123,6 +123,8 @@ owner) matter when reading the tests:
 | `str_from_bytes (*unsafe*)` | new string | borrows |
 | `str_int_range` | scalar | borrows |
 | `str_persist` | same string (borrowed) | borrows |
+| `str_u8_at` | scalar | borrows string |
+| `str_i64_at` | scalar | borrows string |
 | `str_pos_ci` | scalar | borrows |
 | `str_prefix_ci` | scalar | borrows |
 | `str_to_int` | scalar | borrows |
@@ -345,6 +347,7 @@ owner) matter when reading the tests:
 | `epoll_mod` | scalar | borrows |
 | `epoll_wait2` | scalar | borrows |
 | `epoll_wait_iarr2 (*unsafe*)` | scalar | borrows |
+| `epoll_wait_iarr2_safe` | scalar | borrows opaque typed-array handles |
 | `epoll_wait_into` | scalar | borrows |
 | `http_request_bounds` | scalar | borrows |
 | `jwt_verifier_new` | new string | borrows |
@@ -569,6 +572,7 @@ owner) matter when reading the tests:
 | `bt_multi_seek (*unsafe*)` | new handle | borrows |
 | `bt_next` | scalar or handle | borrows |
 | `bt_open (*unsafe*)` | new handle | borrows |
+| `bt_open_safe` | new opaque handle | borrows database handle and name |
 | `bt_page_release (*unsafe*)` | scalar or handle | **takes** the value/handle |
 | `bt_payload_pin (*unsafe*)` | new handle | borrows |
 | `bt_payload_ptr (*unsafe*)` | raw pointer (unsafe) | borrows |
@@ -627,12 +631,15 @@ owner) matter when reading the tests:
 | `sqlite_is_lock_error` | scalar or handle | borrows |
 | `sqlite_last_insert_rowid` | scalar or handle | borrows |
 | `sqlite_open (*unsafe*)` | new handle | borrows |
+| `sqlite_open_safe` | new opaque handle | borrows path |
 | `sqlite_open_vfs (*unsafe*)` | new handle | borrows |
 | `sqlite_prepare (*unsafe*)` | new handle | borrows |
+| `sqlite_prepare_safe` | new opaque handle | borrows database handle and SQL |
 | `sqlite_reset` | scalar or handle | borrows and mutates |
 | `sqlite_status` | new string | borrows |
 | `sqlite_step` | scalar or handle | borrows |
 | `sb_take (*unsafe*)` | new string | **takes** the value/handle |
+| `sb_take_safe` | new string | **takes** the value/handle |
 | `u8_at (*unsafe*)` | raw pointer (unsafe) | borrows |
 | `u8_set (*unsafe*)` | raw pointer (unsafe) | borrows |
 | `i64_at (*unsafe*)` | raw pointer (unsafe) | borrows |

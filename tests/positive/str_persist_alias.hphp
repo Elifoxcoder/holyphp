@@ -1,0 +1,19 @@
+class PersistAliasBox {
+    pub array $rows = [];
+    public function add(string $text): void {
+        $row = [];
+        $row["text"] = $text;
+        $this->rows[] = $row;
+    }
+    public function persist(): void {
+        $row = $this->rows[0];
+        $row["text"] = str_persist($row["text"]);
+        $this->rows[0] = $row;
+    }
+}
+
+$box = new PersistAliasBox();
+$box->add("a" . "b");
+$box->persist();
+if ($box->rows[0]["text"] != "ab") { throw new Exception("persist alias"); }
+echo "str persist alias ok\n";

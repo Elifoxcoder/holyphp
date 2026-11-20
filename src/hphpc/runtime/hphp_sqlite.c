@@ -130,6 +130,11 @@ hval hpbi_bt_open(hval dbv, hval name, hval isidx) {
     s = hp_val_to_str(name);
     return hp_of_int((int64_t)(intptr_t)hp_bt_open_impl(db, s->data, (int)hp_val_to_int(isidx)));
 }
+hval hpbi_bt_open_safe(hval dbv, hval name, hval isidx) {
+    if (dbv.tag != HV_INT || dbv.u.i == 0 || name.tag != HV_STR || !name.u.s)
+        return hp_of_int(0);
+    return hpbi_bt_open(dbv, name, isidx);
+}
 hval hpbi_bt_close(hval h) { if (hp_bt_close_impl) hp_bt_close_impl(bt_h(h)); return hp_of_bool(true); }
 hval hpbi_bt_first(hval h) { return hp_of_int(hp_bt_first_impl ? hp_bt_first_impl(bt_h(h)) : -1); }
 hval hpbi_bt_last(hval h) { return hp_of_int(hp_bt_last_impl ? hp_bt_last_impl(bt_h(h)) : -1); }
@@ -887,6 +892,10 @@ hval hpbi_sqlite_open(hval path) {
     hval nullv = { .tag = HV_NULL, .u.i = 0 };
     return hpbi_sqlite_open_impl(path, nullv);
 }
+hval hpbi_sqlite_open_safe(hval path) {
+    if (path.tag != HV_STR || !path.u.s) return hp_of_int(0);
+    return hpbi_sqlite_open(path);
+}
 
 hval hpbi_sqlite_open_vfs(hval path, hval vfs) {
     return hpbi_sqlite_open_impl(path, vfs);
@@ -1077,6 +1086,11 @@ hval hpbi_sqlite_prepare(hval dbv, hval sql) {
         return hp_of_int(0);
     }
     return hp_of_int((int64_t)(intptr_t)st);
+}
+hval hpbi_sqlite_prepare_safe(hval dbv, hval sql) {
+    if (dbv.tag != HV_INT || dbv.u.i == 0 || sql.tag != HV_STR || !sql.u.s)
+        return hp_of_int(0);
+    return hpbi_sqlite_prepare(dbv, sql);
 }
 
 hval hpbi_sqlite_finalize(hval stv) {

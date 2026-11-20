@@ -9,6 +9,14 @@ behaves differently, what they have to change.
 
 ## Unreleased
 
+- `isset($object->items[$key])` now returns false for an absent integer index
+  on a list property instead of throwing. String-byte temporaries used in
+  comparisons are released, and `str_persist()` keeps its borrowed alias
+  ownership when assigned back into an array.
+- Added checked server-facing forms of SQLite, B-tree, epoll, and string-builder
+  operations, plus bounds-checked byte and 64-bit reads from managed strings.
+  Raw address accessors remain available inside unsafe code.
+
 - Environment variables set with `putenv()` now remain valid after the input
   string leaves scope. Integer overflow for 64-bit and 128-bit arithmetic wraps
   without relying on signed-overflow undefined behavior. Top-level locals and

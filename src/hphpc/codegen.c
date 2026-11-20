@@ -1286,7 +1286,8 @@ static void emit_builtin_call_body(Codegen *g, const char *name, PtrVec args,
      * missing keys — so for `$var[...]` targets read the element hval
      * directly through the runtime helper instead. */
     if (strcmp(name, "isset") == 0 && args.len == 1) {
-        Expr *arg = (Expr *)args.items[0];            if (arg->kind == EX_INDEX && arg->u.index.obj->kind == EX_VAR &&
+        Expr *arg = (Expr *)args.items[0];
+        if (arg->kind == EX_INDEX && arg->u.index.obj->kind == EX_VAR &&
                 arg->u.index.obj->u.var.sym) {
                 Buf ix;
                 buf_init(&ix);
@@ -1304,6 +1305,13 @@ static void emit_builtin_call_body(Codegen *g, const char *name, PtrVec args,
                 else
                     buf_printf(dst, "hpbi_isset_raw(&%s, hv(%s))",
                                var_name(arg->u.index.obj->u.var.sym), buf_take(&ix));
+            } else if (arg->kind == EX_INDEX) {
+                Buf base, ix;
+                buf_init(&base); buf_init(&ix);
+                to_hval(g, arg->u.index.obj, &base);
+                if (arg->u.index.idx) emit_expr(g, arg->u.index.idx, &ix);
+                else buf_puts(&ix, "(int64_t)0");
+                buf_printf(dst, "hpbi_isset_index(%s, hv(%s))", buf_take(&base), buf_take(&ix));
             } else {
             Buf raw;
             buf_init(&raw);
@@ -2284,8 +2292,28 @@ static void emit_closure(Codegen *g, AstFn *fn) {
 
 static void emit_assign(Codegen *g, Expr *e, Buf *dst);
 
+/* Results classified as aliases in docs/guide/builtin-ownership.md. These
+ * must be retained when assigned into an owner slot, and must not be treated
+ * as a fresh temporary by borrowing consumers. */
+static bool builtin_result_alias(const char *name) {
+    if (!name) return false;
+    return !strcmp(name, "str_persist") || !strcmp(name, "array_key_first") ||
+           !strcmp(name, "array_key_last") || !strcmp(name, "max") ||
+           !strcmp(name, "min") || !strcmp(name, "current") ||
+           !strcmp(name, "pos") || !strcmp(name, "reset") ||
+           !strcmp(name, "end") || !strcmp(name, "next") ||
+           !strcmp(name, "prev");
+}
+
 static bool expr_is_borrowed_heap(Expr *e) {
     if (!e) return false;
+    if (e->kind == EX_CALL && e->builtin && e->u.call.fn &&
+        e->u.call.fn->kind == EX_VAR &&
+        builtin_result_alias(e->u.call.fn->u.var.name)) return true;
+    if (e->kind == EX_METHOD && e->builtin && e->u.method.name &&
+        (!strcmp(e->u.method.name, "current") || !strcmp(e->u.method.name, "key") ||
+         !strcmp(e->u.method.name, "reset") || !strcmp(e->u.method.name, "end")))
+        return true;
     return e->kind == EX_VAR || e->kind == EX_FIELD || e->kind == EX_INDEX ||
            e->kind == EX_ASSIGN;
 }
@@ -2302,6 +2330,9 @@ static bool expr_is_fresh_owned(Expr *e) {
     if (t->kind == TY_REF || t->kind == TY_OWN) return false;
     if (!managed_tag_for_type(t) && !type_is_hval_slot(t)) return false;
     switch (e->kind) {
+    case EX_INDEX:
+        return e->u.index.obj && e->u.index.obj->type &&
+               e->u.index.obj->type->kind == TY_STRING;
     case EX_TPL:
         return e->u.tpl.exprs.len > 0;
     case EX_BIN:
@@ -2316,16 +2347,11 @@ static bool expr_is_fresh_owned(Expr *e) {
             /* Raw pointers and alias-returning unsafe memory helpers are not
              * reference-counted objects. Treating HV_OBJ as an hobj here
              * makes a discarded malloc()/memset() result corrupt memory. */
-            if (name && (!strcmp(name, "malloc") || !strcmp(name, "ffi_load") ||
+            if (name && (builtin_result_alias(name) || !strcmp(name, "malloc") || !strcmp(name, "ffi_load") ||
                          !strcmp(name, "ffi_call") || !strcmp(name, "memset") ||
                          !strcmp(name, "memcpy") || !strcmp(name, "iarr_data_ptr") ||
                          !strcmp(name, "sb_data_ptr") || !strcmp(name, "bt_payload_ptr") ||
-                         !strcmp(name, "str_persist") || !strcmp(name, "array_search") ||
-                         !strcmp(name, "array_key_first") || !strcmp(name, "array_key_last") ||
-                         !strcmp(name, "max") || !strcmp(name, "min") ||
-                         !strcmp(name, "current") || !strcmp(name, "pos") ||
-                         !strcmp(name, "reset") || !strcmp(name, "end") ||
-                         !strcmp(name, "next") || !strcmp(name, "prev")))
+                         !strcmp(name, "array_search")))
                 return false;
             /* Remaining heap-valued builtin calls follow the standard
              * borrowed-input, owned-result contract. */
