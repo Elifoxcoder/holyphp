@@ -1019,9 +1019,38 @@ bool hp_val_to_bool(hval v) {
     }
 }
 
-bool hp_val_eq(hval a, hval b) {
+static int64_t hp_key_index(harr *a, hval key);
+static bool hp_val_eq_r(hval a, hval b, int depth);
+
+/* PHP ==: arrays are equal when they hold the same key/value pairs, in any
+ * order, with loosely equal values. */
+static bool hp_arr_loose_eq(harr *x, harr *y, int depth) {
+    if (x == y) return true;
+    size_t xn = x ? x->len : 0, yn = y ? y->len : 0;
+    if (xn != yn) return false;
+    if (xn == 0) return true;
+    if (depth > 64) return false;            /* cycles: give up conservatively */
+    for (size_t i = 0; i < xn; i++) {
+        hval key = x->keys ? x->keys[i] : hp_of_int((int64_t)i);
+        int64_t j = (!x->keys && !y->keys) ? (int64_t)i : hp_key_index(y, key);
+        if (j < 0 || !hp_val_eq_r(x->vals[i], y->vals[j], depth + 1)) return false;
+    }
+    return true;
+}
+
+bool hp_val_eq(hval a, hval b) { return hp_val_eq_r(a, b, 0); }
+
+static bool hp_val_eq_r(hval a, hval b, int depth) {
     if (a.tag == HV_STR && b.tag == HV_STR) return hp_str_eq(a.u.s, b.u.s);
-    if (a.tag == HV_ARR && b.tag == HV_ARR) return a.u.a == b.u.a;
+    if (a.tag == HV_ARR && b.tag == HV_ARR) return hp_arr_loose_eq(a.u.a, b.u.a, depth);
+    if (a.tag == HV_ARR || b.tag == HV_ARR) {
+        /* an array equals only another array, or null/false when empty */
+        hval other = a.tag == HV_ARR ? b : a;
+        harr *arr = a.tag == HV_ARR ? a.u.a : b.u.a;
+        if (other.tag == HV_NULL || other.tag == HV_BOOL)
+            return hp_val_to_bool(other) == (arr && arr->len > 0);
+        return false;
+    }
     if (a.tag == HV_NULL && b.tag == HV_NULL) return true;
     if (a.tag == HV_NULL || b.tag == HV_NULL)
         return hp_val_to_bool(a) == false && hp_val_to_bool(b) == false;
