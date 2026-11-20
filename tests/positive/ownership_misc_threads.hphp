@@ -1,0 +1,40 @@
+<?php
+/* ownership_misc_threads.hphp — synchronisation ids are opaque handles the
+ * caller frees; channel values are scalars here, so nothing changes hands. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+check("thr_cpu_count is positive", thr_cpu_count() >= 1);
+check("thr_current is an int", is_int(thr_current()));
+check("thr_id is positive", thr_id() > 0);
+thr_sleep_ms(1);
+
+$m = mutex_new();
+check("mutex_new returns an id", $m != 0);
+check("mutex_lock", mutex_lock($m));
+check("mutex_unlock", mutex_unlock($m));
+check("mutex_trylock", mutex_trylock($m));
+mutex_unlock($m);
+check("mutex_free", mutex_free($m));
+
+$a = atomic_new(0);
+check("atomic_new defaults to 0", atomic_get($a) == 0);
+atomic_set($a, 5);
+check("atomic_set/get", atomic_get($a) == 5);
+check("atomic_add returns the previous value", atomic_add($a, 3) == 5 && atomic_get($a) == 8);
+check("atomic_cas", atomic_cas($a, 8, 9) && atomic_get($a) == 9);
+check("atomic_cas rejects a wrong expectation", !atomic_cas($a, 8, 10));
+
+$ch = chan_new(1);
+check("chan_new returns an id", $ch != 0);
+check("chan_send", chan_send($ch, 7));
+check("chan_recv", chan_recv($ch) == 7);
+check("chan_try_recv on an empty channel", chan_try_recv($ch) === false);
+check("chan_close", chan_close($ch));
+check("chan_recv after close", chan_recv($ch) === false);
+
+echo "ownership misc threads ok\n";

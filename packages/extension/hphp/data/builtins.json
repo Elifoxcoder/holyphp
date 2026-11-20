@@ -9525,18 +9525,1777 @@
    "authoredSignature": ""
   },
   {
-   "name": "holy_maxout_start",
-   "sig": "holy_maxout_start(...$args): int",
+   "name": "accept_emfile",
+   "sig": "accept_emfile(...$args): bool",
    "args": -2,
-   "desc": "holy_maxout_start($port, $dbPath) — starts the bundled io_uring HTTP benchmark server (Linux only); returns the bound port or -1.",
+   "desc": "Whether the last accept failed because the process ran out of descriptors.",
    "unsafe": false
   },
   {
-   "name": "holy_challenge_start",
-   "sig": "holy_challenge_start(...$args): int",
+   "name": "arr_clear",
+   "sig": "arr_clear(array $a): bool",
    "args": -2,
-   "desc": "holy_challenge_start($port, $dbPath) — starts the bundled challenge HTTP server (Linux only); returns the bound port or -1.",
+   "desc": "Empties an array in place, keeping its allocated key/value storage.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$a",
+     "type": "array",
+     "description": "array to empty",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "true.",
+   "example": "$a = [1, 2, 3];\narr_clear($a);\necho count($a), \"\\n\";",
+   "exampleOutput": "0",
+   "seeAlso": [
+    "arr_free"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "array $a"
+  },
+  {
+   "name": "arr_free",
+   "sig": "arr_free(array $a): bool",
+   "args": -2,
+   "desc": "Frees an array and its element storage early (the values themselves are not released).",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$a",
+     "type": "array",
+     "description": "array to release",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "true.",
+   "example": "$a = [1, 2, 3];\narr_free($a);\necho \"freed\\n\";",
+   "exampleOutput": "freed",
+   "seeAlso": [
+    "arr_clear"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "array $a"
+  },
+  {
+   "name": "bt_close",
+   "sig": "bt_close(...$args): bool",
+   "args": -2,
+   "desc": "Closes a B-tree cursor.",
    "unsafe": false
+  },
+  {
+   "name": "bt_col_int",
+   "sig": "bt_col_int(...$args): int",
+   "args": -2,
+   "desc": "Integer value of a column inside the current record.",
+   "unsafe": false
+  },
+  {
+   "name": "bt_col_int_at",
+   "sig": "bt_col_int_at(...$args): int",
+   "args": -2,
+   "desc": "Integer value of a column of another cursor's current record.",
+   "unsafe": false
+  },
+  {
+   "name": "bt_col_len",
+   "sig": "bt_col_len(...$args): int",
+   "args": -2,
+   "desc": "Byte length of a column inside the current record.",
+   "unsafe": true
+  },
+  {
+   "name": "bt_col_off",
+   "sig": "bt_col_off(...$args): int",
+   "args": -2,
+   "desc": "Byte offset of a column inside the current record.",
+   "unsafe": true
+  },
+  {
+   "name": "bt_cols",
+   "sig": "bt_cols(...$args): int",
+   "args": -2,
+   "desc": "Number of columns in the current record.",
+   "unsafe": false
+  },
+  {
+   "name": "bt_count_key",
+   "sig": "bt_count_key(...$args): int",
+   "args": -2,
+   "desc": "Counts entries with the given key in an index cursor.",
+   "unsafe": false
+  },
+  {
+   "name": "bt_count_range",
+   "sig": "bt_count_range(...$args): int",
+   "args": -2,
+   "desc": "Counts entries per key in [lo,hi] with one index walk; writes the counts into a typed int array and returns 0 on success.",
+   "unsafe": false
+  },
+  {
+   "name": "bt_first",
+   "sig": "bt_first(...$args): int",
+   "args": -2,
+   "desc": "Moves a cursor to the first entry (1 = found).",
+   "unsafe": false
+  },
+  {
+   "name": "bt_last",
+   "sig": "bt_last(...$args): int",
+   "args": -2,
+   "desc": "Moves a cursor to the last entry (1 = found).",
+   "unsafe": false
+  },
+  {
+   "name": "bt_multi_keys",
+   "sig": "bt_multi_keys(...$args): int",
+   "args": -2,
+   "desc": "Fills a typed int array with the rowids of a batch result and returns their count.",
+   "unsafe": false
+  },
+  {
+   "name": "bt_multi_payloads",
+   "sig": "bt_multi_payloads(...$args): bool",
+   "args": -2,
+   "desc": "Fills a typed int array with found/pointer/size triples from a batch result.",
+   "unsafe": false
+  },
+  {
+   "name": "bt_multi_release",
+   "sig": "bt_multi_release(...$args): bool",
+   "args": -2,
+   "desc": "Releases a batch result.",
+   "unsafe": false
+  },
+  {
+   "name": "bt_multi_seek",
+   "sig": "bt_multi_seek(...$args): int",
+   "args": -2,
+   "desc": "Resolves many rowids with one batch of cursor positions and returns a result handle.",
+   "unsafe": true
+  },
+  {
+   "name": "bt_next",
+   "sig": "bt_next(...$args): int",
+   "args": -2,
+   "desc": "Moves a cursor forward (1 = found, 0 = end).",
+   "unsafe": false
+  },
+  {
+   "name": "bt_open",
+   "sig": "bt_open(...$args): int",
+   "args": -2,
+   "desc": "Opens a cursor on a table or index and returns a handle. Unsafe: raw B-tree access.",
+   "unsafe": true
+  },
+  {
+   "name": "bt_page_release",
+   "sig": "bt_page_release(...$args): bool",
+   "args": -2,
+   "desc": "Releases a token returned by bt_payload_pin.",
+   "unsafe": false
+  },
+  {
+   "name": "bt_payload_pin",
+   "sig": "bt_payload_pin(...$args): int",
+   "args": -2,
+   "desc": "Pins the current payload page and returns a release token.",
+   "unsafe": true
+  },
+  {
+   "name": "bt_payload_ptr",
+   "sig": "bt_payload_ptr(...$args): int",
+   "args": -2,
+   "desc": "Unsafely returns the address of the current record's payload bytes.",
+   "unsafe": true
+  },
+  {
+   "name": "bt_payload_size",
+   "sig": "bt_payload_size(...$args): int",
+   "args": -2,
+   "desc": "Byte length of the current record's payload.",
+   "unsafe": false
+  },
+  {
+   "name": "bt_prev",
+   "sig": "bt_prev(...$args): int",
+   "args": -2,
+   "desc": "Moves a cursor backward (1 = found, 0 = start).",
+   "unsafe": false
+  },
+  {
+   "name": "bt_read",
+   "sig": "bt_read(...$args): int",
+   "args": -2,
+   "desc": "Decodes several columns of the current record into a typed int array (offsets, lengths and integers) and returns the column count.",
+   "unsafe": true
+  },
+  {
+   "name": "bt_root",
+   "sig": "bt_root(...$args): int",
+   "args": -2,
+   "desc": "Root page number of a table or index (0 when it cannot be resolved). Unsafe: raw B-tree access.",
+   "unsafe": true
+  },
+  {
+   "name": "bt_rowid",
+   "sig": "bt_rowid(...$args): int",
+   "args": -2,
+   "desc": "Rowid at the current cursor position.",
+   "unsafe": false
+  },
+  {
+   "name": "bt_seek",
+   "sig": "bt_seek(...$args): int",
+   "args": -2,
+   "desc": "Seeks a table cursor to a rowid (1 = found).",
+   "unsafe": false
+  },
+  {
+   "name": "bt_tail",
+   "sig": "bt_tail(...$args): int",
+   "args": -2,
+   "desc": "Reads the last n entries of a table into a batch result handle.",
+   "unsafe": false
+  },
+  {
+   "name": "epoll_add",
+   "sig": "epoll_add(...$args): int",
+   "args": -2,
+   "desc": "Adds a socket to the readiness set (io_uring poll or epoll, whichever is active).",
+   "unsafe": false
+  },
+  {
+   "name": "epoll_del",
+   "sig": "epoll_del(...$args): int",
+   "args": -2,
+   "desc": "Removes a socket from the readiness set.",
+   "unsafe": false
+  },
+  {
+   "name": "epoll_mod",
+   "sig": "epoll_mod(...$args): int",
+   "args": -2,
+   "desc": "Changes the interest mask of a socket: 1 = readable, 2 = writable.",
+   "unsafe": false
+  },
+  {
+   "name": "epoll_wait2",
+   "sig": "epoll_wait2(...$args): int",
+   "args": -2,
+   "desc": "Waits for readiness and fills the two arrays with readable and writable handles.",
+   "unsafe": false
+  },
+  {
+   "name": "epoll_wait_iarr2",
+   "sig": "epoll_wait_iarr2(...$args): bool",
+   "args": -2,
+   "desc": "Typed-array variant of epoll_wait2 (no hval boxing per fd).",
+   "unsafe": true
+  },
+  {
+   "name": "epoll_wait_into",
+   "sig": "epoll_wait_into(...$args): int",
+   "args": -2,
+   "desc": "Waits for readability and appends ready handles to an array.",
+   "unsafe": false
+  },
+  {
+   "name": "http_request_bounds",
+   "sig": "http_request_bounds(...$args): int",
+   "args": -2,
+   "desc": "Scans an HTTP request head once and packs the request-line and header end offsets into one integer (0 = not complete, -1/-2 = error/overflow).",
+   "unsafe": false
+  },
+  {
+   "name": "iarr_data_ptr",
+   "sig": "iarr_data_ptr(int $h): int",
+   "args": -2,
+   "desc": "Unsafely returns the address of the array's first element for pointer-style access.",
+   "unsafe": true,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "array handle",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "Address of the first element (0 when empty).",
+   "example": "unsafe { $a = iarr_new(2); iarr_set($a, 0, 3); echo i64_at(iarr_data_ptr($a), 0), \"\\n\"; }",
+   "exampleOutput": "3",
+   "seeAlso": [
+    "i64_at",
+    "iarr_get"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h"
+  },
+  {
+   "name": "iarr_get",
+   "sig": "iarr_get(int $h, int $i): int",
+   "args": -2,
+   "desc": "Reads an integer from a typed int array (0 when the handle or index is invalid).",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "array handle",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$i",
+     "type": "int",
+     "description": "index",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The value, or 0.",
+   "example": "$a = iarr_new(2);\niarr_set($a, 1, 7);\necho iarr_get($a, 1), \"\\n\";",
+   "exampleOutput": "7",
+   "seeAlso": [
+    "iarr_set"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h, int $i"
+  },
+  {
+   "name": "iarr_get_fast",
+   "sig": "iarr_get_fast(int $h, int $i): int",
+   "args": -2,
+   "desc": "Unsafely reads an integer without a bounds check (caller guarantees the index).",
+   "unsafe": true,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "array handle",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$i",
+     "type": "int",
+     "description": "index",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The value without a bounds check.",
+   "example": "$a = iarr_new(2);\niarr_set($a, 1, 8);\necho iarr_get_fast($a, 1), \"\\n\";",
+   "exampleOutput": "8",
+   "seeAlso": [
+    "iarr_get"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h, int $i"
+  },
+  {
+   "name": "iarr_len",
+   "sig": "iarr_len(int $h): int",
+   "args": -2,
+   "desc": "Number of elements in a typed int array.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "array handle",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "Number of elements.",
+   "example": "$a = iarr_new(4);\necho iarr_len($a), \"\\n\";",
+   "exampleOutput": "4",
+   "seeAlso": [
+    "iarr_new"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h"
+  },
+  {
+   "name": "iarr_new",
+   "sig": "iarr_new(int $n): int",
+   "args": -2,
+   "desc": "Creates a zero-initialised typed int64 array of the given length and returns its handle.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$n",
+     "type": "int",
+     "description": "length",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "Handle of a zeroed int64 array.",
+   "example": "$a = iarr_new(3);\necho iarr_len($a), \" \", iarr_get($a, 0), \"\\n\";",
+   "exampleOutput": "3 0",
+   "seeAlso": [
+    "iarr_set",
+    "iarr_release"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $n"
+  },
+  {
+   "name": "iarr_new_uninit",
+   "sig": "iarr_new_uninit(int $n): int",
+   "args": -2,
+   "desc": "Creates a typed int64 array without initialising it (fill it before reading).",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$n",
+     "type": "int",
+     "description": "length",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "Handle of an uninitialised int64 array.",
+   "example": "$a = iarr_new_uninit(2);\niarr_set($a, 1, 9);\necho iarr_get($a, 1), \"\\n\";",
+   "exampleOutput": "9",
+   "seeAlso": [
+    "iarr_new"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $n"
+  },
+  {
+   "name": "iarr_release",
+   "sig": "iarr_release(int $h): bool",
+   "args": -2,
+   "desc": "Releases a typed int array back to the runtime pool.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "array handle",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "true; the array returns to the pool.",
+   "example": "$a = iarr_new(4);\niarr_release($a);\necho \"released\\n\";",
+   "exampleOutput": "released",
+   "seeAlso": [
+    "iarr_new"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h"
+  },
+  {
+   "name": "iarr_set",
+   "sig": "iarr_set(int $h, int $i, int $v): bool",
+   "args": -2,
+   "desc": "Stores an integer in a typed int array.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "array handle",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$i",
+     "type": "int",
+     "description": "index",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$v",
+     "type": "int",
+     "description": "value",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "true.",
+   "example": "$a = iarr_new(1);\niarr_set($a, 0, 5);\necho iarr_get($a, 0), \"\\n\";",
+   "exampleOutput": "5",
+   "seeAlso": [
+    "iarr_get"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h, int $i, int $v"
+  },
+  {
+   "name": "iarr_set_fast",
+   "sig": "iarr_set_fast(int $h, int $i, int $v): bool",
+   "args": -2,
+   "desc": "Unsafely stores an integer without a bounds check (caller guarantees the index).",
+   "unsafe": true,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "array handle",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$i",
+     "type": "int",
+     "description": "index",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$v",
+     "type": "int",
+     "description": "value",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "true.",
+   "example": "$a = iarr_new(2);\niarr_set_fast($a, 0, 4);\necho iarr_get($a, 0), \"\\n\";",
+   "exampleOutput": "4",
+   "seeAlso": [
+    "iarr_set"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h, int $i, int $v"
+  },
+  {
+   "name": "int_digits",
+   "sig": "int_digits(int $n): int",
+   "args": -2,
+   "desc": "Decimal digit count of an integer (for Content-Length and similar prefixes).",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$n",
+     "type": "int",
+     "description": "number",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "Decimal digit count.",
+   "example": "echo int_digits(0), \" \", int_digits(99), \" \", int_digits(-123), \"\\n\";",
+   "exampleOutput": "1 2 3",
+   "seeAlso": [
+    "strlen"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $n"
+  },
+  {
+   "name": "json_num_field",
+   "sig": "json_num_field(string $j, string $key): int",
+   "args": -2,
+   "desc": "Reads one integer field of a flat JSON object without a full parse.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$j",
+     "type": "string",
+     "description": "flat JSON object",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$key",
+     "type": "string",
+     "description": "field name",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The integer value, or -1.",
+   "example": "echo json_num_field(\"{\\\"exp\\\":1234}\", \"exp\"), \"\\n\";",
+   "exampleOutput": "1234",
+   "seeAlso": [
+    "json_str_field"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "string $j, string $key"
+  },
+  {
+   "name": "json_str_field",
+   "sig": "json_str_field(string $j, string $key): string",
+   "args": -2,
+   "desc": "Reads one string field of a flat JSON object without a full parse.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$j",
+     "type": "string",
+     "description": "flat JSON object",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$key",
+     "type": "string",
+     "description": "field name",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The string value, or empty.",
+   "example": "echo json_str_field(\"{\\\"sub\\\":\\\"7\\\",\\\"username\\\":\\\"ann\\\"}\", \"username\"), \"\\n\";",
+   "exampleOutput": "ann",
+   "seeAlso": [
+    "json_num_field"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "string $j, string $key"
+  },
+  {
+   "name": "jwt_verifier_new",
+   "sig": "jwt_verifier_new(...$args): string",
+   "args": -2,
+   "desc": "Precomputes the key state for repeated JWT verification.",
+   "unsafe": false
+  },
+  {
+   "name": "jwt_verify",
+   "sig": "jwt_verify(...$args): string",
+   "args": -2,
+   "desc": "Verifies an HS256 JWT (signature, alg, exp) and returns the decoded payload, or an empty string.",
+   "unsafe": false
+  },
+  {
+   "name": "jwt_verify_prepared",
+   "sig": "jwt_verify_prepared(...$args): string",
+   "args": -2,
+   "desc": "Verifies a JWT with a prepared verifier.",
+   "unsafe": false
+  },
+  {
+   "name": "live_allocs",
+   "sig": "live_allocs(...$args): mixed",
+   "args": -2,
+   "desc": "Number of live blocks tracked by the runtime allocator (0 when the core has no counter).",
+   "unsafe": false
+  },
+  {
+   "name": "live_bytes",
+   "sig": "live_bytes(...$args): mixed",
+   "args": -2,
+   "desc": "Bytes currently allocated by the runtime (0 when the core has no counter).",
+   "unsafe": false
+  },
+  {
+   "name": "nofile_limit",
+   "sig": "nofile_limit(...$args): int",
+   "args": -2,
+   "desc": "Current RLIMIT_NOFILE (0 when unknown).",
+   "unsafe": false
+  },
+  {
+   "name": "object_free",
+   "sig": "object_free(...$args): bool",
+   "args": -2,
+   "desc": "Frees the object struct itself, not the values it references.",
+   "unsafe": false
+  },
+  {
+   "name": "runtime_diag_write",
+   "sig": "runtime_diag_write(...$args): bool",
+   "args": -2,
+   "desc": "Writes one diagnostic line to stderr when HPHP_DIAG=1.",
+   "unsafe": false
+  },
+  {
+   "name": "runtime_stats",
+   "sig": "runtime_stats(...$args): string",
+   "args": -2,
+   "desc": "JSON snapshot of the runtime counters (requests, io_uring enters, allocations).",
+   "unsafe": false
+  },
+  {
+   "name": "sb_bytes",
+   "sig": "sb_bytes(int $h, int $p, int $n): bool",
+   "args": -2,
+   "desc": "Unsafely appends len bytes read from a raw address.",
+   "unsafe": true,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "builder handle",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$p",
+     "type": "int",
+     "description": "address",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$n",
+     "type": "int",
+     "description": "length",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "true.",
+   "example": "unsafe { $sb = sb_new(); $p = malloc(2); u8_set($p, 0, 65); u8_set($p, 1, 66); sb_bytes($sb, $p, 2); echo sb_take($sb), \"\\n\"; }",
+   "exampleOutput": "AB",
+   "seeAlso": [
+    "sb_put"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h, int $p, int $n"
+  },
+  {
+   "name": "sb_data_ptr",
+   "sig": "sb_data_ptr(int $h): int",
+   "args": -2,
+   "desc": "Unsafely returns the address of the builder contents (valid until the next append).",
+   "unsafe": true,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "builder handle",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "Address of the contents.",
+   "example": "unsafe { $sb = sb_new(); sb_put($sb, \"xyz\"); echo u8_at(sb_data_ptr($sb), 0), \"\\n\"; }",
+   "exampleOutput": "120",
+   "seeAlso": [
+    "sb_take"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h"
+  },
+  {
+   "name": "sb_discard",
+   "sig": "sb_discard(int $h): bool",
+   "args": -2,
+   "desc": "Releases a builder without taking its contents.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "builder handle",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "true; the builder is released.",
+   "example": "$sb = sb_new();\nsb_put($sb, \"gone\");\nsb_discard($sb);\necho \"discarded\\n\";",
+   "exampleOutput": "discarded",
+   "seeAlso": [
+    "sb_take"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h"
+  },
+  {
+   "name": "sb_int",
+   "sig": "sb_int(int $h, int $n): bool",
+   "args": -2,
+   "desc": "Appends an integer in decimal.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "builder handle",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$n",
+     "type": "int",
+     "description": "number",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "true.",
+   "example": "$sb = sb_new();\nsb_put($sb, \"n=\");\nsb_int($sb, 42);\nunsafe { echo sb_take($sb), \"\\n\"; }",
+   "exampleOutput": "n=42",
+   "seeAlso": [
+    "int_digits",
+    "sb_put"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h, int $n"
+  },
+  {
+   "name": "sb_json",
+   "sig": "sb_json(...$args): int",
+   "args": -2,
+   "desc": "Appends JSON string escaping for len bytes at a raw address (the value must already be UTF-8 text).",
+   "unsafe": false
+  },
+  {
+   "name": "sb_json_str",
+   "sig": "sb_json_str(int $h, string $s): int",
+   "args": -2,
+   "desc": "Appends a JSON-escaped copy of a string.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "builder handle",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$s",
+     "type": "string",
+     "description": "text",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "true. The text is appended quoted and escaped.",
+   "example": "$sb = sb_new();\nsb_json_str($sb, \"a\\\"b\");\nunsafe { echo sb_take($sb), \"\\n\"; }",
+   "exampleOutput": "\"a\\\"b\"",
+   "seeAlso": [
+    "sb_json",
+    "json_encode"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h, string $s"
+  },
+  {
+   "name": "sb_len",
+   "sig": "sb_len(int $h): int",
+   "args": -2,
+   "desc": "Number of bytes currently in a builder.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "builder handle",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "Number of bytes currently in the builder.",
+   "example": "$sb = sb_new();\nsb_put($sb, \"holy\");\necho sb_len($sb), \"\\n\";",
+   "exampleOutput": "4",
+   "seeAlso": [
+    "sb_take"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h"
+  },
+  {
+   "name": "sb_new",
+   "sig": "sb_new(): int",
+   "args": -2,
+   "desc": "Creates a string builder and returns an integer handle. Use sb_take or sb_discard to release it.",
+   "unsafe": false,
+   "params": [],
+   "returns": "New builder handle (an integer).",
+   "example": "$sb = sb_new();\nsb_put($sb, \"ok\");\necho sb_len($sb), \"\\n\";",
+   "exampleOutput": "2",
+   "seeAlso": [
+    "sb_put",
+    "sb_take"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": ""
+  },
+  {
+   "name": "sb_prepend",
+   "sig": "sb_prepend(...$args): bool",
+   "args": -2,
+   "desc": "Inserts a string before the current contents.",
+   "unsafe": false
+  },
+  {
+   "name": "sb_put",
+   "sig": "sb_put(int $h, string $s): bool",
+   "args": -2,
+   "desc": "Appends a string to a builder.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "builder handle",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$s",
+     "type": "string",
+     "description": "text to append",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "true.",
+   "example": "$sb = sb_new();\nsb_put($sb, \"abc\");\nsb_put($sb, \"def\");\nunsafe { echo sb_take($sb), \"\\n\"; }",
+   "exampleOutput": "abcdef",
+   "seeAlso": [
+    "sb_new",
+    "sb_int"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h, string $s"
+  },
+  {
+   "name": "sb_reserve",
+   "sig": "sb_reserve(int $h, int $n): bool",
+   "args": -2,
+   "desc": "Reserves capacity in a builder so a large response does not reallocate repeatedly.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "builder handle",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$n",
+     "type": "int",
+     "description": "bytes",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "true.",
+   "example": "$sb = sb_new();\nsb_reserve($sb, 4096);\nsb_put($sb, \"x\");\necho sb_len($sb), \"\\n\";",
+   "exampleOutput": "1",
+   "seeAlso": [
+    "sb_new"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h, int $n"
+  },
+  {
+   "name": "scalar_binop",
+   "sig": "scalar_binop(...$args): mixed",
+   "args": -2,
+   "desc": "Runtime support builtin ported with the io_uring/SQLite modules.",
+   "unsafe": false
+  },
+  {
+   "name": "scope_begin",
+   "sig": "scope_begin(): bool",
+   "args": -2,
+   "desc": "Starts a request scope. Compatibility builtin: this core has no request arena yet, so it is a no-op (phase 2 removes the calls).",
+   "unsafe": false,
+   "params": [],
+   "returns": "true (no-op in this core).",
+   "example": "echo scope_begin() ? \"ok\\n\" : \"no\\n\";",
+   "exampleOutput": "ok",
+   "seeAlso": [
+    "scope_end"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": ""
+  },
+  {
+   "name": "scope_end",
+   "sig": "scope_end(): bool",
+   "args": -2,
+   "desc": "Ends a request scope. Compatibility builtin: no-op here; counters only.",
+   "unsafe": false,
+   "params": [],
+   "returns": "true (no-op in this core).",
+   "example": "scope_begin(); echo scope_end() ? \"ok\\n\" : \"no\\n\";",
+   "exampleOutput": "ok",
+   "seeAlso": [
+    "scope_begin"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": ""
+  },
+  {
+   "name": "sqlite_bg_checkpoint_active",
+   "sig": "sqlite_bg_checkpoint_active(...$args): mixed",
+   "args": -2,
+   "desc": "Whether the background checkpoint worker is currently running.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_bg_checkpoint_hold",
+   "sig": "sqlite_bg_checkpoint_hold(...$args): mixed",
+   "args": -2,
+   "desc": "Lets the event loop ask the checkpoint worker to hold off briefly so the WAL can restart.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_bg_checkpoint_start",
+   "sig": "sqlite_bg_checkpoint_start(...$args): mixed",
+   "args": -2,
+   "desc": "Starts the optional background WAL checkpoint worker for a database.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_bg_checkpoint_tick",
+   "sig": "sqlite_bg_checkpoint_tick(...$args): mixed",
+   "args": -2,
+   "desc": "One cheap event-loop tick for the checkpoint worker; call it once per poll cycle.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_bind_int",
+   "sig": "sqlite_bind_int(...$args): bool",
+   "args": -2,
+   "desc": "Binds an integer to a 1-based statement parameter.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_bind_text",
+   "sig": "sqlite_bind_text(...$args): bool",
+   "args": -2,
+   "desc": "Binds a string to a 1-based statement parameter.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_busy_timeout",
+   "sig": "sqlite_busy_timeout(...$args): bool",
+   "args": -2,
+   "desc": "Milliseconds SQLite waits for a lock before returning SQLITE_BUSY.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_changes",
+   "sig": "sqlite_changes(...$args): int",
+   "args": -2,
+   "desc": "Rows changed by the most recent write statement.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_clear_bindings",
+   "sig": "sqlite_clear_bindings(...$args): bool",
+   "args": -2,
+   "desc": "Clears all bound parameters of a statement.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_close",
+   "sig": "sqlite_close(...$args): mixed",
+   "args": -2,
+   "desc": "Closes a SQLite database handle.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_column_int",
+   "sig": "sqlite_column_int(...$args): int",
+   "args": -2,
+   "desc": "Integer value of a column in the current row.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_column_text",
+   "sig": "sqlite_column_text(...$args): string",
+   "args": -2,
+   "desc": "Text value of a column in the current row.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_errmsg",
+   "sig": "sqlite_errmsg(...$args): mixed",
+   "args": -2,
+   "desc": "Last error message of the connection.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_exec",
+   "sig": "sqlite_exec(...$args): bool",
+   "args": -2,
+   "desc": "Runs one or more SQL statements; true when SQLite reports SQLITE_OK.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_extended_errcode",
+   "sig": "sqlite_extended_errcode(...$args): int",
+   "args": -2,
+   "desc": "Extended SQLite error code of the connection.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_finalize",
+   "sig": "sqlite_finalize(...$args): bool",
+   "args": -2,
+   "desc": "Finalises a prepared statement.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_is_lock_error",
+   "sig": "sqlite_is_lock_error(...$args): bool",
+   "args": -2,
+   "desc": "Whether the last error was a busy/locked condition worth retrying.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_last_insert_rowid",
+   "sig": "sqlite_last_insert_rowid(...$args): int",
+   "args": -2,
+   "desc": "Rowid of the most recent successful insert.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_open",
+   "sig": "sqlite_open(...$args): int",
+   "args": -2,
+   "desc": "Opens a SQLite database file and returns a handle (0 on failure). Unsafe: the handle is a raw library pointer.",
+   "unsafe": true
+  },
+  {
+   "name": "sqlite_open_vfs",
+   "sig": "sqlite_open_vfs(...$args): int",
+   "args": -2,
+   "desc": "Opens a SQLite database through a named VFS (for example unix-excl).",
+   "unsafe": true
+  },
+  {
+   "name": "sqlite_prepare",
+   "sig": "sqlite_prepare(...$args): int",
+   "args": -2,
+   "desc": "Compiles one SQL statement and returns a statement handle (0 on error). Unsafe: raw pointer.",
+   "unsafe": true
+  },
+  {
+   "name": "sqlite_reset",
+   "sig": "sqlite_reset(...$args): int",
+   "args": -2,
+   "desc": "Resets a statement so it can be stepped again; bindings are kept.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_status",
+   "sig": "sqlite_status(...$args): string",
+   "args": -2,
+   "desc": "Returns a compact JSON string with the connection's SQLite status counters.",
+   "unsafe": false
+  },
+  {
+   "name": "sqlite_step",
+   "sig": "sqlite_step(...$args): int",
+   "args": -2,
+   "desc": "Advances a statement: 100 = row, 101 = done, anything else is an error.",
+   "unsafe": false
+  },
+  {
+   "name": "str_at_eq",
+   "sig": "str_at_eq(string $s, int $start, int $len, string $lit): bool",
+   "args": -2,
+   "desc": "Compares len bytes at start with a literal without building a substring.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$s",
+     "type": "string",
+     "description": "text",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$start",
+     "type": "int",
+     "description": "offset",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$len",
+     "type": "int",
+     "description": "length",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$lit",
+     "type": "string",
+     "description": "literal",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "true when the bytes match.",
+   "example": "echo str_at_eq(\"GET /feed\", 0, 3, \"GET\") ? \"yes\" : \"no\", \"\\n\";",
+   "exampleOutput": "yes",
+   "seeAlso": [
+    "str_starts_with"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "string $s, int $start, int $len, string $lit"
+  },
+  {
+   "name": "str_find_range",
+   "sig": "str_find_range(string $s, string $needle, int $start): int",
+   "args": -2,
+   "desc": "Finds a needle in a string starting at an offset and returns its byte index, or -1.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$s",
+     "type": "string",
+     "description": "text",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$needle",
+     "type": "string",
+     "description": "needle",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$start",
+     "type": "int",
+     "description": "offset",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "Byte index, or -1.",
+   "example": "echo str_find_range(\"a\\r\\n\\r\\nb\", \"\\r\\n\\r\\n\", 0), \"\\n\";",
+   "exampleOutput": "1",
+   "seeAlso": [
+    "strpos"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "string $s, string $needle, int $start"
+  },
+  {
+   "name": "str_free",
+   "sig": "str_free(...$args): bool",
+   "args": -2,
+   "desc": "Frees a string early. Unsafe-adjacent: only call it on a value you own.",
+   "unsafe": false
+  },
+  {
+   "name": "str_from_bytes",
+   "sig": "str_from_bytes(int $p, int $n): string",
+   "args": -2,
+   "desc": "Unsafely copies len bytes from a raw address into a new string.",
+   "unsafe": true,
+   "params": [
+    {
+     "name": "$p",
+     "type": "int",
+     "description": "address",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$n",
+     "type": "int",
+     "description": "length",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "A new string.",
+   "example": "unsafe { $p = malloc(2); u8_set($p, 0, 72); u8_set($p, 1, 105); echo str_from_bytes($p, 2), \"\\n\"; }",
+   "exampleOutput": "Hi",
+   "seeAlso": [
+    "substr"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $p, int $n"
+  },
+  {
+   "name": "str_int_range",
+   "sig": "str_int_range(string $s, int $start, int $end): int",
+   "args": -2,
+   "desc": "Alias of str_to_int_range(): decimal integer in a byte range.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$s",
+     "type": "string",
+     "description": "text",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$start",
+     "type": "int",
+     "description": "first byte",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$end",
+     "type": "int",
+     "description": "end",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The integer in that byte range, or 0.",
+   "example": "echo str_int_range(\"x99\", 1, 3), \"\\n\";",
+   "exampleOutput": "99",
+   "seeAlso": [
+    "str_to_int_range"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "string $s, int $start, int $end"
+  },
+  {
+   "name": "str_persist",
+   "sig": "str_persist(string $s): string",
+   "args": -2,
+   "desc": "Returns a string that outlives the current request scope. Identity in this core (strings are plain heap blocks).",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$s",
+     "type": "string",
+     "description": "text",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The same string (identity in this core).",
+   "example": "echo str_persist(\"keep\"), \"\\n\";",
+   "exampleOutput": "keep",
+   "seeAlso": [
+    "str_free"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "string $s"
+  },
+  {
+   "name": "str_pos_ci",
+   "sig": "str_pos_ci(string $s, string $needle, int $start): mixed",
+   "args": -2,
+   "desc": "Case-insensitive byte search from an offset; returns the index or false.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$s",
+     "type": "string",
+     "description": "text",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$needle",
+     "type": "string",
+     "description": "needle",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$start",
+     "type": "int",
+     "description": "offset",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "Byte index, or false.",
+   "example": "$p = str_pos_ci(\"Content-Type: X\", \"content-type\", 0);\necho $p, \"\\n\";",
+   "exampleOutput": "0",
+   "seeAlso": [
+    "strpos",
+    "strtolower"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "string $s, string $needle, int $start"
+  },
+  {
+   "name": "str_prefix_ci",
+   "sig": "str_prefix_ci(string $s, string $prefix): mixed",
+   "args": -2,
+   "desc": "Case-insensitive prefix test.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$s",
+     "type": "string",
+     "description": "text",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$prefix",
+     "type": "string",
+     "description": "prefix",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "true when it matches ignoring case.",
+   "example": "echo str_prefix_ci(\"Bearer x\", \"bearer\") ? \"yes\" : \"no\", \"\\n\";",
+   "exampleOutput": "yes",
+   "seeAlso": [
+    "str_starts_with"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "string $s, string $prefix"
+  },
+  {
+   "name": "str_to_int",
+   "sig": "str_to_int(string $s): int",
+   "args": -2,
+   "desc": "Parses the whole string as a decimal integer (0 when it is not one).",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$s",
+     "type": "string",
+     "description": "decimal text",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The integer, or 0.",
+   "example": "echo str_to_int(\"42\"), \" \", str_to_int(\"x\"), \"\\n\";",
+   "exampleOutput": "42 0",
+   "seeAlso": [
+    "str_to_int_range",
+    "intval"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "string $s"
+  },
+  {
+   "name": "str_to_int_range",
+   "sig": "str_to_int_range(string $s, int $start, int $end): int",
+   "args": -2,
+   "desc": "Runtime support builtin ported with the io_uring/SQLite modules.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$s",
+     "type": "string",
+     "description": "text",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$start",
+     "type": "int",
+     "description": "first byte",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$end",
+     "type": "int",
+     "description": "one past the last byte",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The integer in that byte range, or 0.",
+   "example": "echo str_to_int_range(\"id=12345;\", 3, 8), \"\\n\";",
+   "exampleOutput": "12345",
+   "seeAlso": [
+    "str_to_int"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "string $s, int $start, int $end"
+  },
+  {
+   "name": "str_trim_range",
+   "sig": "str_trim_range(string $s, int $start, int $end): mixed",
+   "args": -2,
+   "desc": "Trims ASCII whitespace inside [start,end) without building a substring and returns the trimmed bytes.",
+   "unsafe": false,
+   "params": [
+    {
+     "name": "$s",
+     "type": "string",
+     "description": "text",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$start",
+     "type": "int",
+     "description": "first byte",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$end",
+     "type": "int",
+     "description": "end",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The trimmed slice.",
+   "example": "echo str_trim_range(\"  hi  \", 0, 6), \"|\\n\";",
+   "exampleOutput": "hi|",
+   "seeAlso": [
+    "trim"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "string $s, int $start, int $end"
+  },
+  {
+   "name": "stream_ready_into",
+   "sig": "stream_ready_into(...$args): bool",
+   "args": -2,
+   "desc": "Waits until any of the handles is readable and appends the ready ones.",
+   "unsafe": true
+  },
+  {
+   "name": "stream_recv_release",
+   "sig": "stream_recv_release(...$args): int",
+   "args": -2,
+   "desc": "Releases the receive buffer of a connection back to the runtime pool.",
+   "unsafe": false
+  },
+  {
+   "name": "stream_send2",
+   "sig": "stream_send2(...$args): int",
+   "args": -2,
+   "desc": "Blocking variant of stream_send2_nb.",
+   "unsafe": false
+  },
+  {
+   "name": "stream_send2_nb",
+   "sig": "stream_send2_nb(...$args): int",
+   "args": -2,
+   "desc": "Non-blocking writev of two buffers: bytes written, -1 would block, -2 error.",
+   "unsafe": false
+  },
+  {
+   "name": "stream_send_nb",
+   "sig": "stream_send_nb(...$args): int",
+   "args": -2,
+   "desc": "Non-blocking send: bytes written, -1 would block, -2 error.",
+   "unsafe": false
+  },
+  {
+   "name": "stream_send_sb",
+   "sig": "stream_send_sb(...$args): int",
+   "args": -2,
+   "desc": "Sends a whole string-builder response without copying it and consumes the builder.",
+   "unsafe": false
+  },
+  {
+   "name": "stream_set_nodelay",
+   "sig": "stream_set_nodelay(...$args): bool",
+   "args": -2,
+   "desc": "Disables Nagle on a connected socket (accepted sockets inherit it on Linux).",
+   "unsafe": false
+  },
+  {
+   "name": "stream_set_socket_buffers",
+   "sig": "stream_set_socket_buffers(...$args): bool",
+   "args": -2,
+   "desc": "Sets TCP receive/send buffer sizes on a listening or connected socket (0 = kernel default).",
+   "unsafe": false
+  },
+  {
+   "name": "stream_socket_server_reuseport",
+   "sig": "stream_socket_server_reuseport(...$args): int",
+   "args": -2,
+   "desc": "Creates a listening SO_REUSEPORT socket (one of N accepts the connection).",
+   "unsafe": false
+  },
+  {
+   "name": "uring_active",
+   "sig": "uring_active(...$args): bool",
+   "args": -2,
+   "desc": "Whether the io_uring backend is in use.",
+   "unsafe": false
+  },
+  {
+   "name": "uring_direct",
+   "sig": "uring_direct(...$args): bool",
+   "args": -2,
+   "desc": "Whether ring-owned direct descriptors are in use (they need no process fd).",
+   "unsafe": false
+  },
+  {
+   "name": "uring_direct_slots",
+   "sig": "uring_direct_slots(...$args): int",
+   "args": -2,
+   "desc": "Number of registered direct-descriptor slots (0 when direct mode is off).",
+   "unsafe": false
+  },
+  {
+   "name": "sb_take",
+   "sig": "sb_take(int $h): string",
+   "args": -2,
+   "desc": "Returns the builder contents as a string and releases the builder.",
+   "unsafe": true,
+   "params": [
+    {
+     "name": "$h",
+     "type": "int",
+     "description": "builder handle",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The contents as a string; the builder is released.",
+   "example": "$sb = sb_new();\nsb_put($sb, \"done\");\nunsafe { echo sb_take($sb), \"\\n\"; }",
+   "exampleOutput": "done",
+   "seeAlso": [
+    "sb_new",
+    "sb_len"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $h"
+  },
+  {
+   "name": "u8_at",
+   "sig": "u8_at(int $p, int $off): int",
+   "args": -2,
+   "desc": "Unsafely reads one byte at address+offset.",
+   "unsafe": true,
+   "params": [
+    {
+     "name": "$p",
+     "type": "int",
+     "description": "address",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$off",
+     "type": "int",
+     "description": "byte offset",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The byte value.",
+   "example": "unsafe { $p = malloc(4); u8_set($p, 1, 65); echo u8_at($p, 1), \"\\n\"; free($p); }",
+   "exampleOutput": "65",
+   "seeAlso": [
+    "u8_set",
+    "i64_at"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $p, int $off"
+  },
+  {
+   "name": "u8_set",
+   "sig": "u8_set(int $p, int $off, int $v): int",
+   "args": -2,
+   "desc": "Unsafely writes one byte at address+offset.",
+   "unsafe": true,
+   "params": [
+    {
+     "name": "$p",
+     "type": "int",
+     "description": "address",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$off",
+     "type": "int",
+     "description": "byte offset",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$v",
+     "type": "int",
+     "description": "byte value",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The value.",
+   "example": "unsafe { $p = malloc(4); u8_set($p, 0, 7); echo u8_at($p, 0), \"\\n\"; free($p); }",
+   "exampleOutput": "7",
+   "seeAlso": [
+    "u8_at"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $p, int $off, int $v"
+  },
+  {
+   "name": "i64_at",
+   "sig": "i64_at(int $p, int $off): int",
+   "args": -2,
+   "desc": "Unsafely reads a 64-bit integer at address+8*offset.",
+   "unsafe": true,
+   "params": [
+    {
+     "name": "$p",
+     "type": "int",
+     "description": "address",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$off",
+     "type": "int",
+     "description": "index in 64-bit words",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The integer.",
+   "example": "unsafe { $p = malloc(32); i64_set($p, 2, 9); echo i64_at($p, 2), \"\\n\"; free($p); }",
+   "exampleOutput": "9",
+   "seeAlso": [
+    "i64_set",
+    "u8_at"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $p, int $off"
+  },
+  {
+   "name": "i64_set",
+   "sig": "i64_set(int $p, int $off, int $v): int",
+   "args": -2,
+   "desc": "Unsafely writes a 64-bit integer at address+8*offset.",
+   "unsafe": true,
+   "params": [
+    {
+     "name": "$p",
+     "type": "int",
+     "description": "address",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$off",
+     "type": "int",
+     "description": "index in 64-bit words",
+     "optional": false,
+     "variadic": false
+    },
+    {
+     "name": "$v",
+     "type": "int",
+     "description": "value",
+     "optional": false,
+     "variadic": false
+    }
+   ],
+   "returns": "The value.",
+   "example": "unsafe { $p = malloc(32); i64_set($p, 0, 5); echo i64_at($p, 0), \"\\n\"; free($p); }",
+   "exampleOutput": "5",
+   "seeAlso": [
+    "i64_at"
+   ],
+   "authoredNoCode": false,
+   "authoredSignature": "int $p, int $off, int $v"
   }
  ]
 }

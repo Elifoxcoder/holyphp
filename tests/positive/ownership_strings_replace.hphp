@@ -1,0 +1,58 @@
+<?php
+/* ownership_strings_replace.hphp — replacement and escaping builtins build a
+ * new string; the input and previous results stay valid. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$text = "one two one three";
+$one = "one";
+$uno = "uno";
+$none = "zzz";
+$nl = "\n";
+$lt = "<b>bold & \"quoted\"</b>";
+$dash = "-";
+
+$r = str_replace($one, $uno, $text);
+check("str_replace value", $r == "uno two uno three");
+check("str_replace left the input intact", $text == "one two one three");
+
+$r = str_replace($none, $uno, $text);
+check("str_replace without a match copies", $r == $text);
+
+$r = nl2br("a\nb");
+check("nl2br value", $r == "a<br />\nb");
+
+$r = htmlentities($lt);
+check("htmlentities value", $r == "&lt;b&gt;bold &amp; &quot;quoted&quot;&lt;/b&gt;");
+$r = htmlspecialchars($lt);
+check("htmlspecialchars value", $r == "&lt;b&gt;bold &amp; &quot;quoted&quot;&lt;/b&gt;");
+$r = html_entity_decode("&lt;a&gt;&amp;&quot;&#39;");
+check("html_entity_decode value", $r == "<a>&\"'");
+
+$r = strip_tags("<b>hi</b> <i>there</i>");
+check("strip_tags value", $r == "hi there");
+
+$r = wordwrap("holy php makes coding holy again", 12);
+check("wordwrap value", $r == "holy php\nmakes coding\nholy again");
+$long = "abcdefghij";
+$r = wordwrap($long, 0);
+check("wordwrap width 0 copies", $r == $long);
+check("wordwrap left the input intact", $long == "abcdefghij");
+
+$r = number_format(1234567.891, 2);
+check("number_format value", $r == "1,234,567.89");
+$r = number_format(1234.6, 0);
+check("number_format without decimals", $r == "1,235");
+
+$fmt = "%s|%d|%.1f";
+$r = sprintf($fmt, "x", 7, 2.5);
+check("sprintf value", $r == "x|7|2.5");
+
+$r = str_pad("ab", 5, $dash);
+check("str_pad repeats the pad", $r == "ab---");
+
+if ($fail == 0) { echo "ownership strings replace ok\n"; } else { exit(1); }

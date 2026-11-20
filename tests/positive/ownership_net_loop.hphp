@@ -1,0 +1,26 @@
+<?php
+/* ownership_net_loop.hphp — request builders/parsers return fresh strings or
+ * scalars; the loop releases every result and must stay flat. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$query = ["a" => "1", "b" => "x y"];
+$head = "GET /feed?x=1 HTTP/1.1\r\nHost: example\r\n\r\n";
+$token = "a.b.c";
+$secret = "k";
+$acc = 0;
+for ($round = 0; $round < 5; $round++) {
+    for ($i = 0; $i < 20000; $i++) {
+        $r = http_build_query($query);
+        $acc += strlen($r);
+        $acc += http_request_bounds($head) % 1000;
+        $r = jwt_verify($token, $secret, 0);
+        $acc += strlen($r);
+    }
+}
+check("net loop accumulated work", $acc > 0);
+echo "ownership net loop ok\n";

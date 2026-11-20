@@ -1,0 +1,30 @@
+<?php
+/* ownership_io_files.hphp — file management builtins borrow path strings and
+ * return booleans; no string is handed back. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$dir = sys_get_temp_dir();
+$path = $dir . "/hphp_ownership_files.txt";
+$copy = $dir . "/hphp_ownership_files_copy.txt";
+unlink($path);
+unlink($copy);
+
+check("touch creates a file", touch($path));
+check("file_exists after touch", file_exists($path));
+check("copy", copy($path, $copy));
+check("the copy exists", file_exists($copy));
+check("rename", rename($copy, $copy . ".moved"));
+check("the renamed file exists", file_exists($copy . ".moved"));
+check("is_readable", is_readable($path));
+check("is_writable", is_writable($path));
+check("filesize of an empty file", filesize($path) == 0);
+check("unlink", unlink($path));
+check("unlink the copy", unlink($copy . ".moved"));
+check("both files are gone", !file_exists($path));
+
+echo "ownership io files ok\n";

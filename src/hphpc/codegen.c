@@ -135,6 +135,7 @@ static const char *ctype_of(const Type *t) {
     switch (t->kind) {
     case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64:
         return "int64_t";
+    case TY_I128: return "hp_i128";
     case TY_FLOAT: case TY_F32: case TY_F64: return "double";
     case TY_BOOL: return "bool";
     case TY_STRING: return "hstr*";
@@ -356,6 +357,10 @@ static void to_hval(Codegen *g, Expr *e, Buf *dst) {
     switch (t->kind) {
     case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64:
         buf_printf(dst, "hp_of_int(%s)", buf_take(&b)); break;
+    case TY_I128:
+        /* i128 has no hval payload: the boxed form is its decimal string,
+         * which is also what echo/'.'/templates want to print */
+        buf_printf(dst, "hp_of_i128_str(%s)", buf_take(&b)); break;
     case TY_FLOAT: case TY_F32: case TY_F64:
         buf_printf(dst, "hp_of_float(%s)", buf_take(&b)); break;
     case TY_BOOL: buf_printf(dst, "hp_of_bool(%s)", buf_take(&b)); break;
@@ -443,6 +448,7 @@ static const char *box_param_value(const Type *t, const char *expr) {
     switch (t ? t->kind : TY_MIXED) {
     case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64: case TY_ENUM:
         return fmt("hp_of_int(%s)", expr);
+    case TY_I128: return fmt("hp_of_i128_str(%s)", expr);
     case TY_FLOAT: case TY_F32: case TY_F64:
         return fmt("hp_of_float(%s)", expr);
     case TY_BOOL: return fmt("hp_of_bool(%s)", expr);
@@ -737,6 +743,10 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
     bool rf = rt && (rt->kind == TY_FLOAT || rt->kind == TY_F32 || rt->kind == TY_F64);
     bool numeric = ln && rn;
     bool strings = lt && rt && lt->kind == TY_STRING && rt->kind == TY_STRING;
+    /* i128 wins over every other integer: C's usual arithmetic conversions
+     * widen the int64_t side by themselves, so only the operators that go
+     * through a 64-bit helper need a 128-bit variant. */
+    bool widest = (lt && lt->kind == TY_I128) || (rt && rt->kind == TY_I128);
     Buf l, r;
     buf_init(&l); buf_init(&r);
     emit_expr(g, e->u.bin.l, &l);
@@ -766,7 +776,7 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
         dst = &tmp_body;
     }
     /* two int literals + a native-safe op => emit the folded C literal */
-    if (numeric && !lf && !rf && e->u.bin.l->kind == EX_INT && e->u.bin.r->kind == EX_INT) {
+    if (numeric && !widest && !lf && !rf && e->u.bin.l->kind == EX_INT && e->u.bin.r->kind == EX_INT) {
         long long folded;
         if (fold_int_binop(op, e->u.bin.l->u.i.ival, e->u.bin.r->u.i.ival, &folded)) {
             buf_printf(dst, "(int64_t)%lldLL", folded);
@@ -825,12 +835,24 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
     /* shifts: unbox both sides, since a string/mixed operand is converted by
      * hp_val_to_int (PHP semantics); the node type is always int */
     case T_SHL:
-        buf_printf(dst, "(hp_val_to_int(hv(%s)) << hp_val_to_int(hv(%s)))", ls, rs);
+        if (widest)
+            buf_printf(dst, "(hp_i128)((hp_i128)(%s) << (int)(%s))", ls, rs);
+        else
+            buf_printf(dst, "(hp_val_to_int(hv(%s)) << hp_val_to_int(hv(%s)))", ls, rs);
         break;
     case T_SHR:
-        buf_printf(dst, "(hp_val_to_int(hv(%s)) >> hp_val_to_int(hv(%s)))", ls, rs);
+        if (widest)
+            buf_printf(dst, "(hp_i128)((hp_i128)(%s) >> (int)(%s))", ls, rs);
+        else
+            buf_printf(dst, "(hp_val_to_int(hv(%s)) >> hp_val_to_int(hv(%s)))", ls, rs);
         break;
     case T_SLASH:
+        /* i128 division stays exact and integer; everything else keeps
+         * PHP's float division */
+        if (widest && lt && rt && type_is_integral(lt->kind) && type_is_integral(rt->kind)) {
+            buf_printf(dst, "hp_i128_div((hp_i128)(%s), (hp_i128)(%s))", ls, rs);
+            break;
+        }
         /* the fast path is plain double division; a string operand has to go
          * through the value-aware runtime (hp_divv), whose result is hval */
         if (lt && rt && type_is_numeric(lt->kind) && type_is_numeric(rt->kind)) {
@@ -850,11 +872,13 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
     case T_PERCENT:
         /* inline-native modulo keeps hot loops free of out-of-line calls;
          * hp_mod_i still throws PHP's "Modulo by zero" */
-        if (numeric) buf_printf(dst, "hp_mod_i(%s, %s)", ls, rs);
+        if (widest) buf_printf(dst, "hp_i128_mod((hp_i128)(%s), (hp_i128)(%s))", ls, rs);
+        else if (numeric) buf_printf(dst, "hp_mod_i(%s, %s)", ls, rs);
         else buf_printf(dst, "hp_mod(hp_val_to_int(hv(%s)), hp_val_to_int(hv(%s)))", ls, rs);
         break;
     case T_POW:
-        if (numeric) buf_printf(dst, "hp_pow_i((int64_t)(%s), (int64_t)(%s))", ls, rs);
+        if (widest) buf_printf(dst, "hp_i128_pow((hp_i128)(%s), (hp_i128)(%s))", ls, rs);
+        else if (numeric) buf_printf(dst, "hp_pow_i((int64_t)(%s), (int64_t)(%s))", ls, rs);
         else buf_printf(dst, "hp_powv(hv(%s), hv(%s))", ls, rs);
         break;
     case T_DOT:
@@ -876,7 +900,8 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
         /* identity: tag and value must both match */
         if (strings) {
             buf_printf(dst, "hp_str_eq(%s, %s)", ls, rs);
-        } else if (numeric && lt->kind == rt->kind) {
+        } else if ((numeric && lt->kind == rt->kind) ||
+                   (widest && lt && rt && type_is_integral(lt->kind) && type_is_integral(rt->kind))) {
             buf_printf(dst, "((%s) == (%s))", ls, rs);
         } else {
             Buf bl, br;
@@ -893,6 +918,11 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
             break;
         }
         if (op == T_NEQ2 && numeric && lt->kind == rt->kind) {
+            buf_printf(dst, "((%s) != (%s))", ls, rs);
+            break;
+        }
+        if (op == T_NEQ2 && widest && lt && rt &&
+            type_is_integral(lt->kind) && type_is_integral(rt->kind)) {
             buf_printf(dst, "((%s) != (%s))", ls, rs);
             break;
         }
@@ -917,26 +947,33 @@ static void emit_binop(Codegen *g, Expr *e, Buf *dst) {
         }
         break;
     case T_LT:
-        if (lf || rf) buf_printf(dst, "hp_lt_f((%s), (%s))", ls, rs);
+        if (widest) buf_printf(dst, "((%s) < (%s))", ls, rs);
+        else if (lf || rf) buf_printf(dst, "hp_lt_f((%s), (%s))", ls, rs);
         else if (numeric) buf_printf(dst, "hp_lt_i((%s), (%s))", ls, rs);
         else buf_printf(dst, "hp_lt(hv(%s), hv(%s))", ls, rs);
         break;
     case T_GT:
-        if (lf || rf) buf_printf(dst, "hp_gt_f((%s), (%s))", ls, rs);
+        if (widest) buf_printf(dst, "((%s) > (%s))", ls, rs);
+        else if (lf || rf) buf_printf(dst, "hp_gt_f((%s), (%s))", ls, rs);
         else if (numeric) buf_printf(dst, "hp_gt_i((%s), (%s))", ls, rs);
         else buf_printf(dst, "hp_gt(hv(%s), hv(%s))", ls, rs);
         break;
     case T_LE:
-        if (lf || rf) buf_printf(dst, "hp_le_f((%s), (%s))", ls, rs);
+        if (widest) buf_printf(dst, "((%s) <= (%s))", ls, rs);
+        else if (lf || rf) buf_printf(dst, "hp_le_f((%s), (%s))", ls, rs);
         else if (numeric) buf_printf(dst, "hp_le_i((%s), (%s))", ls, rs);
         else buf_printf(dst, "hp_le(hv(%s), hv(%s))", ls, rs);
         break;
     case T_GE:
-        if (lf || rf) buf_printf(dst, "hp_ge_f((%s), (%s))", ls, rs);
+        if (widest) buf_printf(dst, "((%s) >= (%s))", ls, rs);
+        else if (lf || rf) buf_printf(dst, "hp_ge_f((%s), (%s))", ls, rs);
         else if (numeric) buf_printf(dst, "hp_ge_i((%s), (%s))", ls, rs);
         else buf_printf(dst, "hp_ge(hv(%s), hv(%s))", ls, rs);
         break;
-    case T_SPACESHIP: buf_printf(dst, "hp_cmp(hv(%s), hv(%s))", ls, rs); break;
+    case T_SPACESHIP:
+        if (widest) buf_printf(dst, "hp_i128_cmp((hp_i128)(%s), (hp_i128)(%s))", ls, rs);
+        else buf_printf(dst, "hp_cmp(hv(%s), hv(%s))", ls, rs);
+        break;
     case T_ANDAND: buf_printf(dst, "((%s) && (%s))", ls, rs); break;
     case T_OROR: buf_printf(dst, "((%s) || (%s))", ls, rs); break;
     case T_AMP: buf_printf(dst, "((%s) & (%s))", ls, rs); break;
@@ -974,6 +1011,27 @@ static void emit_builtin_call(Codegen *g, const char *name, PtrVec args,
 
 static void emit_builtin_call_body(Codegen *g, const char *name, PtrVec args,
                                    const Type *ret, Buf *dst) {
+    /* i128 through the value-printing builtins: an hval cannot hold 128 bits,
+     * so these four are routed to the 128-bit runtime helpers instead of
+     * boxing the argument (which would turn it into a string and make
+     * var_dump/json_encode print the wrong thing). */
+    if (args.len >= 1) {
+        Expr *a0 = (Expr *)args.items[0];
+        if (a0 && a0->type && a0->type->kind == TY_I128) {
+            const char *fn = NULL;
+            if (strcmp(name, "strval") == 0) fn = "hp_i128_to_str";
+            else if (strcmp(name, "print_r") == 0) fn = "hp_i128_print_r";
+            else if (strcmp(name, "var_dump") == 0) fn = "hp_i128_var_dump";
+            else if (strcmp(name, "json_encode") == 0 ||
+                     strcmp(name, "json_encode_pretty") == 0) fn = "hp_i128_to_str";
+            if (fn) {
+                buf_printf(dst, "%s(", fn);
+                emit_expr(g, a0, dst);
+                buf_puts(dst, ")");
+                return;
+            }
+        }
+    }
     if (strcmp(name, "max") == 0 || strcmp(name, "min") == 0) {
         /* single array argument: pass it as-is (PHP max([1,2,3]));
          * otherwise pack the variadic args into a runtime array */
@@ -1399,12 +1457,17 @@ static void emit_param_default(Codegen *g, Param *pm, Buf *dst) {
     else buf_puts(dst, "hp_null");
 }
 
-/* append default arguments for params the caller did not pass */
-static void emit_missing_defaults(Codegen *g, AstFn *fn, size_t nargs, Buf *dst) {
+/* append default arguments for params the caller did not pass.
+ * has_prefix says the call already printed an argument (a method receiver,
+ * a constructor's class name), so even the first default needs a comma. */
+static void emit_missing_defaults(Codegen *g, AstFn *fn, size_t nargs,
+                                  bool has_prefix, Buf *dst) {
+    bool first = nargs == 0 && !has_prefix;
     for (size_t i = nargs; i < fn->params.len; i++) {
         Param *pm = fn->params.items[i];
         if (!pm->dflt) break; /* sema already rejected this */
-        buf_puts(dst, ", ");
+        if (!first) buf_puts(dst, ", ");
+        first = false;
         emit_param_default(g, pm, dst);
     }
 }
@@ -1514,7 +1577,7 @@ static void emit_call(Codegen *g, Expr *e, Buf *dst) {
             else
                 emit_owned_call_arg(g, arg, pm ? pm->resolved : NULL, dst);
         }
-        emit_missing_defaults(g, fn, e->u.call.args.len, dst);
+        emit_missing_defaults(g, fn, e->u.call.args.len, false, dst);
         buf_puts(dst, ")");
         return;
     }
@@ -1576,7 +1639,7 @@ static void emit_method(Codegen *g, Expr *e, Buf *dst) {
                     emit_owned_call_arg(g, e->u.method.args.items[i],
                                         pm ? pm->resolved : NULL, dst);
             }
-            emit_missing_defaults(g, m, e->u.method.args.len, dst);
+            emit_missing_defaults(g, m, e->u.method.args.len, true, dst);
             buf_puts(dst, ")");
             free((void *)objcode);
             return;
@@ -1609,7 +1672,7 @@ static void emit_method(Codegen *g, Expr *e, Buf *dst) {
                 emit_owned_call_arg(g, e->u.method.args.items[i],
                                     pm ? pm->resolved : NULL, dst);
         }
-        emit_missing_defaults(g, m, e->u.method.args.len, dst);
+        emit_missing_defaults(g, m, e->u.method.args.len, true, dst);
         buf_puts(dst, ")");
         free((void *)objcode);
         return;
@@ -1654,7 +1717,7 @@ static void emit_static(Codegen *g, Expr *e, Buf *dst) {
             else
                 emit_arg(g, e->u.staticcall.args.items[i], pm ? pm->resolved : NULL, dst);
         }
-        if (m) emit_missing_defaults(g, m, e->u.staticcall.args.len, dst);
+        if (m) emit_missing_defaults(g, m, e->u.staticcall.args.len, false, dst);
         buf_puts(dst, ")");
         return;
     }
@@ -2428,6 +2491,9 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             if (pboxed) /* hval box: pow in value space, hval flows back in */
                 buf_printf(dst, "((%s) = hp_powv((%s), hv(%s)))",
                            name, name, buf_take(&v));
+            else if (pt && pt->kind == TY_I128)
+                buf_printf(dst, "(%s = hp_i128_pow((%s), (hp_i128)(%s)))",
+                           name, name, buf_take(&v));
             else if (pt && (type_is_integral(pt->kind) || pt->kind == TY_BOOL))
                 buf_printf(dst, "(%s = hp_val_to_int(hp_powv(hv(%s), hv(%s))))",
                            name, name, buf_take(&v));
@@ -2514,7 +2580,9 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
             buf_printf(dst, "(%s = hp_str_append_v(hv(%s), hv(%s)))", ls, ls, vs);
         } else if (op == T_POWASSIGN) {
             const Type *tt = tgt->type;
-            if (tt && (type_is_integral(tt->kind) || tt->kind == TY_BOOL))
+            if (tt && tt->kind == TY_I128)
+                buf_printf(dst, "(%s = hp_i128_pow((%s), (hp_i128)(%s)))", ls, ls, vs);
+            else if (tt && (type_is_integral(tt->kind) || tt->kind == TY_BOOL))
                 buf_printf(dst, "(%s = hp_val_to_int(hp_powv(hv(%s), hv(%s))))", ls, ls, vs);
             else
                 buf_printf(dst, "(%s = hp_val_to_float(hp_powv(hv(%s), hv(%s))))", ls, ls, vs);
@@ -2716,6 +2784,9 @@ static void emit_assign(Codegen *g, Expr *e, Buf *dst) {
                 if (fboxed)
                     buf_printf(dst, "((%s) = hp_powv((%s), hv(%s)))",
                                lval, lval, buf_take(&v));
+                else if (ft && ft->kind == TY_I128)
+                    buf_printf(dst, "(%s = hp_i128_pow((%s), (hp_i128)(%s)))",
+                               lval, lval, buf_take(&v));
                 else if (ft && type_is_integral(ft->kind))
                     buf_printf(dst, "(%s = hp_val_to_int(hp_powv(hv(%s), hv(%s))))",
                                lval, lval, buf_take(&v));
@@ -2783,10 +2854,20 @@ static void emit_cast(Codegen *g, Expr *e, Buf *dst) {
     const char *os = buf_take(&o);
     const Type *to = e->u.cast.to;
     const Type *from = e->u.cast.operand->type;
-    if (to->kind == TY_STRING && from && type_is_numeric(from->kind)) {
+    bool from_i128 = from && from->kind == TY_I128;
+    bool to_i128 = to->kind == TY_I128;
+    if (to->kind == TY_STRING && from_i128) {
+        buf_printf(dst, "hp_i128_to_str(%s)", os);
+    } else if (to->kind == TY_STRING && from && type_is_numeric(from->kind)) {
         buf_printf(dst, "hp_str_from_num(%s)", os);
     } else if (to->kind == TY_STRING && from && from->kind == TY_BOOL) {
         buf_printf(dst, "(%s ? hp_str_lit(\"true\") : hp_str_lit(\"false\"))", os);
+    } else if (to_i128 && from && from->kind == TY_STRING) {
+        buf_printf(dst, "hp_str_to_i128(%s)", os);
+    } else if (to_i128 && from && from->kind == TY_MIXED) {
+        buf_printf(dst, "((hp_i128)hp_val_to_int(%s))", os);
+    } else if (to_i128) {
+        buf_printf(dst, "((hp_i128)(%s))", os);
     } else if (type_is_integral(to->kind) && from && from->kind == TY_STRING) {
         buf_printf(dst, "hp_str_to_int(%s)", os);
     } else if ((to->kind == TY_FLOAT || to->kind == TY_F32 || to->kind == TY_F64) &&
@@ -2806,7 +2887,18 @@ static void emit_cast(Codegen *g, Expr *e, Buf *dst) {
 
 static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
     switch (e->kind) {
-    case EX_INT: buf_printf(dst, "(int64_t)%lld", e->u.i.ival); break;
+    case EX_INT:
+        if (e->u.i.is_wide) {
+            /* a decimal greater than int64: emit the exact 128-bit value as
+             * two 64-bit halves, which every C compiler accepts */
+            unsigned __int128 u = (unsigned __int128)e->u.i.wide;
+            unsigned long long hi = (unsigned long long)(u >> 64);
+            unsigned long long lo = (unsigned long long)(u & 0xFFFFFFFFFFFFFFFFULL);
+            buf_printf(dst, "(((hp_i128)0x%llxULL << 64) | (hp_i128)0x%llxULL)", hi, lo);
+        } else {
+            buf_printf(dst, "(int64_t)%lld", e->u.i.ival);
+        }
+        break;
     case EX_FLOAT: {
         char *s = fmt("%.17g", e->u.f.fval);
         buf_printf(dst, "(double)%s", s);
@@ -2966,7 +3058,7 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
             if (pm) emit_owned_call_arg(g, e->u.newexpr.args.items[i], pm->resolved, dst);
             else emit_expr(g, e->u.newexpr.args.items[i], dst);
         }
-        if (ctor) emit_missing_defaults(g, ctor, e->u.newexpr.args.len, dst);
+        if (ctor) emit_missing_defaults(g, ctor, e->u.newexpr.args.len, true, dst);
         buf_puts(dst, ")");
         break;
     }
@@ -2999,7 +3091,12 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
                 buf_printf(dst, "(-(%s))", os);
             break;
         case T_PLUS: buf_printf(dst, "(%s)", os); break;
-        case T_TILDE: buf_printf(dst, "(~(uint64_t)(%s))", os); break;
+        case T_TILDE:
+            if (e->type && e->type->kind == TY_I128)
+                buf_printf(dst, "(~(hp_i128)(%s))", os);
+            else
+                buf_printf(dst, "(~(uint64_t)(%s))", os);
+            break;
         default: buf_printf(dst, "%s", os); break;
         }
         free((void *)os);
@@ -3083,6 +3180,9 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
             }
             case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64: case TY_ENUM:
                 buf_printf(dst, "(%s ? hp_val_to_int(%s) : hp_val_to_int(%s))",
+                           buf_take(&c), as, bs); break;
+            case TY_I128:
+                buf_printf(dst, "(%s ? (hp_i128)hp_val_to_int(%s) : (hp_i128)hp_val_to_int(%s))",
                            buf_take(&c), as, bs); break;
             case TY_FLOAT: case TY_F32: case TY_F64:
                 buf_printf(dst, "(%s ? hp_val_to_float(%s) : hp_val_to_float(%s))",
@@ -4577,7 +4677,8 @@ static void collect_syms_stmt(PtrVec *syms, Stmt *s) {
 static const char *zero_init_of(const Type *t) {
     if (!t) return "hp_null";
     switch (t->kind) {
-    case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64: case TY_ENUM:
+    case TY_INT: case TY_I8: case TY_I16: case TY_I32: case TY_I64: case TY_I128:
+    case TY_ENUM:
         return "0";
     case TY_FLOAT: case TY_F32: case TY_F64:
         return "0.0";

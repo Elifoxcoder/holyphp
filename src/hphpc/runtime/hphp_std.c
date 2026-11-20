@@ -9,9 +9,33 @@
 #define _DEFAULT_SOURCE 1
 #endif
 #include "hphp_rt.h"
+#include "hphp_modules.h"
+
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+#include <immintrin.h>
+#endif
+
+/* Address argument shared by the raw memory builtins: the challenge runtime
+ * passed raw pointers as integers; malloc() hands out an object-tagged value.
+ * Both mean "this address". */
+static void *hp_addr_arg(hval v) {
+    if (v.tag == HV_OBJ) return v.u.p;
+    return (void *)(intptr_t)hp_val_to_int(v);
+}
+
+/* Finish a byte buffer as a runtime string: copy the bytes into an hstr and
+ * hand the buffer's heap block back. Every `Buf` builtin must use this (or
+ * free the block itself); `hp_str_lit(buf_take(&b))` would leak the block. */
+static hstr *hp_str_take_buf(Buf *b) {
+    size_t n = b->len;
+    char *p = hbuf_take(b);
+    hstr *r = hp_str_new(p && n ? p : "", n);
+    free(p);
+    return r;
+}
 
 #ifndef HPHP_VERSION
-#define HPHP_VERSION "1.0.0"
+#define HPHP_VERSION "1.0.2"
 #endif
 
 static void hbuf_json_r(hval v, Buf *b);
@@ -126,14 +150,14 @@ hval hpbi_strtoupper(hval s) { RETS(hp_str_toupper(hp_val_to_str(s))); }
 hval hpbi_strtolower(hval s) { RETS(hp_str_tolower(hp_val_to_str(s))); }
 hval hpbi_ucfirst(hval s) {
     hstr *x = hp_val_to_str(s);
-    if (!x->len) RETS(x);
+    if (!x->len) RETS(hp_str_copy(x));
     hstr *r = hp_str_copy(x);
     r->data[0] = (char)toupper((unsigned char)r->data[0]);
     RETS(r);
 }
 hval hpbi_lcfirst(hval s) {
     hstr *x = hp_val_to_str(s);
-    if (!x->len) RETS(x);
+    if (!x->len) RETS(hp_str_copy(x));
     hstr *r = hp_str_copy(x);
     r->data[0] = (char)tolower((unsigned char)r->data[0]);
     RETS(r);
@@ -168,14 +192,52 @@ hval hpbi_str_repeat(hval s, hval n) {
 hval hpbi_str_pad(hval s, hval n, hval pad) {
     hstr *x = hp_val_to_str(s);
     int64_t want = hp_val_to_int(n);
-    if ((int64_t)x->len >= want) RETS(x);
+    if ((int64_t)x->len >= want) RETS(hp_str_copy(x));   /* always a new value */
     hstr *p = hp_val_to_str(pad);
     if (!p->len) p = hp_str_lit(" ");
-    hstr *fill = hp_str_repeat(p, (want - (int64_t)x->len + p->len - 1) / p->len);
-    RETS(hp_str_concat2(x, hp_str_slice(fill, 0, want - (int64_t)x->len)));
+    size_t fill = (size_t)(want - (int64_t)x->len);
+    Buf b;
+    buf_init(&b);
+    buf_write(&b, x->data, x->len);
+    while (b.len < (size_t)want) {
+        size_t take = fill < p->len ? fill : p->len;
+        buf_write(&b, p->data, take);
+        fill -= take;
+    }
+    RETS(hp_str_take_buf(&b));
+}
+/* Replace every occurrence of `search` in `subject` with `replace`, building
+ * the result once. Unlike hp_str_replace() in hphp_rt.c this frees every
+ * intermediate buffer, so a loop stays flat. */
+static hstr *hp_replace_t(hstr *subject, hstr *search, hstr *replace) {
+    if (!subject) return hp_str_lit("");
+    if (!search || search->len == 0) return hp_str_copy(subject);
+    if (!replace) replace = hp_str_lit("");
+    Buf b;
+    buf_init(&b);
+    size_t i = 0;
+    while (i < subject->len) {
+        if (i + search->len <= subject->len &&
+            memcmp(subject->data + i, search->data, search->len) == 0) {
+            buf_write(&b, replace->data, replace->len);
+            i += search->len;
+        } else {
+            buf_putc(&b, subject->data[i++]);
+        }
+    }
+    return hp_str_take_buf(&b);
 }
 hval hpbi_str_replace(hval search, hval replace, hval subject) {
-    RETS(hp_str_replace(hp_val_to_str(subject), hp_val_to_str(search), hp_val_to_str(replace)));
+    RETS(hp_replace_t(hp_val_to_str(subject), hp_val_to_str(search),
+                      hp_val_to_str(replace)));
+}
+/* Same, with C-string pattern/replacement (used by the entity helpers). */
+static hstr *hp_replace_c(hstr *subject, const char *search, const char *replace) {
+    hstr *s = hp_str_lit(search), *r = hp_str_lit(replace);
+    hstr *out = hp_replace_t(subject, s, r);
+    hp_str_free(s);
+    hp_str_free(r);
+    return out;
 }
 hval hpbi_substr(hval s, hval start, hval len) {
     hstr *x = hp_val_to_str(s);
@@ -194,16 +256,6 @@ hval hpbi_strstr(hval h, hval n) {
     RETS(hp_str_slice(hp_val_to_str(h), i, hp_str_len(hp_val_to_str(h))));
 }
 hval hpbi_strchr(hval h, hval n) { return hpbi_strstr(h, n); }
-hval hpbi_strpos(hval h, hval n, hval off) {
-    hstr *hay = hp_val_to_str(h);
-    long long o = (hp_tag(off) == HV_NULL) ? 0 : off.u.i;
-    if (o < 0) o = 0;
-    if ((size_t)o > hay->len) o = (long long)hay->len;
-    hstr *tail = hp_str_new(hay->data + o, hay->len - (size_t)o);
-    int64_t r = hp_str_index(tail, hp_val_to_str(n));
-    if (r < 0) return hp_of_bool(false);   /* PHP: strpos miss => false */
-    RETI(r + o);                            /* absolute position */
-}
 hval hpbi_str_contains(hval h, hval n) {
     RETB(hp_str_index(hp_val_to_str(h), hp_val_to_str(n)) >= 0);
 }
@@ -242,8 +294,13 @@ hval hpbi_strncasecmp(hval a, hval b, hval n) {
     size_t k = (size_t)hp_val_to_int(n);
     if (k > x->len) k = x->len;
     if (k > y->len) k = y->len;
-    hstr *xs = hp_str_new(x->data, k), *ys = hp_str_new(y->data, k);
-    RETI(hp_str_casecmp_n(xs, ys));
+    int r = 0;
+    for (size_t i = 0; i < k; i++) {
+        int ca = tolower((unsigned char)x->data[i]);
+        int cb = tolower((unsigned char)y->data[i]);
+        if (ca != cb) { r = ca < cb ? -1 : 1; break; }
+    }
+    RETI(r);
 }
 hval hpbi_explode(hval sep, hval s) {
     hstr *x = hp_val_to_str(s), *d = hp_val_to_str(sep);
@@ -278,12 +335,14 @@ hval hpbi_explode(hval sep, hval s) {
 hval hpbi_split(hval sep, hval s) { return hpbi_explode(sep, s); }
 static hval hp_implode(hval glue, harr *a) {
     hstr *g = hp_val_to_str(glue);
-    hstr *out = hp_str_lit("");
+    Buf b;
+    buf_init(&b);
     for (size_t i = 0; i < a->len; i++) {
-        if (i) out = hp_str_concat2(out, g);
-        out = hp_str_concat2(out, hp_val_to_str(a->vals[i]));
+        if (i) buf_write(&b, g->data, g->len);
+        hstr *part = hp_val_to_str(a->vals[i]);
+        buf_write(&b, part->data, part->len);
     }
-    RETS(out);
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_implode(hval glue, hval arr) {
     if (arr.tag == HV_ARR) return hp_implode(glue, arr.u.a);
@@ -291,7 +350,7 @@ hval hpbi_implode(hval glue, hval arr) {
 }
 hval hpbi_join(hval glue, hval arr) { return hpbi_implode(glue, arr); }
 hval hpbi_nl2br(hval s) {
-    RETS(hp_str_replace(hp_val_to_str(s), hp_str_lit("\n"), hp_str_lit("<br />\n")));
+    RETS(hp_replace_c(hp_val_to_str(s), "\n", "<br />\n"));
 }
 /* PHP unset($arr[$k]): remove by key from an array held in a variable.
  * The codegen passes the variable's harr* directly. */
@@ -382,6 +441,7 @@ static void hbuf_json_r(hval v, Buf *b) {
                 hval k = a->keys[i];
                 hstr *ks = hp_val_to_str(k);
                 hbuf_printf(b, "\"%.*s\":", (int)ks->len, ks->data);
+                if (k.tag != HV_STR) hp_str_free(ks);
                 hbuf_json_r(a->vals[i], b);
             }
             hbuf_puts(b, "}");
@@ -456,7 +516,7 @@ static hstr *jp_string(JsonP *j) {
         } else buf_putc(&b, c);
     }
     if (j->pos < j->len) j->pos++;  /* closing quote */
-    return hp_str_new(buf_take(&b), b.len);
+    return hp_str_take_buf(&b);
 }
 
 static hval jp_value(JsonP *j) {
@@ -728,7 +788,7 @@ hval hpbi_urlencode(hval s) {
         else if (c == ' ') buf_putc(&b, '+');
         else buf_printf(&b, "%%%02X", c);
     }
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_urldecode(hval s) {
     hstr *x = hp_val_to_str(s);
@@ -742,15 +802,22 @@ hval hpbi_urldecode(hval s) {
             i += 2;
         } else buf_putc(&b, x->data[i]);
     }
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_htmlentities(hval s) {
     hstr *x = hp_val_to_str(s);
-    hstr *r = hp_str_replace(x, hp_str_lit("&"), hp_str_lit("&amp;"));
-    r = hp_str_replace(r, hp_str_lit("<"), hp_str_lit("&lt;"));
-    r = hp_str_replace(r, hp_str_lit(">"), hp_str_lit("&gt;"));
-    r = hp_str_replace(r, hp_str_lit("\""), hp_str_lit("&quot;"));
-    RETS(r);
+    Buf b;
+    buf_init(&b);
+    for (size_t i = 0; i < x->len; i++) {
+        switch (x->data[i]) {
+        case '&':  buf_puts(&b, "&amp;"); break;
+        case '<':  buf_puts(&b, "&lt;"); break;
+        case '>':  buf_puts(&b, "&gt;"); break;
+        case '"':  buf_puts(&b, "&quot;"); break;
+        default:   buf_putc(&b, x->data[i]); break;
+        }
+    }
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_htmlspecialchars(hval s) { return hpbi_htmlentities(s); }
 hval hpbi_sprintf(hval fmt, hval args) {
@@ -825,7 +892,7 @@ hval hpbi_sprintf(hval fmt, hval args) {
             break;
         }
     }
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_printf(hval fmt, hval args) {
     hval r = hpbi_sprintf(fmt, args);
@@ -846,7 +913,7 @@ hval hpbi_bin2hex(hval s) {
     Buf b;
     buf_init(&b);
     for (size_t i = 0; i < x->len; i++) buf_printf(&b, "%02x", (unsigned char)x->data[i]);
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_hex2bin(hval s) {
     hstr *x = hp_val_to_str(s);
@@ -856,7 +923,7 @@ hval hpbi_hex2bin(hval s) {
         char hex[3] = { x->data[i], x->data[i + 1], 0 };
         buf_putc(&b, (char)strtol(hex, NULL, 16));
     }
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_str_split(hval s, hval n) {
     hstr *x = hp_val_to_str(s);
@@ -881,7 +948,7 @@ hval hpbi_ucwords(hval s) {
 hval hpbi_wordwrap(hval s, hval w) {
     hstr *x = hp_val_to_str(s);
     size_t width = (size_t)hp_val_to_int(w);
-    if (width == 0) RETS(x);
+    if (width == 0) RETS(hp_str_copy(x));
     Buf b = {0}, word = {0};
     size_t line = 0;
     for (size_t i = 0; i <= x->len; i++) {
@@ -902,8 +969,7 @@ hval hpbi_wordwrap(hval s, hval w) {
         }
         if (c == '\n') { hbuf_putc(&b, '\n'); line = 0; }
     }
-    size_t n = b.len;
-    hstr *out = hp_str_new(hbuf_take(&b), n);
+    hstr *out = hp_str_take_buf(&b);
     RETS(out);
 }
 hval hpbi_similar_text(hval a, hval b) {
@@ -1139,20 +1205,39 @@ hval hpbi_array_unshift(hval a, hval v) {
     RETI((int64_t)a.u.a->len);
 }
 hval hpbi_array_splice(hval a, hval off, hval len) {
-    if (a.tag != HV_ARR) return hp_of_arr(hp_arr_new());
-    harr *removed = hp_arr_slice(a.u.a, hp_val_to_int(off), hp_val_to_int(off) + hp_val_to_int(len));
+    if (a.tag != HV_ARR || !a.u.a) return hp_of_arr(hp_arr_new());
+    harr *x = a.u.a;
+    int64_t n = (int64_t)x->len;
+    int64_t start = hp_val_to_int(off);
+    if (start < 0) start += n;
+    if (start < 0) start = 0;
+    if (start > n) start = n;
+    int64_t cnt = len.tag == HV_NULL ? n - start : hp_val_to_int(len);
+    if (cnt < 0) cnt = n - start + cnt;
+    if (cnt < 0) cnt = 0;
+    if (cnt > n - start) cnt = n - start;
+    harr *removed = hp_arr_slice(x, start, start + cnt);
+    if (cnt > 0) {
+        memmove(x->vals + start, x->vals + start + cnt,
+                (size_t)(n - start - cnt) * sizeof(hval));
+        if (x->is_map && x->keys)
+            memmove(x->keys + start, x->keys + start + cnt,
+                    (size_t)(n - start - cnt) * sizeof(hval));
+        x->len = (size_t)(n - cnt);
+    }
     return hp_of_arr(removed);
 }
 hval hpbi_shuffle(hval a) {
-    if (a.tag != HV_ARR) return a;
-    harr *r = hp_arr_clone(a.u.a);
+    /* PHP: shuffle mutates the array in place and returns true. */
+    if (a.tag != HV_ARR || !a.u.a) RETB(false);
+    harr *r = a.u.a;
     for (size_t i = r->len; i > 1; i--) {
         size_t j = (size_t)(rand() % (int64_t)i);
         hval t = r->vals[i - 1];
         r->vals[i - 1] = r->vals[j];
         r->vals[j] = t;
     }
-    return hp_of_arr(r);
+    RETB(true);
 }
 
 /* ---------- in-place sorts (sort/rsort/ksort/krsort/asort) ---------- */
@@ -1311,7 +1396,7 @@ hval hpbi_is_numeric(hval v) { RETB(hp_num_like(v)); }
 hval hpbi_intval(hval v) { RETI(hp_val_to_int(v)); }
 hval hpbi_floatval(hval v) { RETF(hp_val_to_float(v)); }
 hval hpbi_doubleval(hval v) { RETF(hp_val_to_float(v)); }
-hval hpbi_strval(hval v) { RETS(hp_val_to_str(v)); }
+hval hpbi_strval(hval v) { RETS(hp_str_copy(hp_val_to_str(v))); }
 hval hpbi_boolval(hval v) { RETB(hp_val_to_bool(v)); }
 hval hpbi_gettype(hval v) { RETS(hp_str_lit(hp_kind_name(v.tag))); }
 
@@ -1354,8 +1439,9 @@ hval hpbi_var_dump(hval v) {
     buf_init(&b);
     hp_dump_r(v, &b, 0);
     buf_puts(&b, "\n");
-    hstr *s = hp_str_lit(buf_take(&b));
+    hstr *s = hp_str_take_buf(&b);
     fwrite(s->data, 1, s->len, stdout);
+    hp_str_free(s);
     RETI(0);
 }
 static void hp_print_r_r(hval v, Buf *b, int depth) {
@@ -1393,7 +1479,7 @@ hval hpbi_print_r(hval v) {
     Buf b;
     buf_init(&b);
     hp_print_r_r(v, &b, 0);
-    hstr *s = hp_str_lit(buf_take(&b));
+    hstr *s = hp_str_take_buf(&b);
     fwrite(s->data, 1, s->len, stdout);
     RETS(s);
 }
@@ -1401,7 +1487,7 @@ hval hpbi_var_export(hval v) {
     Buf b;
     buf_init(&b);
     hp_print_r_r(v, &b, 0);
-    hstr *s = hp_str_lit(buf_take(&b));
+    hstr *s = hp_str_take_buf(&b);
     fwrite(s->data, 1, s->len, stdout);
     RETS(s);
 }
@@ -1531,10 +1617,13 @@ hval hpbi_file_get_contents(hval path) {
     fseek(f, 0, SEEK_END);
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
-    char *buf = hp_alloc((size_t)n + 1);
+    char *buf = (char *)malloc((size_t)n + 1);
+    if (!buf) { fclose(f); RETB(false); }
     size_t got = fread(buf, 1, (size_t)n, f);
     fclose(f);
-    RETS(hp_str_new(buf, got));
+    hstr *r = hp_str_new(buf, got);
+    free(buf);
+    RETS(r);
 }
 hval hpbi_file_put_contents(hval path, hval data, hval flags) {
     /* PHP: flags & FILE_APPEND (8) appends instead of truncating; an array
@@ -1648,7 +1737,7 @@ hval hpbi_date2(hval fmt, hval ts) {
         if (c == 'U') { buf_printf(&b, "%lld", (long long)now); continue; }
         buf_putc(&b, c);
     }
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_time(void) { RETI((int64_t)time(NULL)); }
 hval hpbi_usleep(hval us) {
@@ -1668,9 +1757,9 @@ hval hpbi_sleep(hval s) {
 #endif
     RETI(0);
 }
+static bool hp_seeded = false;
 static void hp_seed_once(void) {
-    static bool seeded = false;
-    if (!seeded) { srand((unsigned)time(NULL)); seeded = true; }
+    if (!hp_seeded) { srand((unsigned)time(NULL)); hp_seeded = true; }
 }
 hval hpbi_rand(hval mn, hval mx) {
     hp_seed_once();
@@ -1678,6 +1767,10 @@ hval hpbi_rand(hval mn, hval mx) {
         RETI(hp_val_to_int(mn) + (int64_t)rand() %
              (hp_val_to_int(mx) - hp_val_to_int(mn) + 1));
     RETI((int64_t)rand());
+}
+hval hpbi_lcg_value(void) {
+    hp_seed_once();
+    return hp_of_float((double)rand() / ((double)RAND_MAX + 1.0));
 }
 hval hpbi_mt_rand(hval mn, hval mx) {
     hp_seed_once();
@@ -1687,8 +1780,8 @@ hval hpbi_mt_rand(hval mn, hval mx) {
                  (double)(hp_val_to_int(mx) - hp_val_to_int(mn)));
     RETF((double)rand() / (double)RAND_MAX);
 }
-hval hpbi_srand(hval seed) { srand((unsigned)hp_val_to_int(seed)); return hp_null; }
-hval hpbi_mt_srand(hval seed) { srand((unsigned)hp_val_to_int(seed)); return hp_null; }
+hval hpbi_srand(hval seed) { srand((unsigned)hp_val_to_int(seed)); hp_seeded = true; return hp_null; }
+hval hpbi_mt_srand(hval seed) { srand((unsigned)hp_val_to_int(seed)); hp_seeded = true; return hp_null; }
 hval hpbi_random_int(hval mn, hval mx) { return hpbi_rand(mn, mx); }
 hval hpbi_fgetc(hval stream) {
     int c = fgetc(stdin);
@@ -1877,6 +1970,13 @@ hval hpbi_shell_exec(hval command) {
 /* Stream a shell command's stdout directly to this process. Keep stderr
  * attached to the caller so diagnostics remain visible, matching passthru's
  * usual command-line behavior. */
+/* exec() has a one-argument table contract but a two-argument C prototype in
+ * hphp_rt.h (PHP's optional output/return-code parameters). hphp_ext.h maps
+ * the call to this variadic entry point so both forms link. */
+hval hpbi_exec_call(hval command, ...) {
+    return hpbi_shell_exec(command);
+}
+
 hval hpbi_passthru(hval command) {
     hstr *cmd = hp_val_to_str(command);
 #if defined(_WIN32)
@@ -2298,232 +2398,30 @@ static bool sock_split_addr(hstr *addr, char *host, size_t hsz, char *port, size
     return port[0] != 0;
 }
 
-hval hpbi_stream_socket_server(hval addr) {
-    hp_net_init();
-    char host[256], port[32];
-    if (!sock_split_addr(hp_val_to_str(addr), host, sizeof host, port, sizeof port))
-        return hp_of_int(-1);
-    struct addrinfo hints, *res = NULL;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_PASSIVE;
-    if (getaddrinfo(host[0] ? host : NULL, port, &hints, &res) != 0 || !res)
-        return hp_of_int(-1);
-    hp_sock s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (s == HP_SOCK_BAD) { freeaddrinfo(res); return hp_of_int(-1); }
-    int yes = 1;
-    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof yes);
-    if (bind(s, res->ai_addr, (int)res->ai_addrlen) != 0 || listen(s, 128) != 0) {
-        freeaddrinfo(res);
-        hp_sock_close(s);
-        return hp_of_bool(false);   /* PHP-style: failure is falsy */
-    }
-    freeaddrinfo(res);
-    sock_nonblocking(s, true);
-    sockrec((intptr_t)s, true);
-    return hp_of_int((int64_t)(intptr_t)s);
-}
 
-hval hpbi_stream_socket_client(hval addr) {
-    hp_net_init();
-    char host[256], port[32];
-    if (!sock_split_addr(hp_val_to_str(addr), host, sizeof host, port, sizeof port))
-        return hp_of_bool(false);
-    struct addrinfo hints, *res = NULL;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host[0] ? host : "127.0.0.1", port, &hints, &res) != 0 || !res)
-        return hp_of_bool(false);
-    hp_sock s = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (s == HP_SOCK_BAD) { freeaddrinfo(res); return hp_of_bool(false); }
-    int rc = connect(s, res->ai_addr, (int)res->ai_addrlen);
-    freeaddrinfo(res);
-    if (rc != 0) { hp_sock_close(s); return hp_of_bool(false); }
-    sock_nonblocking(s, true);
-    sockrec((intptr_t)s, true);
-    return hp_of_int((int64_t)(intptr_t)s);
-}
 
-hval hpbi_stream_socket_accept(hval srv) {
-    hp_net_init();
-    hp_sock s = sock_of(srv);
-    if (s == HP_SOCK_BAD) return hp_of_bool(false);
-    /* block up to 50 ms at a time so ctrl-c / ui ticks still get through */
-    for (;;) {
-        struct sockaddr_storage ss;
-        socklen_t sl = sizeof ss;
-        hp_sock c = accept(s, (struct sockaddr *)&ss, &sl);
-        if (c != HP_SOCK_BAD) {
-            sock_nonblocking(c, true);
-            sockrec((intptr_t)c, true);
-            return hp_of_int((int64_t)(intptr_t)c);
-        }
-        if (!hp_sock_wouldblock()) return hp_of_bool(false);
-        sock_sleep_ms(5);
-    }
-}
+
+
+
 
 /* stream_socket_accept2(srv, timeoutMs): poll-then-accept, PHP-style.
  * Returns the client handle, or false when nothing arrived within the
  * timeout. Never blocks longer than timeoutMs (in 5 ms slices). */
-hval hpbi_stream_socket_accept2(hval srv, hval timeout_ms) {
-    hp_net_init();
-    hp_sock s = sock_of(srv);
-    if (s == HP_SOCK_BAD) return hp_of_bool(false);
-    int64_t waited = 0;
-    int64_t limit = hp_val_to_int(timeout_ms);
-    if (limit < 0) limit = 0;
-    for (;;) {
-        struct sockaddr_storage ss;
-        socklen_t sl = sizeof ss;
-        hp_sock c = accept(s, (struct sockaddr *)&ss, &sl);
-        if (c != HP_SOCK_BAD) {
-            sock_nonblocking(c, true);
-            sockrec((intptr_t)c, true);
-            return hp_of_int((int64_t)(intptr_t)c);
-        }
-        if (!hp_sock_wouldblock()) return hp_of_bool(false);
-        if (waited >= limit) return hp_of_bool(false);   /* poll timed out */
-        sock_sleep_ms(5);
-        waited += 5;
-    }
-}
 
-hval hpbi_stream_set_blocking(hval s, hval flag) {
-    hp_sock fd = sock_of(s);
-    if (fd == HP_SOCK_BAD) return hp_of_bool(false);
-    sock_nonblocking(fd, !hp_val_to_bool(flag));
-    return hp_of_bool(true);
-}
 
-hval hpbi_stream_recv(hval s, hval maxn) {
-    hp_net_init();
-    hp_sock fd = sock_of(s);
-    if (fd == HP_SOCK_BAD) return hp_of_str(hp_str_lit(""));
-    int64_t want = hp_val_to_int(maxn);
-    if (want <= 0) want = 4096;
-    if (want > (1 << 20)) want = (1 << 20);
-    char *buf = (char *)malloc((size_t)want);
-    if (!buf) return hp_of_str(hp_str_lit(""));
-    int r = recv(fd, buf, (int)want, 0);
-    bool blocked = (r < 0) && hp_sock_wouldblock();
-    if (r <= 0 && !blocked)
-        sockrec((intptr_t)fd, true)->eof = true;
-    if (r > 0) {
-        hstr *out = hp_str_new(buf, (size_t)r);
-        free(buf);
-        return hp_of_str(out);
-    }
-    free(buf);
-    if (r == 0) {                    /* orderly shutdown by the peer */
-        sockrec((intptr_t)fd, true)->eof = true;
-        return hp_of_str(hp_str_lit(""));
-    }
-    if (!blocked)                    /* hard error: treat as closed */
-        sockrec((intptr_t)fd, true)->eof = true;
-    return hp_of_str(hp_str_lit(""));
-}
 
-hval hpbi_stream_send(hval s, hval data) {
-    hp_net_init();
-    hp_sock fd = sock_of(s);
-    if (fd == HP_SOCK_BAD) return hp_of_int(0);
-    hstr *d = hp_val_to_str(data);
-    size_t sent = 0;
-    int waited_ms = 0;
-    while (sent < d->len) {
-        int r = send(fd, d->data + sent, (int)(d->len - sent), 0);
-        if (r > 0) { sent += (size_t)r; continue; }
-        if (r < 0 && hp_sock_wouldblock() && waited_ms < 2000) {
-            sock_sleep_ms(1);        /* let the peer drain; frames stay whole */
-            waited_ms++;
-            continue;
-        }
-        if (r < 0) sockrec((intptr_t)fd, true)->eof = true;
-        break;
-    }
-    return hp_of_int((int64_t)sent);
-}
 
-hval hpbi_stream_ready(hval handles, hval timeout_ms) {
-    hp_net_init();
-    harr *out = hp_arr_new();
-    if (handles.tag != HV_ARR || !handles.u.a) return hp_of_arr(out);
-    int64_t n = hp_arr_len(handles.u.a);
-    if (n <= 0) return hp_of_arr(out);
-#ifdef _WIN32
-    WSAPOLLFD *fds = (WSAPOLLFD *)calloc((size_t)n, sizeof(WSAPOLLFD));
-#else
-    struct pollfd *fds = (struct pollfd *)calloc((size_t)n, sizeof(struct pollfd));
-#endif
-    if (!fds) return hp_of_arr(out);
-    int64_t nvalid = 0;
-    for (int64_t i = 0; i < n; i++) {
-        hval item = hp_arr_get(handles.u.a, hp_of_int(i));
-        hp_sock fd = sock_of(item);
-        if (fd == HP_SOCK_BAD) continue;
-        fds[nvalid].fd = fd;
-        fds[nvalid].events = POLLIN;
-        nvalid++;
-    }
-    int to = (int)hp_val_to_int(timeout_ms);
-    if (to < 0) to = 0;
-    int r = 0;
-    if (nvalid > 0) {
-#ifdef _WIN32
-        r = WSAPoll(fds, (ULONG)nvalid, to);
-#else
-        r = poll(fds, (nfds_t)nvalid, to);
-#endif
-    }
-    if (r > 0) {
-        int64_t k = 0;
-        for (int64_t i = 0; i < n; i++) {
-            hval item = hp_arr_get(handles.u.a, hp_of_int(i));
-            hp_sock fd = sock_of(item);
-            if (fd == HP_SOCK_BAD) continue;
-            short rev = (short)fds[k++].revents;
-            if (!rev) continue;
-            /* NOTE: POLLHUP regularly arrives together with POLLIN when the
-             * peer writes and closes immediately; the unread data is still
-             * in the socket buffer. Do NOT mark the sticky eof flag here —
-             * stream_recv stays the single authority for EOF (recv()==0). */
-            if (rev & (POLLIN | POLLERR | POLLHUP))
-                hp_arr_push(out, item);
-        }
-    }
-    free(fds);
-    return hp_of_arr(out);
-}
 
-hval hpbi_stream_eof(hval s) {
-    hp_sockrec *rec = sockrec((intptr_t)sock_of(s), false);
-    return hp_of_bool(rec ? rec->eof : true);
-}
 
-hval hpbi_stream_peer(hval s) {
-    hp_sock fd = sock_of(s);
-    struct sockaddr_storage ss;
-    socklen_t sl = sizeof ss;
-    if (fd == HP_SOCK_BAD || getpeername(fd, (struct sockaddr *)&ss, &sl) != 0)
-        return hp_of_str(hp_str_lit(""));
-    char host[128] = "", port[16] = "";
-    if (getnameinfo((struct sockaddr *)&ss, sl, host, sizeof host, port, sizeof port,
-                    NI_NUMERICHOST | NI_NUMERICSERV) != 0)
-        return hp_of_str(hp_str_lit(""));
-    hstr *a = hp_str_concat2(hp_str_lit(host), hp_str_lit(":"));
-    return hp_of_str(hp_str_concat2(a, hp_str_lit(port)));
-}
 
-hval hpbi_stream_close(hval s) {
-    hp_sock fd = sock_of(s);
-    if (fd == HP_SOCK_BAD) return hp_of_bool(false);
-    hp_sock_graceful_close(fd);
-    sock_forget((intptr_t)fd);
-    return hp_of_bool(true);
-}
+
+
+
+
+
+
+
+
 
 /* PHP-style callable dispatch: any hval may hold a closure. */
 hval hp_call_value(hval fn, int nargs, const hval *args) {
@@ -3177,15 +3075,18 @@ hval hpbi_strip_tags(hval s, hval allowed) {
         else if (c == '>') intag = false;
         else if (!intag) buf_putc(&b, c);
     }
-    RETS(hp_str_lit(buf_take(&b)));
+    RETS(hp_str_take_buf(&b));
 }
 hval hpbi_html_entity_decode(hval s) {
-    hstr *x = hp_val_to_str(s);
-    hstr *r = hp_str_replace(x, hp_str_lit("&amp;"), hp_str_lit("&"));
-    r = hp_str_replace(r, hp_str_lit("&lt;"), hp_str_lit("<"));
-    r = hp_str_replace(r, hp_str_lit("&gt;"), hp_str_lit(">"));
-    r = hp_str_replace(r, hp_str_lit("&quot;"), hp_str_lit("\""));
-    r = hp_str_replace(r, hp_str_lit("&#39;"), hp_str_lit("'"));
+    hstr *r = hp_replace_c(hp_val_to_str(s), "&amp;", "&");
+    hstr *n = hp_replace_c(r, "&lt;", "<");
+    hp_str_free(r); r = n;
+    n = hp_replace_c(r, "&gt;", ">");
+    hp_str_free(r); r = n;
+    n = hp_replace_c(r, "&quot;", "\"");
+    hp_str_free(r); r = n;
+    n = hp_replace_c(r, "&#39;", "'");
+    hp_str_free(r); r = n;
     RETS(r);
 }
 
@@ -3238,8 +3139,11 @@ hval hpbi_basename(hval path, hval suffix) {
     size_t blen = end - start;
     hstr *r = hp_str_new(p->data + start, blen);
     if (suffix.tag == HV_STR && suffix.u.s->len && r->len > suffix.u.s->len &&
-        memcmp(r->data + r->len - suffix.u.s->len, suffix.u.s->data, suffix.u.s->len) == 0)
-        r = hp_str_new(r->data, r->len - suffix.u.s->len);
+        memcmp(r->data + r->len - suffix.u.s->len, suffix.u.s->data, suffix.u.s->len) == 0) {
+        hstr *trimmed = hp_str_new(r->data, r->len - suffix.u.s->len);
+        hp_str_free(r);
+        r = trimmed;
+    }
     RETS(r);
 }
 hval hpbi_pathinfo(hval path, hval flags) {
@@ -3256,7 +3160,10 @@ hval hpbi_pathinfo(hval path, hval flags) {
         hp_arr_set(m, hp_of_str(hp_str_lit("filename")),
                    hp_of_str(hp_str_new(base->data, (size_t)(dot - base->data))));
     }
-    if (flags.tag == HV_INT && flags.u.i == 2) return hp_of_str(base);
+    if (flags.tag == HV_INT && flags.u.i == 2) {
+        hp_arr_free(m);   /* the map is not returned in this mode */
+        return hp_of_str(base);
+    }
     return hp_of_arr(m);
 }
 hval hpbi_realpath(hval path) {
@@ -3293,6 +3200,7 @@ hval hpbi_is_writable(hval path) {
     /* file may not exist: check the directory */
     hstr *dir = hp_val_to_str(hpbi_dirname(hp_of_str(p)));
     f = fopen(dir->data, "rb");
+    hp_str_free(dir);
     if (f) { fclose(f); RETB(true); }
     RETB(false);
 }
@@ -3499,7 +3407,6 @@ static void rptrvec_push(RPtrVec *v, void *p) {
     }
     v->items[v->len++] = p;
 }
-
 /* ===================== PCRE-style regex engine =====================
  * A compact backtracking matcher (recursive descent over the pattern
  * tree, continuation-passing for backtracking). Supported syntax:
@@ -3528,6 +3435,14 @@ typedef struct Rx {
     int rmin, rmax;            /* RX_REP: rmax -1 = unbounded */
     int gidx;                  /* RX_GROUP capture index, 0 = (?:...) */
 } Rx;
+
+static void rx_free(Rx *r) {
+    if (!r) return;
+    for (size_t i = 0; i < r->kids.len; i++) rx_free((Rx *)r->kids.items[i]);
+    free(r->kids.items);
+    rx_free(r->child);
+    free(r);
+}
 
 static Rx *rx_new(RxKind k) {
     Rx *r = (Rx *)calloc(1, sizeof(Rx));
@@ -3941,10 +3856,11 @@ static hval rx_first_match(hval pat, hval subj, hval *out) {
     Rx *tree; int ng;
     if (!rx_split_pattern(p, &tree, &ng)) RETB(false);
     size_t ms, me; RxCtx c;
-    if (!rx_search(tree, ng, x->data, x->len, 0, &ms, &me, &c)) RETB(false);
-    hval m = hp_of_arr(rx_match_arr(&c, x->data, ms, me));
-    if (out) *out = m;
-    return hp_of_int(1);
+    bool found = rx_search(tree, ng, x->data, x->len, 0, &ms, &me, &c);
+    if (!found) { rx_free(tree); RETB(false); }
+    if (out) *out = hp_of_arr(rx_match_arr(&c, x->data, ms, me));
+    rx_free(tree);
+    RETI(1);
 }
 hval hpbi_preg_match(hval pat, hval subj) { return rx_first_match(pat, subj, NULL); }
 hval hpbi_preg_match3(hval pat, hval subj, hval *out) { return rx_first_match(pat, subj, out); }
@@ -3968,9 +3884,11 @@ static hval rx_all_matches(hval pat, hval subj, hval *out) {
             hval colv = cols->vals[g];
             hp_arr_push(colv.u.a, cell);
         }
+        hp_arr_free(row);
         off = me > ms ? me : ms + 1;
     }
     hval r = hp_of_arr(cols);
+    rx_free(tree);
     if (out) *out = r;
     return hp_of_int((int64_t)(cols->vals[0].u.a->len));
 }
@@ -3982,7 +3900,7 @@ hval hpbi_preg_replace(hval pat, hval rep, hval subj) {
     hstr *r = hp_val_to_str(rep);
     hstr *x = hp_val_to_str(subj);
     Rx *tree; int ng;
-    if (!rx_split_pattern(p, &tree, &ng)) RETS(x);
+    if (!rx_split_pattern(p, &tree, &ng)) RETS(hp_str_copy(x));
     Buf out;
     buf_init(&out);
     size_t off = 0;
@@ -4006,7 +3924,8 @@ hval hpbi_preg_replace(hval pat, hval rep, hval subj) {
         off = me > ms ? me : ms + 1;
     }
     buf_write(&out, x->data + off, x->len - off);
-    RETS(hp_str_new(out.data, out.len));
+    rx_free(tree);
+    RETS(hp_str_take_buf(&out));
 }
 
 hval hpbi_preg_split(hval pat, hval subj) {
@@ -4015,7 +3934,7 @@ hval hpbi_preg_split(hval pat, hval subj) {
     Rx *tree; int ng;
     if (!rx_split_pattern(p, &tree, &ng)) {
         harr *one = hp_arr_new();
-        hp_arr_push(one, hp_of_str(x));
+        hp_arr_push(one, hp_of_str(hp_str_copy(x)));
         return hp_of_arr(one);
     }
     harr *parts = hp_arr_new();
@@ -4031,6 +3950,7 @@ hval hpbi_preg_split(hval pat, hval subj) {
         off = me;
     }
     hp_arr_push(parts, hp_of_str(hp_str_new(x->data + off, x->len - off)));
+    rx_free(tree);
     return hp_of_arr(parts);
 }
 
@@ -4047,7 +3967,9 @@ hval hpbi_preg_grep(hval pat, hval arr) {
             if (a->is_map) hp_arr_set(out, a->keys[i], a->vals[i]);
             else hp_arr_push(out, a->vals[i]);
         }
+        if (a->vals[i].tag != HV_STR) hp_str_free(v);
     }
+    rx_free(tree);
     return hp_of_arr(out);
 }
 
@@ -4208,7 +4130,9 @@ hval hpbi_password_hash(hval pw) {
     int rounds = 4096;
     unsigned char dk[32];
     hp_pbkdf2_sha256((const unsigned char *)p->data, p->len, salt, 16, rounds, dk);
-    char b64salt[24], b64dk[48];
+    /* 16 bytes -> 24 base64 chars, 32 bytes -> 44, plus the NUL that
+     * hp_b64_encode_raw() writes (F3: b64salt used to be one byte too small) */
+    char b64salt[25], b64dk[45];
     hp_b64_encode_raw(salt, 16, b64salt);
     hp_b64_encode_raw(dk, 32, b64dk);
     char out[128];
@@ -4250,7 +4174,7 @@ hval hpbi_password_verify(hval pw, hval hash) {
     }
     unsigned char dk[32];
     hp_pbkdf2_sha256((const unsigned char *)p->data, p->len, salt, 16, rounds, dk);
-    char b64dk2[48];
+    char b64dk2[45];
     hp_b64_encode_raw(dk, 32, b64dk2);
     /* compare the computed digest against the parsed digest segment */
     size_t dl = strlen(b64dk);
@@ -4449,11 +4373,15 @@ hval hpbi_http_build_query(hval d) {
         hstr *v = hp_val_to_str(a->vals[i]);
         hstr *ke = hp_val_to_str(hpbi_urlencode(hp_of_str(k)));
         hstr *ve = hp_val_to_str(hpbi_urlencode(hp_of_str(v)));
+        if (a->keys[i].tag != HV_STR) hp_str_free(k);
+        if (a->vals[i].tag != HV_STR) hp_str_free(v);
         buf_write(&b, ke->data, ke->len);
         buf_putc(&b, '=');
         buf_write(&b, ve->data, ve->len);
+        hp_str_free(ke);
+        hp_str_free(ve);
     }
-    RETS(hp_str_new(b.data, b.len));
+    RETS(hp_str_take_buf(&b));
 }
 /* ===================== mysql: wire-protocol client (mysql_native_password) =====================
  * mysql_connect(host, port, user, pass, db) -> handle | false
@@ -4815,7 +4743,7 @@ hval hpbi_mysql_escape(hval s) {
         default:  buf_putc(&b, ch);
         }
     }
-    RETS(hp_str_new(b.data, b.len));
+    RETS(hp_str_take_buf(&b));
 }
 
 hval hpbi_json_decode2(hval v, hval assoc) {
@@ -4877,1955 +4805,959 @@ hval hpbi_json_encode2(hval v, hval flags) {
             }
         }
         free(s);
-        RETS(hp_str_new(b.data, b.len));
+        RETS(hp_str_take_buf(&b));
     }
     return hpbi_json_encode(v);
 }
 
-/* ================= HolyPHP MaxOut io_uring Engine v3 ==================
- *
- * Same wire protocol + SQLite schema as the Rust reference server, but the
- * loop is tuned for one vCPU:
- *
- *   - multi-shot accept:   one SQE keeps accepting until the kernel says stop
- *   - single-shot recv:    measured faster than multishot+provided buffers on
- *                          this kernel (see benchmarks/maxout/RESULTS.md):
- *                          no buffer-ring atomics per request, the kernel
- *                          copies straight into the slot's own receive buffer.
- *                          HPHP_MR=1 switches multishot + provided buffers on.
- *   - DEFER_TASKRUN:       task_work runs in this thread, not in a kworker
- *   - prepared statements: no SQL parse/prepare per request
- *   - group commit:        all writes from one CQE batch share BEGIN..COMMIT
- *   - feed cache:          the whole HTTP response is pre-assembled once and
- *                          handed to send() by pointer - no per-request copy,
- *                          no per-request header formatting. Invalidated only
- *                          by a write.
- *   - health cache:        same trick for the constant /health answer
- *   - zero-copy JSON:      sqlite3_column_text() bytes go straight into the
- *                          response buffer, no intermediate String
- *   - SQ-full recovery:    a full submission queue is drained and retried
- *                          instead of dropping the SQE (a dropped SQE stalls
- *                          its connection for seconds)
- * ===================================================================== */
-#ifdef __linux__
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#include <liburing.h>
-#include <sqlite3.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <time.h>
-#include <errno.h>
-#include <stdint.h>
+/* ---- generic additions ported with the challenge runtime ----------------
+ * String range helpers, the strict-JSON/JWT helpers, request-scope
+ * compatibility, typed int arrays and the string builder. These are ordinary
+ * stdlib builtins, so they live in hphp_std.c; the transport and SQLite parts
+ * are separate modules (hphp_uring.c, hphp_sqlite.c).
+ */
 
-#define MAX_SLOTS 2048
-#define REQ_BUF_SIZE 4096
-#define RESP_BUF_SIZE 16384
-#define RECV_BUF_SIZE 4096
-#define NBUF 1024
-#define BGID 1
-#define BATCH_MAX 4096
-#define RING_ENTRIES 4096
-#define FEED_LIMIT 20
-#define FEED_CACHE_SIZE 8192
-#define HEALTH_CACHE_SIZE 512
-
-enum {
-    SLOT_FREE = 0,
-    SLOT_READING = 1,
-    SLOT_WRITING = 2,
-    SLOT_QUEUED_WRITE = 3
-};
-
-enum {
-    OP_ACCEPT = 0,
-    OP_RECV = 1,
-    OP_SEND = 2
-};
-
-#define TAG(idx, op) (((uint64_t)(idx) << 2) | (uint64_t)(op))
-
-typedef struct {
-    int fd;
-    int state;
-    int keep_alive;
-    uint32_t gen;
-    size_t req_len;     /* bytes buffered while a response is in flight */
-    size_t resp_len;
-    size_t resp_off;
-    const char *resp_ptr;
-    char recv_buf[RECV_BUF_SIZE];
-    char req_buf[REQ_BUF_SIZE];
-    char resp_buf[RESP_BUF_SIZE];
-} MaxOutSlot;
-
-typedef struct {
-    int slot_idx;
-    int is_like;
-    uint32_t gen;
-    int64_t id;
-    int64_t created_at;
-    char author[64];
-    char content[256];
-} MaxOutPendingWrite;
-
-static int g_multishot_recv = 0;   /* HPHP_MR=1 -> multishot recv + buf ring */
-static int g_feed_cache = 1;       /* HPHP_CACHE=0 -> always rebuild feed */
-
-typedef struct {
-    sqlite3 *db;
-    sqlite3_stmt *feed, *insert, *like, *begin, *commit;
-    MaxOutSlot *slots;
-    int *free_slots;
-    int free_count;
-    MaxOutPendingWrite *pending;
-    int pending_count;
-    char feed_json[FEED_CACHE_SIZE];
-    size_t feed_len;
-    char feed_http[FEED_CACHE_SIZE + 512];
-    size_t feed_http_len;
-    char health_http[HEALTH_CACHE_SIZE];
-    size_t health_http_len;
-    int feed_valid;
-    size_t cq_harvested;    /* CQEs read so far, not yet released */
-    struct io_uring *ring;
-    struct io_uring_buf_ring *br;
-    char *buf_base;
-} MaxOutEngine;
-
-static inline char *fast_u64toa(char *p, uint64_t v) {
-    if (v == 0) { *p++ = '0'; return p; }
-    char tmp[24];
-    int i = 0;
-    while (v > 0) { tmp[i++] = (char)(v % 10) + '0'; v /= 10; }
-    while (i > 0) *p++ = tmp[--i];
-    return p;
+/* hbuf_reserve(b, n): make room for a TOTAL of n bytes plus the NUL. The
+ * core's hbuf_write grows by doubling on demand; the builder asks for the
+ * whole response up front so a feed answer does not realloc five times. */
+void hbuf_reserve(Buf *b, size_t n) {
+    if (n + 1 <= b->cap) return;
+    size_t ncap = b->cap ? b->cap : 64;
+    while (ncap < n + 1) ncap *= 2;
+    char *p = (char *)realloc(b->data, ncap);
+    if (!p) { fprintf(stderr, "Fatal error: out of memory\n"); exit(255); }
+    b->data = p;
+    b->cap = ncap;
 }
 
-static inline char *fast_i64toa(char *p, int64_t v) {
-    if (v < 0) { *p++ = '-'; v = -v; }
-    return fast_u64toa(p, (uint64_t)v);
+/* ASCII case-insensitive compare of one byte (str_pos_ci and friends). */
+static int hp_ci_eq(unsigned char a, unsigned char b) {
+    if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + 32);
+    if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + 32);
+    return a == b;
 }
 
-static inline void escape_and_write_json(char **dst, const char *src, size_t len) {
-    char *p = *dst;
-    *p++ = '"';
-    for (size_t i = 0; i < len; i++) {
-        char c = src[i];
-        if (c == '"') { *p++ = '\\'; *p++ = '"'; }
-        else if (c == '\\') { *p++ = '\\'; *p++ = '\\'; }
-        else if (c == '\n') { *p++ = '\\'; *p++ = 'n'; }
-        else if (c == '\r') { *p++ = '\\'; *p++ = 'r'; }
-        else if (c == '\t') { *p++ = '\\'; *p++ = 't'; }
-        else *p++ = c;
-    }
-    *p++ = '"';
-    *dst = p;
-}
-
-/* Write the HTTP head + body into the slot's response buffer. */
-static inline void make_response(MaxOutSlot *s, const char *body, size_t body_len, int is_json) {
-    static const char hdr[] = "HTTP/1.1 200 OK\r\nServer: HolyPHP-MaxOut\r\nContent-Type: ";
-    static const char ka[] = "\r\nConnection: keep-alive\r\n\r\n";
-    static const char cl[] = "\r\nConnection: close\r\n\r\n";
-    char *p = s->resp_buf;
-    memcpy(p, hdr, sizeof hdr - 1); p += sizeof hdr - 1;
-    if (is_json) { memcpy(p, "application/json\r\n", 18); p += 18; }
-    else         { memcpy(p, "text/plain\r\n", 12); p += 12; }
-    memcpy(p, "Content-Length: ", 16); p += 16;
-    p = fast_u64toa(p, body_len);
-    if (s->keep_alive) { memcpy(p, ka, sizeof ka - 1); p += sizeof ka - 1; }
-    else               { memcpy(p, cl, sizeof cl - 1); p += sizeof cl - 1; }
-    memcpy(p, body, body_len);
-    p += body_len;
-    s->resp_off = 0;
-    s->resp_ptr = s->resp_buf;
-    s->resp_len = (size_t)(p - s->resp_buf);
-    s->state = SLOT_WRITING;
-}
-
-static inline void make_not_found(MaxOutSlot *s) {
-    static const char nf[] = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n";
-    memcpy(s->resp_buf, nf, sizeof nf - 1);
-    s->resp_off = 0;
-    s->resp_ptr = s->resp_buf;
-    s->resp_len = sizeof nf - 1;
-    s->state = SLOT_WRITING;
-}
-
-static inline void *mem_find(const void *hay, size_t hay_len, const void *needle, size_t needle_len) {
-    if (needle_len == 0 || hay_len < needle_len) return NULL;
-    const char *h = (const char *)hay;
-    const char first = ((const char *)needle)[0];
-    const char *end = h + hay_len - needle_len;
-    const char *p = h;
-    while (p <= end) {
-        p = (const char *)memchr(p, first, (size_t)(end - p) + 1);
-        if (!p) return NULL;
-        if (memcmp(p, needle, needle_len) == 0) return (void *)p;
-        p++;
-    }
-    return NULL;
-}
-
-/* An SQE, draining the submission queue first if it is full. A dropped SQE
- * would leave its connection waiting for an event that never comes, so the
- * entries already harvested are released back to the kernel before the
- * submit - otherwise the ring could overflow while we are still reading it. */
-static inline struct io_uring_sqe *get_sqe(MaxOutEngine *e) {
-    struct io_uring_sqe *sqe = io_uring_get_sqe(e->ring);
-    if (sqe) return sqe;
-    if (e->cq_harvested) {
-        io_uring_cq_advance(e->ring, e->cq_harvested);
-        e->cq_harvested = 0;
-    }
-    io_uring_submit(e->ring);
-    return io_uring_get_sqe(e->ring);
-}
-
-static void arm_send(MaxOutEngine *e, int idx) {
-    MaxOutSlot *s = &e->slots[idx];
-    struct io_uring_sqe *sqe = get_sqe(e);
-    if (!sqe) return;
-    io_uring_prep_send(sqe, s->fd, s->resp_ptr + s->resp_off,
-                       s->resp_len - s->resp_off, MSG_NOSIGNAL);
-    io_uring_sqe_set_data64(sqe, TAG(idx, OP_SEND));
-}
-
-static void arm_recv(MaxOutEngine *e, int idx) {
-    MaxOutSlot *s = &e->slots[idx];
-    struct io_uring_sqe *sqe = get_sqe(e);
-    if (!sqe) return;
-    if (g_multishot_recv) {
-        io_uring_prep_recv_multishot(sqe, s->fd, NULL, 0, 0);
-        sqe->flags |= IOSQE_BUFFER_SELECT;
-        sqe->buf_group = BGID;
-    } else {
-        io_uring_prep_recv(sqe, s->fd, s->recv_buf, RECV_BUF_SIZE, 0);
-    }
-    io_uring_sqe_set_data64(sqe, TAG(idx, OP_RECV));
-}
-
-static void arm_accept(MaxOutEngine *e, int listen_fd) {
-    struct io_uring_sqe *sqe = get_sqe(e);
-    if (!sqe) return;
-    io_uring_prep_multishot_accept(sqe, listen_fd, NULL, NULL, 0);
-    io_uring_sqe_set_data64(sqe, TAG(0, OP_ACCEPT));
-}
-
-static inline void return_buffer(MaxOutEngine *e, unsigned bid) {
-    io_uring_buf_ring_add(e->br, e->buf_base + (size_t)bid * RECV_BUF_SIZE,
-                          RECV_BUF_SIZE, (unsigned short)bid, NBUF - 1, 0);
-    io_uring_buf_ring_advance(e->br, 1);
-}
-
-static inline void release_slot(MaxOutEngine *e, int idx) {
-    MaxOutSlot *s = &e->slots[idx];
-    if (s->state == SLOT_FREE) return;
-    if (s->fd >= 0) { close(s->fd); s->fd = -1; }
-    s->state = SLOT_FREE;
-    s->gen++;
-    e->free_slots[e->free_count++] = idx;
-}
-
-/* Render the whole HTTP response for a request whose answer never changes. */
-static void cache_static_response(const char *body, size_t body_len,
-                                  char *out, size_t *out_len) {
-    static MaxOutSlot tmp;
-    memset(&tmp, 0, sizeof tmp);
-    tmp.keep_alive = 1;
-    make_response(&tmp, body, body_len, 1);
-    memcpy(out, tmp.resp_buf, tmp.resp_len);
-    *out_len = tmp.resp_len;
-}
-
-static void build_feed(MaxOutEngine *e) {
-    if (g_feed_cache && e->feed_valid) return;
-
-    sqlite3_reset(e->feed);
-    sqlite3_bind_int(e->feed, 1, FEED_LIMIT);
-
-    char *jp = e->feed_json;
-    char *limit = e->feed_json + sizeof(e->feed_json) - 512;
-    *jp++ = '[';
-    int first = 1;
-
-    while (sqlite3_step(e->feed) == SQLITE_ROW) {
-        if (jp >= limit) break;             /* never overrun the cache */
-        if (!first) *jp++ = ',';
-        first = 0;
-
-        int64_t id = sqlite3_column_int64(e->feed, 0);
-        const char *author = (const char *)sqlite3_column_text(e->feed, 1);
-        int author_len = sqlite3_column_bytes(e->feed, 1);
-        const char *content = (const char *)sqlite3_column_text(e->feed, 2);
-        int content_len = sqlite3_column_bytes(e->feed, 2);
-        int64_t likes = sqlite3_column_int64(e->feed, 3);
-        int64_t created_at = sqlite3_column_int64(e->feed, 4);
-
-        memcpy(jp, "{\"id\":", 6); jp += 6;
-        jp = fast_i64toa(jp, id);
-        memcpy(jp, ",\"author\":", 10); jp += 10;
-        escape_and_write_json(&jp, author ? author : "", (size_t)author_len);
-        memcpy(jp, ",\"content\":", 11); jp += 11;
-        escape_and_write_json(&jp, content ? content : "", (size_t)content_len);
-        memcpy(jp, ",\"likes\":", 9); jp += 9;
-        jp = fast_i64toa(jp, likes);
-        memcpy(jp, ",\"created_at\":", 14); jp += 14;
-        jp = fast_i64toa(jp, created_at);
-        *jp++ = '}';
-    }
-    *jp++ = ']';
-    e->feed_len = (size_t)(jp - e->feed_json);
-
-    /* Pre-assemble the whole wire response once: subsequent feed hits send
-     * these bytes directly, with no header formatting and no copy of the
-     * body. Deterministic, so Content-Length is baked in. */
-    cache_static_response(e->feed_json, e->feed_len, e->feed_http, &e->feed_http_len);
-    e->feed_valid = 1;
-}
-
-/* returns 1 = response ready, 2 = write queued, 0 = need more bytes */
-static int parse_request(MaxOutEngine *e, int idx, const char *req, size_t len) {
-    MaxOutSlot *s = &e->slots[idx];
-
-    char *hdr_end_p = (char *)mem_find(req, len, "\r\n\r\n", 4);
-    if (!hdr_end_p) return 0;
-    size_t hdr_len = (size_t)(hdr_end_p - req) + 4;
-
-    /* Method first: only a body-bearing method can have a Content-Length,
-     * and hunting for it costs a scan of the whole header. */
-    int is_post = (len >= 5 && memcmp(req, "POST ", 5) == 0);
-    int is_get  = (len >= 4 && memcmp(req, "GET ", 4) == 0);
-
-    s->keep_alive = mem_find(req, hdr_len, "Connection: close", 17) == NULL;
-
-    size_t body_len = 0;
-    if (is_post) {
-        char *cl = (char *)mem_find(req, hdr_len, "\r\nContent-Length: ", 18);
-        if (cl) body_len = (size_t)strtoul(cl + 18, NULL, 10);
-        if (len < hdr_len + body_len) return 0;   /* body split across reads */
-    }
-
-    const char *body = req + hdr_len;
-
-    if (is_get && len >= 11 && memcmp(req, "GET /health", 11) == 0) {
-        if (s->keep_alive && e->health_http_len) {
-            s->resp_ptr = e->health_http;
-            s->resp_off = 0;
-            s->resp_len = e->health_http_len;
-            s->state = SLOT_WRITING;
-        } else {
-            make_response(s, "{\"status\":\"ok\"}", 15, 1);
-        }
-        return 1;
-    }
-
-    if ((is_get && len >= 9 && memcmp(req, "GET /feed", 9) == 0) ||
-        (is_get && len >= 10 && memcmp(req, "GET /posts", 10) == 0)) {
-        build_feed(e);
-        if (s->keep_alive && e->feed_http_len) {
-            s->resp_ptr = e->feed_http;
-            s->resp_off = 0;
-            s->resp_len = e->feed_http_len;
-            s->state = SLOT_WRITING;
-        } else {
-            make_response(s, e->feed_json, e->feed_len, 1);
-        }
-        return 1;
-    }
-
-    if (is_post && len >= 11 && memcmp(req, "POST /posts", 11) == 0) {
-        if (e->pending_count >= BATCH_MAX) {
-            make_response(s, "{\"error\":\"busy\"}", 17, 1);
-            return 1;
-        }
-        MaxOutPendingWrite *pw = &e->pending[e->pending_count++];
-        pw->slot_idx = idx;
-        pw->is_like = 0;
-        pw->gen = s->gen;
-        pw->id = 0;
-        pw->created_at = (int64_t)time(NULL);
-        strcpy(pw->author, "anonymous");
-        strcpy(pw->content, "hello world");
-
-        char *a = (char *)mem_find(body, body_len, "\"author\":\"", 10);
-        if (a) {
-            char *ap = a + 10;
-            char *ae = (char *)mem_find(ap, (size_t)(body + body_len - ap), "\"", 1);
-            if (ae) {
-                size_t n = (size_t)(ae - ap);
-                if (n >= sizeof pw->author) n = sizeof pw->author - 1;
-                memcpy(pw->author, ap, n);
-                pw->author[n] = '\0';
-            }
-        }
-        char *c = (char *)mem_find(body, body_len, "\"content\":\"", 11);
-        if (c) {
-            char *cp = c + 11;
-            char *ce = (char *)mem_find(cp, (size_t)(body + body_len - cp), "\"", 1);
-            if (ce) {
-                size_t n = (size_t)(ce - cp);
-                if (n >= sizeof pw->content) n = sizeof pw->content - 1;
-                memcpy(pw->content, cp, n);
-                pw->content[n] = '\0';
-            }
-        }
-        s->state = SLOT_QUEUED_WRITE;
-        return 2;
-    }
-
-    if (is_post && len >= 10 && memcmp(req, "POST /like", 10) == 0) {
-        if (e->pending_count >= BATCH_MAX) {
-            make_response(s, "{\"error\":\"busy\"}", 17, 1);
-            return 1;
-        }
-        MaxOutPendingWrite *pw = &e->pending[e->pending_count++];
-        pw->slot_idx = idx;
-        pw->is_like = 1;
-        pw->gen = s->gen;
-        pw->id = 1;
-        char *q = (char *)mem_find(req, len, "?id=", 4);
-        if (q) {
-            pw->id = strtoll(q + 4, NULL, 10);
-            if (pw->id <= 0) pw->id = 1;
-        }
-        s->state = SLOT_QUEUED_WRITE;
-        return 2;
-    }
-
-    make_not_found(s);
-    return 1;
-}
-
-/* Feed bytes into a slot. Returns -1 if the connection must be closed. */
-static int feed_bytes(MaxOutEngine *e, int idx, const char *data, size_t len) {
-    MaxOutSlot *s = &e->slots[idx];
-
-    /* A response is in flight (or a write waits for the commit): buffer the
-     * request instead of clobbering resp_buf. */
-    if (s->state == SLOT_WRITING || s->state == SLOT_QUEUED_WRITE) {
-        if (s->req_len + len > REQ_BUF_SIZE) return -1;
-        memcpy(s->req_buf + s->req_len, data, len);
-        s->req_len += len;
-        return 0;
-    }
-
-    if (s->req_len > 0) {
-        if (s->req_len + len > REQ_BUF_SIZE) return -1;
-        memcpy(s->req_buf + s->req_len, data, len);
-        s->req_len += len;
-        data = s->req_buf;
-        len = s->req_len;
-        int r = parse_request(e, idx, data, len);
-        if (r == 0) return 0;                 /* keep accumulating */
-        s->req_len = 0;
-        if (r == 1) arm_send(e, idx);
-        return 0;
-    }
-
-    int r = parse_request(e, idx, data, len);
-    if (r == 0) {
-        if (len > REQ_BUF_SIZE) return -1;
-        memcpy(s->req_buf, data, len);
-        s->req_len = len;
-        return 0;
-    }
-    if (r == 1) arm_send(e, idx);
-    return 0;
-}
-
-hval hpbi_holy_maxout_start(hval port_val, hval db_path_val) {
-    int port = (int)hp_val_to_int(port_val);
-    if (port <= 0) port = 8080;
-    hstr *ds = hp_val_to_str(db_path_val);
-    const char *db_path = ds && ds->len ? ds->data : "benchmark.db";
-
-    MaxOutEngine e;
-    memset(&e, 0, sizeof e);
-
-    /* ---- SQLite: WAL, NORMAL sync, prepared statements ---- */
-    if (sqlite3_open_v2(db_path, &e.db,
-                        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX,
-                        NULL) != SQLITE_OK) {
-        fprintf(stderr, "HolyPHP: cannot open %s: %s\n", db_path, sqlite3_errmsg(e.db));
-        return hp_of_int(-1);
-    }
-    char *errmsg = NULL;
-    sqlite3_exec(e.db, "PRAGMA journal_mode = WAL;", NULL, NULL, &errmsg);
-    sqlite3_exec(e.db, "PRAGMA synchronous = NORMAL;", NULL, NULL, &errmsg);
-    sqlite3_exec(e.db, "PRAGMA cache_size = -64000;", NULL, NULL, &errmsg);
-    sqlite3_exec(e.db, "PRAGMA temp_store = MEMORY;", NULL, NULL, &errmsg);
-    sqlite3_exec(e.db, "PRAGMA mmap_size = 268435456;", NULL, NULL, &errmsg);
-    sqlite3_exec(e.db, "PRAGMA busy_timeout = 5000;", NULL, NULL, &errmsg);
-    sqlite3_exec(e.db, "PRAGMA wal_autocheckpoint = 4096;", NULL, NULL, &errmsg);
-
-    sqlite3_exec(e.db,
-        "CREATE TABLE IF NOT EXISTS posts ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "author TEXT NOT NULL,"
-        "content TEXT NOT NULL,"
-        "likes INTEGER NOT NULL DEFAULT 0,"
-        "created_at INTEGER NOT NULL);", NULL, NULL, &errmsg);
-    sqlite3_exec(e.db,
-        "INSERT INTO posts (author, content, likes, created_at) "
-        "SELECT 'benchmark_user', 'Initial benchmark post content', 10, 1698500000 "
-        "WHERE NOT EXISTS (SELECT 1 FROM posts LIMIT 1);", NULL, NULL, &errmsg);
-
-    sqlite3_prepare_v2(e.db, "SELECT id, author, content, likes, created_at FROM posts ORDER BY id DESC LIMIT ?;", -1, &e.feed, NULL);
-    sqlite3_prepare_v2(e.db, "INSERT INTO posts(author, content, likes, created_at) VALUES(?, ?, 0, ?);", -1, &e.insert, NULL);
-    sqlite3_prepare_v2(e.db, "UPDATE posts SET likes = likes + 1 WHERE id = ?;", -1, &e.like, NULL);
-    sqlite3_prepare_v2(e.db, "BEGIN IMMEDIATE;", -1, &e.begin, NULL);
-    sqlite3_prepare_v2(e.db, "COMMIT;", -1, &e.commit, NULL);
-
-    /* ---- connection slots ---- */
-    e.slots = (MaxOutSlot *)calloc(MAX_SLOTS, sizeof(MaxOutSlot));
-    e.free_slots = (int *)malloc(MAX_SLOTS * sizeof(int));
-    e.pending = (MaxOutPendingWrite *)malloc(BATCH_MAX * sizeof(MaxOutPendingWrite));
-    if (!e.slots || !e.free_slots || !e.pending) {
-        fprintf(stderr, "HolyPHP: out of memory\n");
-        return hp_of_int(-1);
-    }
-    for (int i = 0; i < MAX_SLOTS; i++) {
-        e.slots[i].fd = -1;
-        e.slots[i].state = SLOT_FREE;
-        e.free_slots[i] = MAX_SLOTS - 1 - i;
-    }
-    e.free_count = MAX_SLOTS;
-
-    /* ---- static answers, pre-assembled as complete HTTP messages ---- */
-    cache_static_response("{\"status\":\"ok\"}", 15,
-                          e.health_http, &e.health_http_len);
-
-    /* ---- listening socket ---- */
-    int listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (listen_fd < 0) { perror("HolyPHP: socket"); return hp_of_int(-1); }
-    int opt = 1;
-    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof opt);
-    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof opt);
-    fcntl(listen_fd, F_SETFL, fcntl(listen_fd, F_GETFL, 0) | O_NONBLOCK);
-
-    struct sockaddr_in saddr;
-    memset(&saddr, 0, sizeof saddr);
-    saddr.sin_family = AF_INET;
-    saddr.sin_addr.s_addr = INADDR_ANY;
-    saddr.sin_port = htons((uint16_t)port);
-    if (bind(listen_fd, (struct sockaddr *)&saddr, sizeof saddr) != 0) {
-        perror("HolyPHP: bind"); return hp_of_int(-1);
-    }
-    if (listen(listen_fd, 4096) != 0) {
-        perror("HolyPHP: listen"); return hp_of_int(-1);
-    }
-
-    /* ---- io_uring ---- */
-    const char *mr = getenv("HPHP_MR");
-    if (mr && *mr == '1') g_multishot_recv = 1;
-    const char *fc = getenv("HPHP_CACHE");
-    if (fc && *fc == '0') g_feed_cache = 0;
-
-    struct io_uring ring;
-    int rc;
-    const char *defer = getenv("HPHP_DEFER");
-    if (defer && *defer == '0') {
-        rc = io_uring_queue_init(RING_ENTRIES, &ring, IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_COOP_TASKRUN);
-        if (rc < 0) rc = io_uring_queue_init(RING_ENTRIES, &ring, 0);
-    } else {
-        rc = io_uring_queue_init(RING_ENTRIES, &ring,
-                                 IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
-        if (rc < 0)
-            rc = io_uring_queue_init(RING_ENTRIES, &ring,
-                                     IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_COOP_TASKRUN);
-        if (rc < 0)
-            rc = io_uring_queue_init(RING_ENTRIES, &ring, 0);
-    }
-    if (rc < 0) {
-        fprintf(stderr, "HolyPHP: io_uring_queue_init: %s\n", strerror(-rc));
-        return hp_of_int(-1);
-    }
-    e.ring = &ring;
-
-    if (g_multishot_recv) {
-        if (posix_memalign((void **)&e.buf_base, RECV_BUF_SIZE,
-                           (size_t)NBUF * RECV_BUF_SIZE) != 0) {
-            fprintf(stderr, "HolyPHP: cannot allocate receive buffers\n");
-            return hp_of_int(-1);
-        }
-        int br_ret = 0;
-        e.br = io_uring_setup_buf_ring(&ring, NBUF, BGID, 0, &br_ret);
-        if (!e.br) {
-            fprintf(stderr, "HolyPHP: io_uring_setup_buf_ring: %s\n", strerror(-br_ret));
-            return hp_of_int(-1);
-        }
-        for (int i = 0; i < NBUF; i++) {
-            io_uring_buf_ring_add(e.br, e.buf_base + (size_t)i * RECV_BUF_SIZE,
-                                  RECV_BUF_SIZE, (unsigned short)i, NBUF - 1, i);
-        }
-        io_uring_buf_ring_advance(e.br, NBUF);
-    }
-
-    arm_accept(&e, listen_fd);
-    io_uring_submit(&ring);
-
-    /* ---- event loop ---- */
-    for (;;) {
-        int ret = io_uring_submit_and_wait(&ring, 1);
-        if (ret < 0 && errno != EINTR) {
-            fprintf(stderr, "HolyPHP: submit_and_wait: %s\n", strerror(errno));
-            break;
-        }
-
-        unsigned head;
-        struct io_uring_cqe *cqe;
-        e.cq_harvested = 0;
-
-        io_uring_for_each_cqe(&ring, head, cqe) {
-            e.cq_harvested++;
-            uint64_t ud = cqe->user_data;
-            int res = cqe->res;
-            unsigned cflags = cqe->flags;
-            unsigned op = (unsigned)(ud & 3);
-            int idx = (int)(ud >> 2);
-
-            if (op == OP_ACCEPT) {
-                if (res >= 0) {
-                    int fd = res;
-                    int one = 1;
-                    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-                    if (e.free_count > 0) {
-                        int si = e.free_slots[--e.free_count];
-                        MaxOutSlot *s = &e.slots[si];
-                        s->fd = fd;
-                        s->state = SLOT_READING;
-                        s->keep_alive = 1;
-                        s->req_len = 0;
-                        s->resp_len = 0;
-                        s->resp_off = 0;
-                        s->resp_ptr = s->resp_buf;
-                        arm_recv(&e, si);
-                    } else {
-                        close(fd);
-                    }
-                }
-                if (!(cflags & IORING_CQE_F_MORE)) arm_accept(&e, listen_fd);
-
-            } else if (idx >= 0 && idx < MAX_SLOTS) {
-                MaxOutSlot *s = &e.slots[idx];
-                if (s->state == SLOT_FREE) continue;
-
-                if (op == OP_RECV) {
-                    unsigned bid = cflags >> IORING_CQE_BUFFER_SHIFT;
-                    int had_buf = (cflags & IORING_CQE_F_BUFFER) != 0;
-
-                    if (res == -ENOBUFS || res == -EAGAIN) {
-                        if (!(cflags & IORING_CQE_F_MORE)) arm_recv(&e, idx);
-                        continue;
-                    }
-                    if (res <= 0) {
-                        if (had_buf) return_buffer(&e, bid);
-                        release_slot(&e, idx);
-                    } else {
-                        const char *data = had_buf
-                            ? e.buf_base + (size_t)bid * RECV_BUF_SIZE
-                            : s->recv_buf;
-                        int bad = feed_bytes(&e, idx, data, (size_t)res) < 0;
-                        if (had_buf) return_buffer(&e, bid);
-                        if (bad) {
-                            release_slot(&e, idx);
-                        } else if (!(cflags & IORING_CQE_F_MORE) &&
-                                   e.slots[idx].state != SLOT_FREE) {
-                            arm_recv(&e, idx);
-                        }
-                    }
-
-                } else if (op == OP_SEND) {
-                    if (res < 0 && res != -EAGAIN) {
-                        release_slot(&e, idx);
-                    } else if (res == -EAGAIN || res == 0) {
-                        if (res == 0) { release_slot(&e, idx); }
-                        else arm_send(&e, idx);
-                    } else {
-                        s->resp_off += (size_t)res;
-                        if (s->resp_off < s->resp_len) {
-                            arm_send(&e, idx);
-                        } else {
-                            s->resp_off = 0;
-                            s->resp_len = 0;
-                            if (!s->keep_alive) {
-                                release_slot(&e, idx);
-                            } else if (s->req_len > 0) {
-                                /* a pipelined request waited behind the send */
-                                size_t n = s->req_len;
-                                s->req_len = 0;
-                                s->state = SLOT_READING;
-                                if (feed_bytes(&e, idx, s->req_buf, n) < 0)
-                                    release_slot(&e, idx);
-                            } else {
-                                s->state = SLOT_READING;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (e.cq_harvested) {
-            io_uring_cq_advance(&ring, e.cq_harvested);
-            e.cq_harvested = 0;
-        }
-
-        /* ---- group commit: one transaction for the whole batch ---- */
-        if (e.pending_count > 0) {
-            sqlite3_step(e.begin);
-            sqlite3_reset(e.begin);
-
-            for (int i = 0; i < e.pending_count; i++) {
-                MaxOutPendingWrite *pw = &e.pending[i];
-                if (pw->slot_idx < 0 || pw->slot_idx >= MAX_SLOTS) continue;
-                MaxOutSlot *s = &e.slots[pw->slot_idx];
-                if (s->state != SLOT_QUEUED_WRITE || s->gen != pw->gen) continue;
-
-                if (!pw->is_like) {
-                    sqlite3_reset(e.insert);
-                    sqlite3_bind_text(e.insert, 1, pw->author, -1, SQLITE_STATIC);
-                    sqlite3_bind_text(e.insert, 2, pw->content, -1, SQLITE_STATIC);
-                    sqlite3_bind_int64(e.insert, 3, pw->created_at);
-                    sqlite3_step(e.insert);
-
-                    int64_t new_id = sqlite3_last_insert_rowid(e.db);
-                    char body[64];
-                    char *bp = body;
-                    memcpy(bp, "{\"id\":", 6); bp += 6;
-                    bp = fast_i64toa(bp, new_id);
-                    memcpy(bp, ",\"status\":\"created\"}", 20); bp += 20;
-                    make_response(s, body, (size_t)(bp - body), 1);
-                } else {
-                    sqlite3_reset(e.like);
-                    sqlite3_bind_int64(e.like, 1, pw->id);
-                    sqlite3_step(e.like);
-
-                    char body[64];
-                    char *bp = body;
-                    memcpy(bp, "{\"id\":", 6); bp += 6;
-                    bp = fast_i64toa(bp, pw->id);
-                    memcpy(bp, ",\"status\":\"liked\"}", 18); bp += 18;
-                    make_response(s, body, (size_t)(bp - body), 1);
-                }
-                arm_send(&e, pw->slot_idx);
-            }
-
-            sqlite3_step(e.commit);
-            sqlite3_reset(e.commit);
-            e.pending_count = 0;
-            e.feed_valid = 0;
+hval hpbi_str_pos_ci(hval h, hval n, hval off) {
+    hstr *hay = hp_val_to_str(h);
+    hstr *nee = hp_val_to_str(n);
+    long long o = (hp_tag(off) == HV_NULL) ? 0 : off.u.i;
+    if (o < 0) o = 0;
+    if ((size_t)o > hay->len) return hp_of_bool(false);
+    size_t hlen = hay->len - (size_t)o;
+    if (nee->len == 0) return hp_of_int((int64_t)o);
+    if (nee->len <= hlen) {
+        for (size_t i = 0; i + nee->len <= hlen; i++) {
+            size_t j = 0;
+            while (j < nee->len &&
+                   hp_ci_eq((unsigned char)hay->data[o + i + j],
+                            (unsigned char)nee->data[j]))
+                j++;
+            if (j == nee->len) return hp_of_int((int64_t)o + (int64_t)i);
         }
     }
-
-    return hp_of_int(0);
-}
-#else
-hval hpbi_holy_maxout_start(hval port_val, hval db_path_val) {
-    (void)port_val; (void)db_path_val;
-    hp_throw_str("holy_maxout_start() requires Linux io_uring");
-    return hp_of_int(-1);
-}
-#endif
-
-/* ==== HolyPHP MaxOut engine - twelve-dollar-server-challenge SPEC.md ====
- *
- * The same io_uring skeleton as the MaxOut engine, speaking the challenge API:
- *
- *   GET  /health              {"status":"ok","db":"ok","uptime_s":<n>}
- *   GET  /feed                {"posts":[<post> x 20]}   newest first
- *   GET  /posts/:id           {"post":<post>}
- *   POST /posts          auth 201  {"post":<post with like_count 0>}
- *   POST /posts/:id/like  auth 201 first time, 200 on repeats
- *
- * where <post> is {"id":..,"body":..,"created_at":..,"author":..,"like_count":..}
- * exactly in that order - the golden tests compare bytes.
- *
- * Engine properties:
- *   - multi-shot accept, single-shot recv into the connection's own buffer
- *     (measured faster than multishot + provided buffers here; HPHP_MR=1 opts in)
- *   - DEFER_TASKRUN | SINGLE_ISSUER, 4096 ring entries, SQ-full recovery
- *   - one fixed 16 KiB record per connection: request in, response out, no
- *     per-request heap allocation; idle connections keep no buffers
- *   - prepared statements, WAL + synchronous=NORMAL, mmap'd pager
- *   - group commit: every write harvested in one CQE batch shares one
- *     BEGIN IMMEDIATE .. COMMIT, and a response is queued only after the
- *     commit succeeded
- *   - JWT HS256 verified in place (base64url + HMAC-SHA256 written from
- *     scratch: no OpenSSL, no allocation)
- *   - JSON rendered straight from SQLite column bytes into the response
- *     buffer; the request body string is decoded once on the way in and
- *     escaped once on the way out
- *
- * Reads are deliberately live - no feed cache - because like_count has to be
- * correct as of this request (the test likes a post and immediately re-reads).
- *
- *   hpbi_holy_challenge_start(port, db_path)   JWT_SECRET from the environment
- * ===================================================================== */
-#ifdef __linux__
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE
-#endif
-#include <liburing.h>
-#include <sqlite3.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <time.h>
-#include <errno.h>
-#include <stdint.h>
-
-#define C_MAX_SLOTS   2048
-#define C_RECV_SIZE   4096
-#define C_REQ_SIZE    4096
-#define C_RESP_SIZE   8192
-#define C_RING        4096
-#define C_BATCH       4096
-#define C_FEED_LIMIT  20
-#define C_USER_MAX    64
-#define C_BODY_MAX    512
-#define C_NBUF        1024
-#define C_BGID        2
-
-enum { C_FREE = 0, C_READING = 1, C_WRITING = 2, C_QUEUED = 3 };
-enum { C_ACCEPT = 0, C_RECV = 1, C_SEND = 2 };
-#define CTAG(idx, op) (((uint64_t)(idx) << 2) | (uint64_t)(op))
-
-typedef struct {
-    int fd;
-    int state;
-    int keep_alive;
-    uint32_t gen;
-    size_t req_len;
-    size_t resp_len;
-    size_t resp_off;
-    const char *resp_ptr;
-    char recv_buf[C_RECV_SIZE];
-    char req_buf[C_REQ_SIZE];
-    char resp_buf[C_RESP_SIZE];
-} CSlot;
-
-enum { W_CREATE = 1, W_LIKE = 2 };
-
-typedef struct {
-    int slot_idx;
-    uint32_t gen;
-    int kind;
-    int64_t user_id;
-    int64_t post_id;
-    char username[C_USER_MAX];
-    char body[C_BODY_MAX + 1];
-    int body_len;
-} CPending;
-
-static int c_multishot = 0;   /* HPHP_MR=1 -> multishot recv + provided buffers */
-
-typedef struct {
-    sqlite3 *db;
-    sqlite3_stmt *st_health, *st_feed, *st_post;
-    sqlite3_stmt *st_insert, *st_like_exists, *st_like_ins;
-    sqlite3_stmt *st_begin, *st_commit;
-    CSlot *slots;
-    int *free_slots;
-    int free_count;
-    CPending *pending;
-    int pending_count;
-    int64_t start_time;
-    const char *secret;
-    size_t secret_len;
-    size_t cq_harvested;
-    struct io_uring *ring;
-    struct io_uring_buf_ring *br;
-    char *buf_base;
-} CEngine;
-
-#define APPEND(p, str) do { memcpy((p), (str), sizeof(str) - 1); (p) += sizeof(str) - 1; } while (0)
-
-/* ------------------------------------------------------------------ numbers */
-static inline char *c_u64toa(char *p, uint64_t v) {
-    if (v == 0) { *p++ = '0'; return p; }
-    char t[24]; int i = 0;
-    while (v > 0) { t[i++] = (char)('0' + v % 10); v /= 10; }
-    while (i > 0) *p++ = t[--i];
-    return p;
-}
-static inline char *c_i64toa(char *p, int64_t v) {
-    if (v < 0) { *p++ = '-'; v = -v; }
-    return c_u64toa(p, (uint64_t)v);
+    return hp_of_bool(false);
 }
 
-/* ------------------------------------------------------------------- search */
-static inline void *c_mem_find(const void *hay, size_t hay_len, const void *nd, size_t nd_len) {
-    if (nd_len == 0 || hay_len < nd_len) return NULL;
-    const char *h = (const char *)hay;
-    const char first = ((const char *)nd)[0];
-    const char *end = h + hay_len - nd_len;
-    const char *p = h;
-    while (p <= end) {
-        p = (const char *)memchr(p, first, (size_t)(end - p) + 1);
-        if (!p) return NULL;
-        if (memcmp(p, nd, nd_len) == 0) return (void *)p;
-        p++;
+/* str_int_range(s, start, end): decimal integer in [start,end) without
+ * building a substring (Content-Length parsing). */
+hval hpbi_str_int_range(hval s, hval a, hval b) {
+    hstr *x = hp_val_to_str(s);
+    int64_t st = hp_val_to_int(a), en = hp_val_to_int(b);
+    if (st < 0) st = 0;
+    if ((size_t)st > x->len) st = (int64_t)x->len;
+    if (en < st) en = st;
+    if ((size_t)en > x->len) en = (int64_t)x->len;
+    int64_t v = 0;
+    int neg = 0;
+    size_t i = (size_t)st;
+    while (i < (size_t)en && (x->data[i] == ' ' || x->data[i] == '\t')) i++;
+    if (i < (size_t)en && x->data[i] == '-') { neg = 1; i++; }
+    for (; i < (size_t)en; i++) {
+        char c = x->data[i];
+        if (c < '0' || c > '9') break;
+        v = v * 10 + (c - '0');
     }
-    return NULL;
-}
-static inline int c_lower(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
-static void *mem_find_ci(const void *hay, size_t hay_len, const char *nd, size_t nd_len) {
-    if (nd_len == 0 || hay_len < nd_len) return NULL;
-    const char *h = (const char *)hay;
-    const char *end = h + hay_len - nd_len;
-    for (const char *p = h; p <= end; p++) {
-        size_t i = 0;
-        while (i < nd_len && c_lower((unsigned char)p[i]) == c_lower((unsigned char)nd[i])) i++;
-        if (i == nd_len) return (void *)p;
-    }
-    return NULL;
+    return hp_of_int(neg ? -v : v);
 }
 
-/* ------------------------------------------------------------- sha256/hmac */
-typedef struct {
-    uint32_t st[8];
-    uint64_t bits;
-    unsigned char buf[64];
-    uint32_t len;
-} CSha;
-
-static const uint32_t C_K[64] = {
-    0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
-    0xd807aa98u,0x12835b01u,0x243185beu,0x550c7dc3u,0x72be5d74u,0x80deb1feu,0x9bdc06a7u,0xc19bf174u,
-    0xe49b69c1u,0xefbe4786u,0x0fc19dc6u,0x240ca1ccu,0x2de92c6fu,0x4a7484aau,0x5cb0a9dcu,0x76f988dau,
-    0x983e5152u,0xa831c66du,0xb00327c8u,0xbf597fc7u,0xc6e00bf3u,0xd5a79147u,0x06ca6351u,0x14292967u,
-    0x27b70a85u,0x2e1b2138u,0x4d2c6dfcu,0x53380d13u,0x650a7354u,0x766a0abbu,0x81c2c92eu,0x92722c85u,
-    0xa2bfe8a1u,0xa81a664bu,0xc24b8b70u,0xc76c51a3u,0xd192e819u,0xd6990624u,0xf40e3585u,0x106aa070u,
-    0x19a4c116u,0x1e376c08u,0x2748774cu,0x34b0bcb5u,0x391c0cb3u,0x4ed8aa4au,0x5b9cca4fu,0x682e6ff3u,
-    0x748f82eeu,0x78a5636fu,0x84c87814u,0x8cc70208u,0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u
-};
-#define ROR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
-
-static void c_sha_transform(CSha *c, const unsigned char *d) {
-    uint32_t w[64], a, b, cc, dd, e, f, g, h, t1, t2, s0, s1;
-    for (int i = 0; i < 16; i++)
-        w[i] = ((uint32_t)d[i*4] << 24) | ((uint32_t)d[i*4+1] << 16) |
-               ((uint32_t)d[i*4+2] << 8) | (uint32_t)d[i*4+3];
-    for (int i = 16; i < 64; i++) {
-        s0 = ROR(w[i-15], 7) ^ ROR(w[i-15], 18) ^ (w[i-15] >> 3);
-        s1 = ROR(w[i-2], 17) ^ ROR(w[i-2], 19) ^ (w[i-2] >> 10);
-        w[i] = w[i-16] + s0 + w[i-7] + s1;
-    }
-    a = c->st[0]; b = c->st[1]; cc = c->st[2]; dd = c->st[3];
-    e = c->st[4]; f = c->st[5]; g = c->st[6]; h = c->st[7];
-    for (int i = 0; i < 64; i++) {
-        s1 = ROR(e, 6) ^ ROR(e, 11) ^ ROR(e, 25);
-        t1 = h + s1 + ((e & f) ^ (~e & g)) + C_K[i] + w[i];
-        s0 = ROR(a, 2) ^ ROR(a, 13) ^ ROR(a, 22);
-        t2 = s0 + ((a & b) ^ (a & cc) ^ (b & cc));
-        h = g; g = f; f = e; e = dd + t1; dd = cc; cc = b; b = a; a = t1 + t2;
-    }
-    c->st[0] += a; c->st[1] += b; c->st[2] += cc; c->st[3] += dd;
-    c->st[4] += e; c->st[5] += f; c->st[6] += g; c->st[7] += h;
+/* str_trim_range(s, start, end): the slice trimmed of ASCII whitespace, one
+ * allocation (header values such as the Authorization token). */
+hval hpbi_str_trim_range(hval s, hval a, hval b) {
+    hstr *x = hp_val_to_str(s);
+    int64_t st = hp_val_to_int(a), en = hp_val_to_int(b);
+    if (st < 0) st = 0;
+    if ((size_t)st > x->len) st = (int64_t)x->len;
+    if (en < st) en = st;
+    if ((size_t)en > x->len) en = (int64_t)x->len;
+    size_t i = (size_t)st, e = (size_t)en;
+    while (i < e && (x->data[i] == ' ' || x->data[i] == '\t' ||
+                     x->data[i] == '\r' || x->data[i] == '\n')) i++;
+    while (e > i && (x->data[e - 1] == ' ' || x->data[e - 1] == '\t' ||
+                     x->data[e - 1] == '\r' || x->data[e - 1] == '\n')) e--;
+    return hp_of_str(hp_str_new(x->data + i, e - i));
 }
-static void c_sha_init(CSha *c) {
-    c->st[0]=0x6a09e667u; c->st[1]=0xbb67ae85u; c->st[2]=0x3c6ef372u; c->st[3]=0xa54ff53au;
-    c->st[4]=0x510e527fu; c->st[5]=0x9b05688cu; c->st[6]=0x1f83d9abu; c->st[7]=0x5be0cd19u;
-    c->bits = 0; c->len = 0;
+
+/* str_prefix_ci(s, p): true when s starts with p, ASCII case-insensitive. */
+hval hpbi_str_prefix_ci(hval s, hval p) {
+    hstr *x = hp_val_to_str(s);
+    hstr *y = hp_val_to_str(p);
+    if (y->len > x->len) return hp_of_bool(false);
+    for (size_t i = 0; i < y->len; i++)
+        if (!hp_ci_eq((unsigned char)x->data[i], (unsigned char)y->data[i]))
+            return hp_of_bool(false);
+    return hp_of_bool(true);
 }
-static void c_sha_update(CSha *c, const unsigned char *d, size_t n) {
+
+hval hpbi_strpos(hval h, hval n, hval off) {
+    hstr *hay = hp_val_to_str(h);
+    hstr *nee = hp_val_to_str(n);
+    long long o = (hp_tag(off) == HV_NULL) ? 0 : off.u.i;
+    if (o < 0) o = 0;
+    if ((size_t)o > hay->len) o = (long long)hay->len;
+    /* search in place from the offset: the old path copied the tail into a
+     * throwaway hstr before scanning -- one allocation per call (three per
+     * request on the hot routes). Same result values, nothing copied. */
+    const char *base = hay->data + o;
+    size_t hlen = hay->len - (size_t)o;
+    if (nee->len == 0) return hp_of_int((int64_t)o);
+    if (nee->len <= hlen) {
+        /* memchr for the first byte (SIMD in glibc), then memcmp the rest:
+         * the old loop called memcmp at every position, which showed up as
+         * the top parse cost in the profile. */
+        const char *p = base;
+        const char *end = base + (hlen - nee->len) + 1;
+        while (p < end) {
+            const char *q = (const char *)memchr(p, nee->data[0],
+                                                (size_t)(end - p));
+            if (!q) break;
+            if (nee->len == 1 ||
+                memcmp(q + 1, nee->data + 1, nee->len - 1) == 0)
+                return hp_of_int((int64_t)o + (int64_t)(q - base));
+            p = q + 1;
+        }
+    }
+    return hp_of_bool(false);   /* PHP: strpos miss => false */
+}
+
+/* str_at_eq($s, $start, $len, $lit): compare $len bytes at $start with the
+ * literal, without building a substring. */
+hval hpbi_str_at_eq(hval s, hval start, hval len, hval lit) {
+    hstr *x = hp_val_to_str(s);
+    hstr *y = hp_val_to_str(lit);
+    int64_t st = hp_val_to_int(start);
+    int64_t n = hp_val_to_int(len);
+    if (st < 0 || n < 0 || (size_t)n != y->len ||
+        (uint64_t)st + (uint64_t)n > (uint64_t)x->len)
+        return hp_of_bool(false);
+    return hp_of_bool(memcmp(x->data + st, y->data, (size_t)n) == 0);
+}
+bool hp_str_at_eq_t(hstr *x, int64_t st, int64_t n, hstr *y) {
+    if (st < 0 || n < 0 || (size_t)n != y->len ||
+        (uint64_t)st + (uint64_t)n > (uint64_t)x->len)
+        return false;
+    return memcmp(x->data + st, y->data, (size_t)n) == 0;
+}
+
+/* str_to_int($s): parse a decimal string to int, -1 on a non-digit,
+ * empty string, or a value outside (0, INT64_MAX]. Replaces a per-character
+ * HolyPHP loop in the server's parse_id(); the string argument stays unboxed. */
+hval hpbi_str_to_int(hval s) {
+    hstr *x = hp_val_to_str(s);
+    size_t n = x->len;
+    if (n < 1 || n > 18) return hp_of_int(-1);
+    int64_t v = 0;
     for (size_t i = 0; i < n; i++) {
-        c->buf[c->len++] = d[i];
-        if (c->len == 64) { c_sha_transform(c, c->buf); c->bits += 512; c->len = 0; }
+        unsigned char c = (unsigned char)x->data[i];
+        if (c < '0' || c > '9') return hp_of_int(-1);
+        v = v * 10 + (int64_t)(c - '0');
     }
+    return hp_of_int(v <= 0 ? -1 : v);
 }
-static void c_sha_final(CSha *c, unsigned char out[32]) {
-    uint64_t bits = c->bits + (uint64_t)c->len * 8;
-    c->buf[c->len++] = 0x80;
-    if (c->len > 56) {
-        while (c->len < 64) c->buf[c->len++] = 0;
-        c_sha_transform(c, c->buf); c->len = 0;
+int64_t hp_str_to_int_t(hstr *x) {
+    size_t n = x->len;
+    if (n < 1 || n > 18) return -1;
+    int64_t v = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)x->data[i];
+        if (c < '0' || c > '9') return -1;
+        v = v * 10 + (int64_t)(c - '0');
     }
-    while (c->len < 56) c->buf[c->len++] = 0;
-    for (int i = 7; i >= 0; i--) c->buf[c->len++] = (unsigned char)(bits >> (i * 8));
-    c_sha_transform(c, c->buf);
-    for (int i = 0; i < 8; i++) {
-        out[i*4]   = (unsigned char)(c->st[i] >> 24);
-        out[i*4+1] = (unsigned char)(c->st[i] >> 16);
-        out[i*4+2] = (unsigned char)(c->st[i] >> 8);
-        out[i*4+3] = (unsigned char)(c->st[i]);
-    }
-}
-static void c_hmac_sha256(const char *key, size_t key_len,
-                          const unsigned char *msg, size_t msg_len, unsigned char out[32]) {
-    unsigned char k[64], inner[32], pad[64];
-    memset(k, 0, sizeof k);
-    if (key_len > 64) {
-        CSha t; c_sha_init(&t); c_sha_update(&t, (const unsigned char *)key, key_len); c_sha_final(&t, k);
-    } else {
-        memcpy(k, key, key_len);
-    }
-    for (int i = 0; i < 64; i++) pad[i] = k[i] ^ 0x36;
-    CSha c; c_sha_init(&c); c_sha_update(&c, pad, 64); c_sha_update(&c, msg, msg_len); c_sha_final(&c, inner);
-    for (int i = 0; i < 64; i++) pad[i] = k[i] ^ 0x5c;
-    c_sha_init(&c); c_sha_update(&c, pad, 64); c_sha_update(&c, inner, 32); c_sha_final(&c, out);
+    return v <= 0 ? -1 : v;
 }
 
-/* --------------------------------------------------------- base64url codec */
-static int c_b64url_val(int ch) {
-    if (ch >= 'A' && ch <= 'Z') return ch - 'A';
-    if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
-    if (ch >= '0' && ch <= '9') return ch - '0' + 52;
-    if (ch == '-') return 62;
-    if (ch == '_') return 63;
+/* Strict decimal parse over a byte range, without allocating a substring.
+ * Mirrors str_to_int() validation for route IDs. */
+int64_t hp_str_to_int_range_t(hstr *x, int64_t start, int64_t end) {
+    if (start < 0 || end < start || (uint64_t)end > (uint64_t)x->len)
+        return -1;
+    size_t n = (size_t)(end - start);
+    if (n < 1 || n > 18) return -1;
+    int64_t v = 0;
+    for (size_t i = (size_t)start; i < (size_t)end; i++) {
+        unsigned char c = (unsigned char)x->data[i];
+        if (c < '0' || c > '9') return -1;
+        v = v * 10 + (int64_t)(c - '0');
+    }
+    return v <= 0 ? -1 : v;
+}
+hval hpbi_str_to_int_range(hval s, hval start, hval end) {
+    return hp_of_int(hp_str_to_int_range_t(hp_val_to_str(s),
+        hp_val_to_int(start), hp_val_to_int(end)));
+}
+
+/* Find the first HTTP header terminator and the request-line separators in one
+ * bounded pass. Three 21-bit offsets fit in a positive tagged integer. */
+int64_t hp_http_request_bounds_t(hstr *x) {
+    if (!x) return 0;
+    size_t n = x->len;
+    size_t he = SIZE_MAX, sp1 = SIZE_MAX, sp2 = SIZE_MAX;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)x->data[i];
+        if (he == SIZE_MAX) {
+            if (sp1 == SIZE_MAX && c == ' ') sp1 = i;
+            else if (sp1 != SIZE_MAX && sp2 == SIZE_MAX && c == ' ') sp2 = i;
+            if (i >= 3 && x->data[i-3] == '\r' && x->data[i-2] == '\n' &&
+                x->data[i-1] == '\r' && c == '\n') {
+                he = i - 3;
+                break;
+            }
+        }
+    }
+    if (he == SIZE_MAX) return -1;
+    if (sp1 == SIZE_MAX || sp2 == SIZE_MAX || sp1 > he || sp2 > he) return -2;
+    if (he >= (1U << 21) || sp1 >= (1U << 21) || sp2 >= (1U << 21)) return -3;
+    return ((int64_t)he << 42) | ((int64_t)sp2 << 21) | (int64_t)sp1;
+}
+hval hpbi_http_request_bounds(hval s) {
+    return hp_of_int(hp_http_request_bounds_t(hp_val_to_str(s)));
+}
+
+int64_t hp_str_find_range_t(hstr *s, hstr *needle, int64_t start) {
+    if (!s || !needle || start < 0) return -1;
+    size_t n = s->len, m = needle->len, off = (size_t)start;
+    if (off > n || m > n - off) return -1;
+    if (m == 0) return (int64_t)off;
+    const unsigned char *p = (const unsigned char *)s->data;
+    const unsigned char *q = (const unsigned char *)needle->data;
+    for (size_t i = off; i <= n - m; i++)
+        if (p[i] == q[0] && memcmp(p + i, q, m) == 0) return (int64_t)i;
     return -1;
 }
-static int c_b64url_dec(const char *in, size_t n, unsigned char *out, size_t cap, size_t *out_len) {
-    size_t o = 0; uint32_t acc = 0; int bits = 0;
-    if (n % 4 == 1) return -1;
-    for (size_t i = 0; i < n; i++) {
-        int v = c_b64url_val((unsigned char)in[i]);
-        if (v < 0) return -1;
-        acc = (acc << 6) | (uint32_t)v; bits += 6;
+hval hpbi_str_find_range(hval s, hval needle, hval start) {
+    return hp_of_int(hp_str_find_range_t(hp_val_to_str(s), hp_val_to_str(needle), hp_val_to_int(start)));
+}
+
+/* ---- JWT (HS256) verification ---------------------------------------------
+ * jwt_verify(token, secret, now): header.payload.signature, base64url without
+ * padding. The signature is HMAC-SHA256 over "header.payload" and must match
+ * in constant time, the header must say HS256, and the payload must carry a
+ * numeric exp >= now. On success the decoded payload is returned (one
+ * allocation); on any failure "" (no allocation). Generic: it is the standard
+ * JWT check, not an application claim reader -- callers parse their claims.
+ * The PHP-level version built the same check out of substr/concat/base64
+ * calls and allocated ~20 strings per authenticated request. */
+
+/* b64_val() as a table: 0..63, or -1 for a byte the decoders skip. */
+static const signed char hp_b64_tab[256] = {
+#define X16 -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1
+    X16, X16,
+    -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,62,-1,63,
+    52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,
+    -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+    15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,63,
+    -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+    41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,
+    X16, X16, X16, X16, X16, X16, X16, X16
+#undef X16
+};
+static int hp_b64url_decode_into(const char *in, size_t n, char *out, size_t cap) {
+    uint32_t acc = 0;
+    int bits = 0;
+    size_t o = 0;
+    size_t i = 0;
+    /* Four valid characters -> three bytes; anything unusual (a skipped
+     * byte, the tail) goes through the general loop below. */
+    while (i + 4 <= n && o + 3 <= cap) {
+        int a = hp_b64_tab[(unsigned char)in[i]], b = hp_b64_tab[(unsigned char)in[i + 1]];
+        int c = hp_b64_tab[(unsigned char)in[i + 2]], d = hp_b64_tab[(unsigned char)in[i + 3]];
+        if ((a | b | c | d) < 0) break;
+        uint32_t v = ((uint32_t)a << 18) | ((uint32_t)b << 12) | ((uint32_t)c << 6) | (uint32_t)d;
+        out[o] = (char)(v >> 16); out[o + 1] = (char)(v >> 8); out[o + 2] = (char)v;
+        o += 3;
+        i += 4;
+    }
+    for (; i < n; i++) {
+        int v = hp_b64_tab[(unsigned char)in[i]];
+        if (v < 0) continue;
+        acc = (acc << 6) | (uint32_t)v;
+        bits += 6;
         if (bits >= 8) {
             bits -= 8;
             if (o >= cap) return -1;
-            out[o++] = (unsigned char)((acc >> bits) & 0xFF);
+            out[o++] = (char)((acc >> bits) & 0xff);
         }
     }
-    *out_len = o;
-    return 0;
+    return (int)o;
 }
-static void c_b64url_enc(const unsigned char *in, size_t n, char *out) {
-    static const char T[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+static size_t hp_b64url_encode_into(const unsigned char *in, size_t n, char *out) {
+    static const char tab[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     size_t o = 0;
-    for (size_t i = 0; i < n; i += 3) {
+    size_t i = 0;
+    for (; i + 2 < n; i += 3) {
+        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8) | in[i + 2];
+        out[o++] = tab[(v >> 18) & 63];
+        out[o++] = tab[(v >> 12) & 63];
+        out[o++] = tab[(v >> 6) & 63];
+        out[o++] = tab[v & 63];
+    }
+    if (n - i == 1) {
         uint32_t v = (uint32_t)in[i] << 16;
-        if (i + 1 < n) v |= (uint32_t)in[i+1] << 8;
-        if (i + 2 < n) v |= (uint32_t)in[i+2];
-        out[o++] = T[(v >> 18) & 63];
-        out[o++] = T[(v >> 12) & 63];
-        if (i + 1 < n) out[o++] = T[(v >> 6) & 63];
-        if (i + 2 < n) out[o++] = T[v & 63];
+        out[o++] = tab[(v >> 18) & 63];
+        out[o++] = tab[(v >> 12) & 63];
+    } else if (n - i == 2) {
+        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i + 1] << 8);
+        out[o++] = tab[(v >> 18) & 63];
+        out[o++] = tab[(v >> 12) & 63];
+        out[o++] = tab[(v >> 6) & 63];
     }
-    out[o] = 0;
+    return o;
 }
 
-/* ------------------------------------------------------------- json helpers */
-static const char *c_skip_ws(const char *p, const char *end) {
-    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) p++;
-    return p;
-}
-/* skip one string literal starting at p (must be '"'), return past the quote */
-static const char *c_skip_str(const char *p, const char *end) {
-    if (p >= end || *p != '"') return NULL;
-    p++;
-    while (p < end) {
-        if (*p == '"') return p + 1;
-        if (*p == '\\') { p++; if (p >= end) return NULL; }
+/* first occurrence of "key" : <value> in a flat JSON object; value is either a
+ * quoted string (quotes stripped) or a bare token up to , } or space */
+static bool hp_json_field(const char *j, size_t n, const char *key, size_t klen,
+                          const char **val, size_t *vlen, bool *quoted) {
+    for (size_t i = 0; i + klen + 2 <= n; i++) {
+        if (j[i] != '"') continue;
+        if (memcmp(j + i + 1, key, klen) != 0) continue;
+        if (j[i + 1 + klen] != '"') continue;
+        size_t p = i + 2 + klen;
+        while (p < n && (j[p] == ' ' || j[p] == '\t')) p++;
+        if (p >= n || j[p] != ':') continue;
         p++;
-    }
-    return NULL;
-}
-/* skip one value; returns past it or NULL */
-static const char *c_skip_value(const char *p, const char *end, int depth) {
-    if (depth > 32 || p >= end) return NULL;
-    p = c_skip_ws(p, end);
-    if (p >= end) return NULL;
-    if (*p == '"') return c_skip_str(p, end);
-    if (*p == '{' || *p == '[') {
-        char open = *p, close = (open == '{') ? '}' : ']';
-        p++;
-        p = c_skip_ws(p, end);
-        if (p < end && *p == close) return p + 1;
-        for (;;) {
-            if (open == '{') {
-                p = c_skip_ws(p, end);
-                p = c_skip_str(p, end);
-                if (!p) return NULL;
-                p = c_skip_ws(p, end);
-                if (p >= end || *p != ':') return NULL;
-                p++;
-            }
-            p = c_skip_value(p, end, depth + 1);
-            if (!p) return NULL;
-            p = c_skip_ws(p, end);
-            if (p >= end) return NULL;
-            if (*p == ',') { p++; continue; }
-            if (*p == close) return p + 1;
-            return NULL;
+        while (p < n && (j[p] == ' ' || j[p] == '\t')) p++;
+        if (p < n && j[p] == '"') {
+            size_t s = ++p;
+            while (p < n && j[p] != '"') p++;
+            if (p >= n) return false;
+            *val = j + s;
+            *vlen = p - s;
+            *quoted = true;
+            return true;
         }
+        size_t s = p;
+        while (p < n && j[p] != ',' && j[p] != '}' && j[p] != ' ' && j[p] != '\n') p++;
+        *val = j + s;
+        *vlen = p - s;
+        *quoted = false;
+        return true;
     }
-    /* number / true / false / null */
-    const char *s = p;
-    while (p < end && (*p == '-' || *p == '+' || *p == '.' || *p == 'e' || *p == 'E' ||
-                       (*p >= '0' && *p <= '9') ||
-                       *p == 't' || *p == 'r' || *p == 'u' || *p == 'e' ||
-                       *p == 'f' || *p == 'a' || *p == 'l' || *p == 's')) p++;
-    if (p == s) return NULL;
-    return p;
+    return false;
 }
-/* whole document valid? */
-static int c_json_valid(const char *p, const char *end) {
-    p = c_skip_value(p, end, 0);
-    if (!p) return 0;
-    p = c_skip_ws(p, end);
-    return p == end;
+
+/* A prepared JWT verifier keeps the secret, not a running HMAC state: this
+ * core has only the one-shot helper (hp_hmac_sha256 above). The struct is
+ * copied through a string handle, so it stays a plain byte blob. */
+typedef struct { unsigned char key[256]; size_t klen; } HpHmac256Ctx;
+static void hp_hmac256_init(HpHmac256Ctx *ctx, const unsigned char *key, size_t klen) {
+    if (klen > sizeof ctx->key) klen = sizeof ctx->key;
+    memcpy(ctx->key, key, klen);
+    ctx->klen = klen;
 }
-/* top-level member of an object: returns pointer to the value, sets kind
-   ('s' = string, other), or NULL when the key is absent. */
-static const char *c_json_get(const char *p, const char *end, const char *key, size_t klen, char *kind) {
-    p = c_skip_ws(p, end);
-    if (p >= end || *p != '{') return NULL;
-    p++;
-    p = c_skip_ws(p, end);
-    if (p < end && *p == '}') return NULL;
-    for (;;) {
-        p = c_skip_ws(p, end);
-        if (p >= end || *p != '"') return NULL;
-        const char *kstart = p + 1;
-        const char *kend = c_skip_str(p, end);
-        if (!kend) return NULL;
-        size_t kn = (size_t)(kend - 1 - kstart);
-        const char *after = c_skip_ws(kend, end);
-        if (after >= end || *after != ':') return NULL;
-        const char *val = c_skip_ws(after + 1, end);
-        if (val >= end) return NULL;
-        int match = (kn == klen && memcmp(kstart, key, klen) == 0);
-        if (match) {
-            *kind = (*val == '"') ? 's' : 'o';
-            return val;
-        }
-        const char *next = c_skip_value(val, end, 1);
-        if (!next) return NULL;
-        next = c_skip_ws(next, end);
-        if (next >= end) return NULL;
-        if (*next == ',') { p = next + 1; continue; }
-        if (*next == '}') return NULL;
-        return NULL;
-    }
+static void hp_hmac256_run(const HpHmac256Ctx *ctx, const unsigned char *msg,
+                           size_t n, unsigned char out[32]) {
+    hp_hmac_sha256(ctx->key, ctx->klen, msg, n, out);
 }
-/* decode a JSON string literal at p into dst; returns past the quote or NULL */
-static const char *c_json_dec_str(const char *p, const char *end, char *dst, size_t cap, size_t *out_len) {
-    if (p >= end || *p != '"') return NULL;
-    p++;
-    size_t n = 0;
-    while (p < end && *p != '"') {
-        unsigned char ch = (unsigned char)*p;
-        if (ch == '\\') {
-            p++;
-            if (p >= end) return NULL;
-            char e = *p++;
-            if (e == 'u') {
-                if (end - p < 4) return NULL;
-                uint32_t cp = 0;
-                for (int i = 0; i < 4; i++) {
-                    char h = p[i]; int v;
-                    if (h >= '0' && h <= '9') v = h - '0';
-                    else if (h >= 'a' && h <= 'f') v = h - 'a' + 10;
-                    else if (h >= 'A' && h <= 'F') v = h - 'A' + 10;
-                    else return NULL;
-                    cp = (cp << 4) | (uint32_t)v;
-                }
-                p += 4;
-                if (cp >= 0xD800 && cp <= 0xDBFF && end - p >= 6 && p[0] == '\\' && p[1] == 'u') {
-                    uint32_t lo = 0; int ok = 1;
-                    for (int i = 0; i < 4; i++) {
-                        char h = p[2+i]; int v;
-                        if (h >= '0' && h <= '9') v = h - '0';
-                        else if (h >= 'a' && h <= 'f') v = h - 'a' + 10;
-                        else if (h >= 'A' && h <= 'F') v = h - 'A' + 10;
-                        else { ok = 0; break; }
-                        lo = (lo << 4) | (uint32_t)v;
-                    }
-                    if (ok && lo >= 0xDC00 && lo <= 0xDFFF) {
-                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-                        p += 6;
-                    }
-                }
-                if (cp < 0x80) {
-                    if (n + 1 >= cap) return NULL;
-                    dst[n++] = (char)cp;
-                } else if (cp < 0x800) {
-                    if (n + 2 >= cap) return NULL;
-                    dst[n++] = (char)(0xC0 | (cp >> 6));
-                    dst[n++] = (char)(0x80 | (cp & 0x3F));
-                } else {
-                    if (n + 3 >= cap) return NULL;
-                    dst[n++] = (char)(0xE0 | (cp >> 12));
-                    dst[n++] = (char)(0x80 | ((cp >> 6) & 0x3F));
-                    dst[n++] = (char)(0x80 | (cp & 0x3F));
-                }
-                continue;
-            }
-            switch (e) {
-                case '"':  ch = '"';  break;
-                case '\\': ch = '\\'; break;
-                case '/':  ch = '/';  break;
-                case 'b':  ch = '\b'; break;
-                case 'f':  ch = '\f'; break;
-                case 'n':  ch = '\n'; break;
-                case 'r':  ch = '\r'; break;
-                case 't':  ch = '\t'; break;
-                default: return NULL;
-            }
-            /* p already sits past the escaped character */
-            if (n + 1 >= cap) return NULL;
-            dst[n++] = (char)ch;
-            continue;
-        }
-        if (n + 1 >= cap) return NULL;
-        dst[n++] = (char)ch;
-        p++;
-    }
-    if (p >= end || *p != '"') return NULL;
-    dst[n] = 0;
-    if (out_len) *out_len = n;
-    return p + 1;
-}
-static char *c_json_str(char *p, const char *s, size_t n) {
-    *p++ = '"';
+
+static hstr *hp_jwt_verify_ctx_t(hstr *tok, const HpHmac256Ctx *ctx, int64_t now) {
+    if (!tok || !ctx || tok->len < 8) return hp_str_lit("");
+    const char *t = tok->data;
+    size_t n = tok->len;
+    size_t p1 = n, p2 = n;
+    int dots = 0;
     for (size_t i = 0; i < n; i++) {
-        unsigned char c = (unsigned char)s[i];
-        if (c == '"')       { *p++ = '\\'; *p++ = '"'; }
-        else if (c == '\\') { *p++ = '\\'; *p++ = '\\'; }
-        else if (c == '\n') { *p++ = '\\'; *p++ = 'n'; }
-        else if (c == '\r') { *p++ = '\\'; *p++ = 'r'; }
-        else if (c == '\t') { *p++ = '\\'; *p++ = 't'; }
-        else if (c < 0x20) {
-            static const char H[] = "0123456789abcdef";
-            *p++ = '\\'; *p++ = 'u'; *p++ = '0'; *p++ = '0';
-            *p++ = H[(c >> 4) & 15]; *p++ = H[c & 15];
-        } else *p++ = (char)c;
+        if (t[i] != '.') continue;
+        if (++dots == 1) p1 = i;
+        else if (dots == 2) p2 = i;
+        else return hp_str_lit("");            /* a third dot: malformed */
     }
-    *p++ = '"';
-    return p;
-}
-static const char *c_trim(const char *s, size_t *n) {
-    size_t a = 0, b = *n;
-    while (a < b && (s[a]==' '||s[a]=='\t'||s[a]=='\n'||s[a]=='\r'||s[a]=='\f'||s[a]=='\v')) a++;
-    while (b > a && (s[b-1]==' '||s[b-1]=='\t'||s[b-1]=='\n'||s[b-1]=='\r'||s[b-1]=='\f'||s[b-1]=='\v')) b--;
-    *n = b - a;
-    return s + a;
-}
+    if (dots != 2 || p1 == 0 || p2 == p1 + 1) return hp_str_lit("");
 
-/* ---------------------------------------------------------------- responses */
-static void c_respond(CSlot *s, int code, const char *reason,
-                      const char *ctype, const char *body, size_t blen) {
-    char *p = s->resp_buf;
-    APPEND(p, "HTTP/1.1 ");
-    p = c_u64toa(p, (uint64_t)code);
-    *p++ = ' ';
-    memcpy(p, reason, strlen(reason)); p += strlen(reason);
-    APPEND(p, "\r\nContent-Type: ");
-    memcpy(p, ctype, strlen(ctype)); p += strlen(ctype);
-    APPEND(p, "\r\nContent-Length: ");
-    p = c_u64toa(p, blen);
-    if (s->keep_alive) APPEND(p, "\r\nConnection: keep-alive\r\n\r\n");
-    else               APPEND(p, "\r\nConnection: close\r\n\r\n");
-    memcpy(p, body, blen); p += blen;
-    s->resp_ptr = s->resp_buf;
-    s->resp_off = 0;
-    s->resp_len = (size_t)(p - s->resp_buf);
-    s->state = C_WRITING;
-}
-static void c_error(CSlot *s, int code, const char *reason, const char *body) {
-    c_respond(s, code, reason, "application/json", body, strlen(body));
-}
-static void c_not_found_route(CSlot *s) {
-    c_respond(s, 404, "Not Found", "application/json", "{\"error\":\"not found\"}", 22);
-}
+    /* header must be HS256 */
+    char hdr[512];
+    int hl = hp_b64url_decode_into(t, p1, hdr, sizeof hdr);
+    if (hl <= 0) return hp_str_lit("");
+    const char *av; size_t al; bool aq;
+    if (!hp_json_field(hdr, (size_t)hl, "alg", 3, &av, &al, &aq)) return hp_str_lit("");
+    if (!aq || al != 5 || memcmp(av, "HS256", 5) != 0) return hp_str_lit("");
 
-/* ------------------------------------------------------------------- auth */
-enum { AUTH_OK = 0, AUTH_MISSING = 1, AUTH_BAD = 2, AUTH_PAYLOAD = 3 };
+    /* constant-time signature check */
+    unsigned char mac[32];
+    hp_hmac256_run(ctx, (const unsigned char *)t, p2, mac);
+    char sig[64];
+    size_t sl = hp_b64url_encode_into(mac, 32, sig);
+    size_t sn = n - p2 - 1;
+    if (sn != sl) return hp_str_lit("");
+    unsigned diff = 0;
+    for (size_t i = 0; i < sl; i++)
+        diff |= (unsigned)((unsigned char)sig[i] ^ (unsigned char)t[p2 + 1 + i]);
+    if (diff) return hp_str_lit("");
 
-static int c_check_auth(CEngine *e, const char *req, size_t hdr_len,
-                        int64_t *user_id, char *username, size_t *ulen) {
-    const char *h = (const char *)mem_find_ci(req, hdr_len, "authorization:", 14);
-    if (!h) return AUTH_MISSING;
-    const char *end = req + hdr_len;
-    const char *v = h + 14;
-    while (v < end && (*v == ' ' || *v == '\t')) v++;
-    if ((size_t)(end - v) < 7) return AUTH_MISSING;
-    if (c_lower((unsigned char)v[0])!='b' || c_lower((unsigned char)v[1])!='e' ||
-        c_lower((unsigned char)v[2])!='a' || c_lower((unsigned char)v[3])!='r' ||
-        c_lower((unsigned char)v[4])!='e' || c_lower((unsigned char)v[5])!='r' ||
-        v[6] != ' ') return AUTH_MISSING;
-    v += 7;
-    const char *t_end = (const char *)memchr(v, '\r', (size_t)(end - v));
-    if (!t_end) t_end = end;
-    while (t_end > v && (t_end[-1] == ' ' || t_end[-1] == '\t')) t_end--;
-    size_t tlen = (size_t)(t_end - v);
-    if (tlen == 0) return AUTH_MISSING;
-
-    /* header.payload.signature */
-    const char *d1 = (const char *)memchr(v, '.', tlen);
-    if (!d1) return AUTH_BAD;
-    const char *d2 = (const char *)memchr(d1 + 1, '.', (size_t)(t_end - d1 - 1));
-    if (!d2 || d2 + 1 >= t_end) return AUTH_BAD;
-
-    /* alg must be HS256 */
-    unsigned char hbuf[128]; size_t hlen = 0;
-    if (c_b64url_dec(v, (size_t)(d1 - v), hbuf, sizeof hbuf, &hlen) != 0) return AUTH_BAD;
-    hbuf[hlen] = 0;
-    char kind = 0;
-    const char *alg = c_json_get((const char *)hbuf, (const char *)hbuf + hlen, "alg", 3, &kind);
-    if (!alg || kind != 's') return AUTH_BAD;
-    if ((size_t)((const char *)hbuf + hlen - alg) < 7 || memcmp(alg, "\"HS256\"", 7) != 0)
-        return AUTH_BAD;
-
-    /* signature over "header.payload" */
-    unsigned char mac[32]; char enc[48];
-    c_hmac_sha256(e->secret, e->secret_len, (const unsigned char *)v,
-                  (size_t)(d2 - v), mac);
-    c_b64url_enc(mac, 32, enc);
-    size_t sig_len = (size_t)(t_end - d2 - 1);
-    if (sig_len != 43 || memcmp(d2 + 1, enc, 43) != 0) return AUTH_BAD;
-
-    /* payload */
-    unsigned char pbuf[768]; size_t plen = 0;
-    if (c_b64url_dec(d1 + 1, (size_t)(d2 - d1 - 1), pbuf, sizeof pbuf - 1, &plen) != 0)
-        return AUTH_BAD;
-    pbuf[plen] = 0;
-    const char *ps = (const char *)pbuf, *pe = ps + plen;
-    if (!c_json_valid(ps, pe)) return AUTH_BAD;
-
-    /* exp (optional) */
-    kind = 0;
-    const char *exp = c_json_get(ps, pe, "exp", 3, &kind);
-    if (exp && kind != 's') {
-        int64_t v64 = 0; int neg = 0; const char *q = exp;
-        if (*q == '-') { neg = 1; q++; }
-        while (q < pe && *q >= '0' && *q <= '9') { v64 = v64 * 10 + (*q - '0'); q++; }
-        if (neg) v64 = -v64;
-        if (v64 != 0 && v64 <= (int64_t)time(NULL)) return AUTH_BAD;
-    }
-
-    /* sub: positive integer string */
-    kind = 0;
-    const char *sub = c_json_get(ps, pe, "sub", 3, &kind);
-    if (!sub || kind != 's') return AUTH_PAYLOAD;
-    const char *se = (const char *)c_skip_str(sub, pe);
-    if (!se) return AUTH_PAYLOAD;
-    const char *q = sub + 1;
-    size_t sl = (size_t)(se - 1 - q);
-    if (sl == 0 || sl > 18) return AUTH_PAYLOAD;
-    int64_t id = 0;
-    for (size_t i = 0; i < sl; i++) {
-        if (q[i] < '0' || q[i] > '9') return AUTH_PAYLOAD;
-        id = id * 10 + (q[i] - '0');
-    }
-    if (id <= 0) return AUTH_PAYLOAD;
-
-    /* username: string */
-    kind = 0;
-    const char *un = c_json_get(ps, pe, "username", 8, &kind);
-    if (!un || kind != 's') return AUTH_PAYLOAD;
-    size_t n = 0;
-    if (!c_json_dec_str(un, pe, username, C_USER_MAX, &n)) return AUTH_PAYLOAD;
-    if (n == 0) return AUTH_PAYLOAD;
-    *user_id = id;
-    *ulen = n;
-    return AUTH_OK;
-}
-
-/* --------------------------------------------------------------- sql render */
-/* columns: 0 id, 1 body, 2 created_at, 3 username, 4 like_count */
-static char *c_render_post(sqlite3_stmt *st, char *p) {
-    APPEND(p, "{\"id\":");
-    p = c_i64toa(p, sqlite3_column_int64(st, 0));
-
-    const unsigned char *b = sqlite3_column_text(st, 1);
-    int bl = sqlite3_column_bytes(st, 1);
-    APPEND(p, ",\"body\":");
-    p = c_json_str(p, (const char *)(b ? b : (const unsigned char *)""), (size_t)(b ? bl : 0));
-
-    const unsigned char *c = sqlite3_column_text(st, 2);
-    int cl = sqlite3_column_bytes(st, 2);
-    APPEND(p, ",\"created_at\":");
-    p = c_json_str(p, (const char *)(c ? c : (const unsigned char *)""), (size_t)(c ? cl : 0));
-
-    const unsigned char *u = sqlite3_column_text(st, 3);
-    int ul = sqlite3_column_bytes(st, 3);
-    APPEND(p, ",\"author\":");
-    p = c_json_str(p, (const char *)(u ? u : (const unsigned char *)""), (size_t)(u ? ul : 0));
-
-    APPEND(p, ",\"like_count\":");
-    p = c_i64toa(p, sqlite3_column_int64(st, 4));
-    *p++ = '}';
-    return p;
-}
-static char *c_render_new_post(char *p, int64_t id, const char *body, size_t blen,
-                               const char *created, size_t clen,
-                               const char *author, size_t alen) {
-    APPEND(p, "{\"id\":");
-    p = c_i64toa(p, id);
-    APPEND(p, ",\"body\":");
-    p = c_json_str(p, body, blen);
-    APPEND(p, ",\"created_at\":");
-    p = c_json_str(p, created, clen);
-    APPEND(p, ",\"author\":");
-    p = c_json_str(p, author, alen);
-    APPEND(p, ",\"like_count\":0}");
-    return p;
-}
-
-/* ------------------------------------------------------------ io_uring bits */
-static inline struct io_uring_sqe *c_get_sqe(CEngine *e) {
-    struct io_uring_sqe *sqe = io_uring_get_sqe(e->ring);
-    if (sqe) return sqe;
-    if (e->cq_harvested) {
-        io_uring_cq_advance(e->ring, e->cq_harvested);
-        e->cq_harvested = 0;
-    }
-    io_uring_submit(e->ring);
-    return io_uring_get_sqe(e->ring);
-}
-static void c_arm_send(CEngine *e, int idx) {
-    CSlot *s = &e->slots[idx];
-    struct io_uring_sqe *sqe = c_get_sqe(e);
-    if (!sqe) return;
-    io_uring_prep_send(sqe, s->fd, s->resp_ptr + s->resp_off,
-                       s->resp_len - s->resp_off, MSG_NOSIGNAL);
-    io_uring_sqe_set_data64(sqe, CTAG(idx, C_SEND));
-}
-static void c_arm_recv(CEngine *e, int idx) {
-    CSlot *s = &e->slots[idx];
-    struct io_uring_sqe *sqe = c_get_sqe(e);
-    if (!sqe) return;
-    if (c_multishot) {
-        io_uring_prep_recv_multishot(sqe, s->fd, NULL, 0, 0);
-        sqe->flags |= IOSQE_BUFFER_SELECT;
-        sqe->buf_group = C_BGID;
+    /* payload: decode (the one allocation) and check exp */
+    char small[1024];
+    char *pj = small;
+    char *heap = NULL;
+    int pl;
+    if (n - p1 - 1 - (n - p2 - 1) <= sizeof small) {
+        pl = hp_b64url_decode_into(t + p1 + 1, p2 - p1 - 1, small, sizeof small);
     } else {
-        io_uring_prep_recv(sqe, s->fd, s->recv_buf, C_RECV_SIZE, 0);
+        heap = (char *)malloc(n - p1);
+        if (!heap) return hp_str_lit("");
+        pj = heap;
+        pl = hp_b64url_decode_into(t + p1 + 1, p2 - p1 - 1, heap, n - p1);
     }
-    io_uring_sqe_set_data64(sqe, CTAG(idx, C_RECV));
+    if (pl <= 0) { free(heap); return hp_str_lit(""); }
+    const char *ev; size_t el; bool eq;
+    bool has_exp = hp_json_field(pj, (size_t)pl, "exp", 3, &ev, &el, &eq);
+    if (!has_exp || eq) { free(heap); return hp_str_lit(""); }
+    int64_t exp = 0;
+    size_t ei = 0;
+    bool neg = false;
+    if (ei < el && ev[ei] == '-') { neg = true; ei++; }
+    if (ei >= el) { free(heap); return hp_str_lit(""); }
+    for (; ei < el; ei++) {
+        if (ev[ei] < '0' || ev[ei] > '9') { free(heap); return hp_str_lit(""); }
+        exp = exp * 10 + (ev[ei] - '0');
+    }
+    if (neg) exp = -exp;
+    if (exp < now) { free(heap); return hp_str_lit(""); }
+    hstr *out = hp_str_new(pj, (size_t)pl);
+    free(heap);
+    return out;
 }
-static void c_arm_accept(CEngine *e, int listen_fd) {
-    struct io_uring_sqe *sqe = c_get_sqe(e);
-    if (!sqe) return;
-    io_uring_prep_multishot_accept(sqe, listen_fd, NULL, NULL, 0);
-    io_uring_sqe_set_data64(sqe, CTAG(0, C_ACCEPT));
+hstr *hp_jwt_verify_t(hstr *tok, hstr *secret, int64_t now) {
+    if (!secret) return hp_str_lit("");
+    HpHmac256Ctx ctx;
+    hp_hmac256_init(&ctx, (const unsigned char *)secret->data, secret->len);
+    return hp_jwt_verify_ctx_t(tok, &ctx, now);
 }
-static inline void c_return_buf(CEngine *e, unsigned bid) {
-    io_uring_buf_ring_add(e->br, e->buf_base + (size_t)bid * C_RECV_SIZE,
-                          C_RECV_SIZE, (unsigned short)bid, C_NBUF - 1, 0);
-    io_uring_buf_ring_advance(e->br, 1);
+hstr *hp_jwt_verifier_new_t(hstr *secret) {
+    if (!secret) return hp_str_lit("");
+    HpHmac256Ctx ctx;
+    hp_hmac256_init(&ctx, (const unsigned char *)secret->data, secret->len);
+    return hp_str_new((const char *)&ctx, sizeof ctx);
 }
-static inline void c_release(CEngine *e, int idx) {
-    CSlot *s = &e->slots[idx];
-    if (s->state == C_FREE) return;
-    if (s->fd >= 0) { close(s->fd); s->fd = -1; }
-    s->state = C_FREE;
-    s->gen++;
-    e->free_slots[e->free_count++] = idx;
+hstr *hp_jwt_verify_prepared_t(hstr *tok, hstr *prepared, int64_t now) {
+    if (!prepared || prepared->len != sizeof(HpHmac256Ctx)) return hp_str_lit("");
+    HpHmac256Ctx ctx;
+    memcpy(&ctx, prepared->data, sizeof ctx);
+    return hp_jwt_verify_ctx_t(tok, &ctx, now);
 }
-
-/* ------------------------------------------------------------- request path */
-/* 1 = response ready, 2 = write queued, 0 = need more bytes */
-static int c_parse(CEngine *e, int idx, const char *req, size_t len) {
-    CSlot *s = &e->slots[idx];
-
-    char *hdr_p = (char *)c_mem_find(req, len, "\r\n\r\n", 4);
-    if (!hdr_p) return 0;
-    size_t hdr_len = (size_t)(hdr_p - req) + 4;
-    const char *hend = req + hdr_len;
-
-    s->keep_alive = mem_find_ci(req, hdr_len, "connection: close", 17) == NULL;
-
-    int is_get  = (len >= 4 && memcmp(req, "GET ", 4) == 0);
-    int is_post = (len >= 5 && memcmp(req, "POST ", 5) == 0);
-    if (!is_get && !is_post) { c_not_found_route(s); return 1; }
-
-    const char *target = req + (is_get ? 4 : 5);
-    const char *tend = (const char *)memchr(target, ' ', (size_t)(hend - target));
-    if (!tend) { c_not_found_route(s); return 1; }
-    size_t tlen = (size_t)(tend - target);
-    if (tlen == 0 || target[0] != '/') { c_not_found_route(s); return 1; }
-    const char *path = target + 1;
-    size_t plen = tlen - 1;
-
-    /* body framing for POST */
-    size_t body_len = 0;
-    if (is_post) {
-        const char *cl = (const char *)mem_find_ci(req, hdr_len, "\r\ncontent-length: ", 18);
-        if (cl) {
-            const char *q = cl + 18;
-            while (q < hend && *q == ' ') q++;
-            while (q < hend && *q >= '0' && *q <= '9') { body_len = body_len * 10 + (size_t)(*q - '0'); q++; }
-        }
-        if (len < hdr_len + body_len) return 0;
-    }
-    const char *body = req + hdr_len;
-    const char *body_end = body + body_len;
-
-    /* ---------------- reads that need no auth ---------------- */
-    if (is_get) {
-        if (plen == 6 && memcmp(path, "health", 6) == 0) {
-            char bb[192]; char *p = bb;
-            APPEND(p, "{\"status\":\"");
-            if (sqlite3_step(e->st_health) == SQLITE_ROW) {
-                sqlite3_reset(e->st_health);
-                APPEND(p, "ok\",\"db\":\"ok\",\"uptime_s\":");
-                p = c_i64toa(p, (int64_t)(time(NULL) - e->start_time));
-                *p++ = '}';
-                c_respond(s, 200, "OK", "application/json", bb, (size_t)(p - bb));
-            } else {
-                sqlite3_reset(e->st_health);
-                APPEND(p, "degraded\",\"db\":\"unreachable\",\"error\":\"query failed\"}");
-                c_respond(s, 503, "Service Unavailable", "application/json", bb, (size_t)(p - bb));
-            }
-            return 1;
-        }
-        if (plen == 4 && memcmp(path, "feed", 4) == 0) {
-            char fbuf[C_RESP_SIZE - 512];
-            char *p = fbuf;
-            APPEND(p, "{\"posts\":[");
-            sqlite3_reset(e->st_feed);
-            sqlite3_bind_int(e->st_feed, 1, C_FEED_LIMIT);
-            int first = 1;
-            while (sqlite3_step(e->st_feed) == SQLITE_ROW) {
-                if (!first) *p++ = ',';
-                first = 0;
-                p = c_render_post(e->st_feed, p);
-            }
-            sqlite3_reset(e->st_feed);
-            APPEND(p, "]}");
-            size_t blen = (size_t)(p - fbuf);
-            /* header first, then move the body into place */
-            char hdr[192]; char *hp = hdr;
-            APPEND(hp, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ");
-            hp = c_u64toa(hp, blen);
-            if (s->keep_alive) APPEND(hp, "\r\nConnection: keep-alive\r\n\r\n");
-            else               APPEND(hp, "\r\nConnection: close\r\n\r\n");
-            size_t hlen = (size_t)(hp - hdr);
-            memmove(s->resp_buf + hlen, fbuf, blen);
-            memcpy(s->resp_buf, hdr, hlen);
-            s->resp_ptr = s->resp_buf;
-            s->resp_off = 0;
-            s->resp_len = hlen + blen;
-            s->state = C_WRITING;
-            return 1;
-        }
-        if (plen > 6 && memcmp(path, "posts/", 6) == 0) {
-            const char *idp = path + 6;
-            size_t idn = plen - 6;
-            int64_t id = 0;
-            if (idn == 0 || idn > 18) { c_error(s, 400, "Bad Request", "{\"error\":\"invalid post id\"}"); return 1; }
-            for (size_t i = 0; i < idn; i++) {
-                if (idp[i] < '0' || idp[i] > '9') { id = -1; break; }
-                id = id * 10 + (idp[i] - '0');
-            }
-            if (id < 0) { c_error(s, 400, "Bad Request", "{\"error\":\"invalid post id\"}"); return 1; }
-            if (id == 0) { c_error(s, 400, "Bad Request", "{\"error\":\"invalid post id\"}"); return 1; }
-
-            sqlite3_reset(e->st_post);
-            sqlite3_bind_int64(e->st_post, 1, id);
-            if (sqlite3_step(e->st_post) == SQLITE_ROW) {
-                char pbuf[C_RESP_SIZE - 512];
-                char *p = pbuf;
-                APPEND(p, "{\"post\":");
-                p = c_render_post(e->st_post, p);
-                *p++ = '}';
-                size_t blen = (size_t)(p - pbuf);
-                char hdr[192]; char *hp = hdr;
-                APPEND(hp, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ");
-                hp = c_u64toa(hp, blen);
-                if (s->keep_alive) APPEND(hp, "\r\nConnection: keep-alive\r\n\r\n");
-                else               APPEND(hp, "\r\nConnection: close\r\n\r\n");
-                size_t hlen = (size_t)(hp - hdr);
-                memmove(s->resp_buf + hlen, pbuf, blen);
-                memcpy(s->resp_buf, hdr, hlen);
-                s->resp_ptr = s->resp_buf;
-                s->resp_off = 0;
-                s->resp_len = hlen + blen;
-                s->state = C_WRITING;
-            } else {
-                c_error(s, 404, "Not Found", "{\"error\":\"post not found\"}");
-            }
-            sqlite3_reset(e->st_post);
-            return 1;
-        }
-        c_not_found_route(s);
-        return 1;
-    }
-
-    /* ---------------- writes: auth comes first ---------------- */
-    int64_t user_id = 0;
-    char username[C_USER_MAX];
-    size_t ulen = 0;
-    int rc = c_check_auth(e, req, hdr_len, &user_id, username, &ulen);
-    if (rc == AUTH_MISSING) { c_error(s, 401, "Unauthorized", "{\"error\":\"missing bearer token\"}"); return 1; }
-    if (rc == AUTH_BAD)     { c_error(s, 401, "Unauthorized", "{\"error\":\"invalid or expired token\"}"); return 1; }
-    if (rc == AUTH_PAYLOAD) { c_error(s, 401, "Unauthorized", "{\"error\":\"invalid token payload\"}"); return 1; }
-
-    if (plen == 5 && memcmp(path, "posts", 5) == 0) {
-        /* POST /posts */
-        if (!c_json_valid(body, body_end)) {
-            c_error(s, 400, "Bad Request", "{\"error\":\"malformed JSON body\"}");
-            return 1;
-        }
-        char kind = 0;
-        const char *v = c_json_get(body, body_end, "body", 4, &kind);
-        if (!v || kind != 's') { c_error(s, 400, "Bad Request", "{\"error\":\"body is required\"}"); return 1; }
-        char tmp[C_REQ_SIZE];
-        size_t tlen = 0;
-        if (!c_json_dec_str(v, body_end, tmp, sizeof tmp, &tlen)) {
-            c_error(s, 400, "Bad Request", "{\"error\":\"malformed JSON body\"}");
-            return 1;
-        }
-        const char *tb = c_trim(tmp, &tlen);
-        if (tlen == 0)   { c_error(s, 400, "Bad Request", "{\"error\":\"body is required\"}"); return 1; }
-        if (tlen > 500)  { c_error(s, 400, "Bad Request", "{\"error\":\"body must be at most 500 characters\"}"); return 1; }
-        if (e->pending_count >= C_BATCH) { c_error(s, 500, "Internal Server Error", "{\"error\":\"internal server error\"}"); return 1; }
-        CPending *pw = &e->pending[e->pending_count++];
-        pw->slot_idx = idx; pw->gen = s->gen; pw->kind = W_CREATE;
-        pw->user_id = user_id; pw->post_id = 0;
-        memcpy(pw->username, username, C_USER_MAX);
-        memcpy(pw->body, tb, tlen);
-        pw->body[tlen] = 0;
-        pw->body_len = (int)tlen;
-        s->state = C_QUEUED;
-        return 2;
-    }
-
-    if (plen > 6 && memcmp(path, "posts/", 6) == 0) {
-        const char *rest = path + 6;
-        size_t rest_n = plen - 6;
-        const char *slash = (const char *)memchr(rest, '/', rest_n);
-        if (!slash) { c_not_found_route(s); return 1; }
-        size_t idn = (size_t)(slash - rest);
-        const char *tail = slash + 1;
-        size_t tail_n = rest_n - idn - 1;
-        if (tail_n != 4 || memcmp(tail, "like", 4) != 0) { c_not_found_route(s); return 1; }
-
-        int64_t id = 0; int bad = 0;
-        if (idn == 0 || idn > 18) bad = 1;
-        for (size_t i = 0; !bad && i < idn; i++) {
-            if (rest[i] < '0' || rest[i] > '9') { bad = 1; break; }
-            id = id * 10 + (rest[i] - '0');
-        }
-        if (!bad && id <= 0) bad = 1;
-        if (bad) { c_error(s, 400, "Bad Request", "{\"error\":\"invalid post id\"}"); return 1; }
-
-        if (e->pending_count >= C_BATCH) { c_error(s, 500, "Internal Server Error", "{\"error\":\"internal server error\"}"); return 1; }
-        CPending *pw = &e->pending[e->pending_count++];
-        pw->slot_idx = idx; pw->gen = s->gen; pw->kind = W_LIKE;
-        pw->user_id = user_id; pw->post_id = id;
-        memcpy(pw->username, username, C_USER_MAX);
-        pw->body_len = 0;
-        s->state = C_QUEUED;
-        return 2;
-    }
-
-    c_not_found_route(s);
-    return 1;
+hval hpbi_jwt_verify(hval tok, hval secret, hval now) {
+    return hp_of_str(hp_jwt_verify_t(hp_val_to_str(tok), hp_val_to_str(secret),
+                                     hp_val_to_int(now)));
+}
+hval hpbi_jwt_verifier_new(hval secret) {
+    return hp_of_str(hp_jwt_verifier_new_t(hp_val_to_str(secret)));
+}
+hval hpbi_jwt_verify_prepared(hval tok, hval prepared, hval now) {
+    return hp_of_str(hp_jwt_verify_prepared_t(hp_val_to_str(tok), hp_val_to_str(prepared),
+                                              hp_val_to_int(now)));
 }
 
-/* feed bytes into a slot; -1 means close the connection */
-static int c_feed(CEngine *e, int idx, const char *data, size_t len) {
-    CSlot *s = &e->slots[idx];
-    if (s->state == C_WRITING || s->state == C_QUEUED) {
-        if (s->req_len + len > C_REQ_SIZE) return -1;
-        memcpy(s->req_buf + s->req_len, data, len);
-        s->req_len += len;
-        return 0;
+/* json_str_field(json, key) / json_num_field(json, key): read one field of a
+ * flat JSON object in place. The PHP helper built the key with two
+ * concatenations and cut the value with substr; these scan and copy once. */
+hstr *hp_json_str_field_t(hstr *j, hstr *key) {
+    const char *v;
+    size_t vl;
+    bool q;
+    if (!j || !key) return hp_str_lit("");
+    if (!hp_json_field(j->data, j->len, key->data, key->len, &v, &vl, &q))
+        return hp_str_lit("");
+    if (!q) return hp_str_lit("");
+    bool esc = false;
+    for (size_t i = 0; i < vl; i++)
+        if (v[i] == '\\') { esc = true; break; }
+    if (!esc) return hp_str_new(v, vl);
+    char *tmp = (char *)malloc(vl + 1);
+    if (!tmp) return hp_str_lit("");
+    size_t o = 0;
+    for (size_t i = 0; i < vl; i++) {
+        if (v[i] == '\\' && i + 1 < vl) {
+            char c = v[++i];
+            switch (c) {
+            case 'n': tmp[o++] = '\n'; break;
+            case 't': tmp[o++] = '\t'; break;
+            case 'r': tmp[o++] = '\r'; break;
+            case 'b': tmp[o++] = '\b'; break;
+            case 'f': tmp[o++] = '\f'; break;
+            default:  tmp[o++] = c;    break;
+            }
+        } else {
+            tmp[o++] = v[i];
+        }
     }
-    if (s->req_len > 0) {
-        if (s->req_len + len > C_REQ_SIZE) return -1;
-        memcpy(s->req_buf + s->req_len, data, len);
-        s->req_len += len;
-        int r = c_parse(e, idx, s->req_buf, s->req_len);
-        if (r == 0) return 0;
-        s->req_len = 0;
-        if (r == 1) c_arm_send(e, idx);
-        return 0;
+    hstr *r = hp_str_new(tmp, o);
+    free(tmp);
+    return r;
+}
+int64_t hp_json_num_field_t(hstr *j, hstr *key) {
+    const char *v;
+    size_t vl;
+    bool q;
+    if (!j || !key) return -1;
+    if (!hp_json_field(j->data, j->len, key->data, key->len, &v, &vl, &q))
+        return -1;
+    if (q || vl == 0) return -1;
+    int64_t n = 0;
+    size_t i = 0;
+    bool neg = false;
+    if (v[0] == '-') { neg = true; i = 1; }
+    if (i >= vl) return -1;
+    for (; i < vl; i++) {
+        if (v[i] < '0' || v[i] > '9') return -1;
+        n = n * 10 + (v[i] - '0');
     }
-    int r = c_parse(e, idx, data, len);
-    if (r == 0) {
-        if (len > C_REQ_SIZE) return -1;
-        memcpy(s->req_buf, data, len);
-        s->req_len = len;
-        return 0;
-    }
-    if (r == 1) c_arm_send(e, idx);
-    return 0;
+    return neg ? -n : n;
+}
+hval hpbi_json_str_field(hval j, hval k) {
+    return hp_of_str(hp_json_str_field_t(hp_val_to_str(j), hp_val_to_str(k)));
+}
+hval hpbi_json_num_field(hval j, hval k) {
+    return hp_of_int(hp_json_num_field_t(hp_val_to_str(j), hp_val_to_str(k)));
 }
 
-/* --------------------------------------------------------------- the entry */
-hval hpbi_holy_challenge_start(hval port_val, hval db_path_val) {
-    int port = (int)hp_val_to_int(port_val);
-    if (port <= 0) port = 80;
-    hstr *ds = hp_val_to_str(db_path_val);
-    const char *db_path = (ds && ds->len) ? ds->data : "feed.db";
-    const char *secret = getenv("JWT_SECRET");
-    if (!secret || !*secret) secret = "twelve-dollar-challenge";
-
-    CEngine e;
-    memset(&e, 0, sizeof e);
-    e.secret = secret;
-    e.secret_len = strlen(secret);
-    e.start_time = (int64_t)time(NULL);
-
-    unsigned flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX;
-    if (sqlite3_open_v2(db_path, &e.db, flags, NULL) != SQLITE_OK) {
-        fprintf(stderr, "HolyPHP: cannot open %s: %s\n", db_path, sqlite3_errmsg(e.db));
-        return hp_of_int(-1);
-    }
-    sqlite3_exec(e.db, "PRAGMA journal_mode = WAL;", NULL, NULL, NULL);
-    sqlite3_exec(e.db, "PRAGMA synchronous = NORMAL;", NULL, NULL, NULL);
-    sqlite3_exec(e.db, "PRAGMA foreign_keys = ON;", NULL, NULL, NULL);
-    sqlite3_exec(e.db, "PRAGMA temp_store = MEMORY;", NULL, NULL, NULL);
-    sqlite3_exec(e.db, "PRAGMA mmap_size = 1073741824;", NULL, NULL, NULL);
-    sqlite3_exec(e.db, "PRAGMA cache_size = -64000;", NULL, NULL, NULL);
-    sqlite3_exec(e.db, "PRAGMA busy_timeout = 5000;", NULL, NULL, NULL);
-    sqlite3_exec(e.db, "PRAGMA wal_autocheckpoint = 4096;", NULL, NULL, NULL);
-
-    const char *prep =
-        "SELECT p.id, p.body, p.created_at, u.username,"
-        " (SELECT count(*) FROM likes l WHERE l.post_id = p.id)"
-        " FROM posts p JOIN users u ON u.id = p.user_id"
-        " WHERE p.id = ?;";
-    const char *prep_feed =
-        "SELECT p.id, p.body, p.created_at, u.username,"
-        " (SELECT count(*) FROM likes l WHERE l.post_id = p.id)"
-        " FROM posts p JOIN users u ON u.id = p.user_id"
-        " ORDER BY p.created_at DESC, p.id DESC LIMIT ?;";
-    if (sqlite3_prepare_v2(e.db, "SELECT 1;", -1, &e.st_health, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(e.db, prep_feed, -1, &e.st_feed, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(e.db, prep, -1, &e.st_post, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(e.db, "INSERT INTO posts (user_id, body) VALUES (?, ?) RETURNING id, created_at;",
-                           -1, &e.st_insert, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(e.db, "SELECT 1 FROM posts WHERE id = ?;", -1, &e.st_like_exists, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(e.db, "INSERT INTO likes (user_id, post_id) VALUES (?, ?)"
-                                 " ON CONFLICT (user_id, post_id) DO NOTHING;",
-                           -1, &e.st_like_ins, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(e.db, "BEGIN IMMEDIATE;", -1, &e.st_begin, NULL) != SQLITE_OK ||
-        sqlite3_prepare_v2(e.db, "COMMIT;", -1, &e.st_commit, NULL) != SQLITE_OK) {
-        fprintf(stderr, "HolyPHP: prepare failed: %s\n", sqlite3_errmsg(e.db));
-        return hp_of_int(-1);
-    }
-
-    e.slots = (CSlot *)calloc(C_MAX_SLOTS, sizeof(CSlot));
-    e.free_slots = (int *)malloc(C_MAX_SLOTS * sizeof(int));
-    e.pending = (CPending *)malloc(C_BATCH * sizeof(CPending));
-    if (!e.slots || !e.free_slots || !e.pending) return hp_of_int(-1);
-    for (int i = 0; i < C_MAX_SLOTS; i++) {
-        e.slots[i].fd = -1;
-        e.slots[i].state = C_FREE;
-        e.free_slots[i] = C_MAX_SLOTS - 1 - i;
-    }
-    e.free_count = C_MAX_SLOTS;
-
-    int listen_fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (listen_fd < 0) { perror("HolyPHP: socket"); return hp_of_int(-1); }
-    int opt = 1;
-    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof opt);
-    setsockopt(listen_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof opt);
-    fcntl(listen_fd, F_SETFL, fcntl(listen_fd, F_GETFL, 0) | O_NONBLOCK);
-    struct sockaddr_in sa; memset(&sa, 0, sizeof sa);
-    sa.sin_family = AF_INET;
-    sa.sin_addr.s_addr = INADDR_ANY;
-    sa.sin_port = htons((uint16_t)port);
-    if (bind(listen_fd, (struct sockaddr *)&sa, sizeof sa) != 0) { perror("HolyPHP: bind"); return hp_of_int(-1); }
-    if (listen(listen_fd, 4096) != 0) { perror("HolyPHP: listen"); return hp_of_int(-1); }
-
-    const char *mr = getenv("HPHP_MR");
-    if (mr && *mr == '1') c_multishot = 1;
-
-    struct io_uring ring;
-    int r;
-    const char *defer = getenv("HPHP_DEFER");
-    if (defer && *defer == '0')
-        r = io_uring_queue_init(C_RING, &ring, IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_COOP_TASKRUN);
-    else
-        r = io_uring_queue_init(C_RING, &ring, IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_DEFER_TASKRUN);
-    if (r < 0) r = io_uring_queue_init(C_RING, &ring, 0);
-    if (r < 0) { fprintf(stderr, "HolyPHP: io_uring: %s\n", strerror(-r)); return hp_of_int(-1); }
-    e.ring = &ring;
-
-    if (c_multishot) {
-        if (posix_memalign((void **)&e.buf_base, C_RECV_SIZE, (size_t)C_NBUF * C_RECV_SIZE) != 0)
-            return hp_of_int(-1);
-        int br = 0;
-        e.br = io_uring_setup_buf_ring(&ring, C_NBUF, C_BGID, 0, &br);
-        if (!e.br) { fprintf(stderr, "HolyPHP: buf ring: %s\n", strerror(-br)); return hp_of_int(-1); }
-        for (int i = 0; i < C_NBUF; i++)
-            io_uring_buf_ring_add(e.br, e.buf_base + (size_t)i * C_RECV_SIZE,
-                                  C_RECV_SIZE, (unsigned short)i, C_NBUF - 1, i);
-        io_uring_buf_ring_advance(e.br, C_NBUF);
-    }
-
-    c_arm_accept(&e, listen_fd);
-    io_uring_submit(&ring);
-
-    for (;;) {
-        int ret = io_uring_submit_and_wait(&ring, 1);
-        if (ret < 0 && errno != EINTR) {
-            fprintf(stderr, "HolyPHP: submit_and_wait: %s\n", strerror(errno));
-            break;
-        }
-        unsigned head;
-        struct io_uring_cqe *cqe;
-        e.cq_harvested = 0;
-        io_uring_for_each_cqe(&ring, head, cqe) {
-            e.cq_harvested++;
-            uint64_t ud = cqe->user_data;
-            int res = cqe->res;
-            unsigned cflags = cqe->flags;
-            unsigned op = (unsigned)(ud & 3);
-            int idx = (int)(ud >> 2);
-
-            if (op == C_ACCEPT) {
-                if (res >= 0) {
-                    int one = 1;
-                    setsockopt(res, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-                    if (e.free_count > 0) {
-                        int si = e.free_slots[--e.free_count];
-                        CSlot *s = &e.slots[si];
-                        s->fd = res; s->state = C_READING; s->keep_alive = 1;
-                        s->req_len = 0; s->resp_len = 0; s->resp_off = 0;
-                        s->resp_ptr = s->resp_buf;
-                        c_arm_recv(&e, si);
-                    } else close(res);
-                }
-                if (!(cflags & IORING_CQE_F_MORE)) c_arm_accept(&e, listen_fd);
-                continue;
-            }
-            if (idx < 0 || idx >= C_MAX_SLOTS) continue;
-            CSlot *s = &e.slots[idx];
-            if (s->state == C_FREE) continue;
-
-            if (op == C_RECV) {
-                unsigned bid = cflags >> IORING_CQE_BUFFER_SHIFT;
-                int had_buf = (cflags & IORING_CQE_F_BUFFER) != 0;
-                if (res == -ENOBUFS || res == -EAGAIN) {
-                    if (!(cflags & IORING_CQE_F_MORE)) c_arm_recv(&e, idx);
-                    continue;
-                }
-                if (res <= 0) {
-                    if (had_buf) c_return_buf(&e, bid);
-                    c_release(&e, idx);
-                } else {
-                    const char *data = had_buf ? e.buf_base + (size_t)bid * C_RECV_SIZE : s->recv_buf;
-                    int bad = c_feed(&e, idx, data, (size_t)res) < 0;
-                    if (had_buf) c_return_buf(&e, bid);
-                    if (bad) c_release(&e, idx);
-                    else if (!(cflags & IORING_CQE_F_MORE) && e.slots[idx].state != C_FREE)
-                        c_arm_recv(&e, idx);
-                }
-            } else if (op == C_SEND) {
-                if (res < 0 && res != -EAGAIN) {
-                    c_release(&e, idx);
-                } else if (res <= 0) {
-                    if (res == 0) c_release(&e, idx);
-                    else c_arm_send(&e, idx);
-                } else {
-                    s->resp_off += (size_t)res;
-                    if (s->resp_off < s->resp_len) {
-                        c_arm_send(&e, idx);
-                    } else {
-                        s->resp_off = 0; s->resp_len = 0;
-                        if (!s->keep_alive) c_release(&e, idx);
-                        else if (s->req_len > 0) {
-                            size_t n = s->req_len; s->req_len = 0; s->state = C_READING;
-                            if (c_feed(&e, idx, s->req_buf, n) < 0) c_release(&e, idx);
-                        } else s->state = C_READING;
-                    }
-                }
-            }
-        }
-        if (e.cq_harvested) {
-            io_uring_cq_advance(&ring, e.cq_harvested);
-            e.cq_harvested = 0;
-        }
-
-        /* ---- group commit: one transaction for the whole batch ---- */
-        if (e.pending_count > 0) {
-            sqlite3_step(e.st_begin);
-            sqlite3_reset(e.st_begin);
-            int failed = 0;
-
-            for (int i = 0; i < e.pending_count; i++) {
-                CPending *pw = &e.pending[i];
-                if (pw->slot_idx < 0 || pw->slot_idx >= C_MAX_SLOTS) continue;
-                CSlot *s = &e.slots[pw->slot_idx];
-                if (s->state != C_QUEUED || s->gen != pw->gen) continue;
-
-                char out[C_RESP_SIZE - 512];
-                char *p = out;
-                int code = 200; const char *reason = "OK";
-
-                if (pw->kind == W_CREATE) {
-                    sqlite3_reset(e.st_insert);
-                    sqlite3_bind_int64(e.st_insert, 1, pw->user_id);
-                    sqlite3_bind_text(e.st_insert, 2, pw->body, pw->body_len, SQLITE_STATIC);
-                    if (sqlite3_step(e.st_insert) == SQLITE_ROW) {
-                        int64_t nid = sqlite3_column_int64(e.st_insert, 0);
-                        const unsigned char *ct = sqlite3_column_text(e.st_insert, 1);
-                        int cl = sqlite3_column_bytes(e.st_insert, 1);
-                        APPEND(p, "{\"post\":");
-                        p = c_render_new_post(p, nid, pw->body, (size_t)pw->body_len,
-                                              (const char *)(ct ? ct : (const unsigned char *)""), (size_t)(ct ? cl : 0),
-                                              pw->username, strlen(pw->username));
-                        *p++ = '}';
-                        code = 201; reason = "Created";
-                    } else failed = 1;
-                    sqlite3_reset(e.st_insert);
-                } else {
-                    sqlite3_reset(e.st_like_exists);
-                    sqlite3_bind_int64(e.st_like_exists, 1, pw->post_id);
-                    if (sqlite3_step(e.st_like_exists) == SQLITE_ROW) {
-                        sqlite3_reset(e.st_like_exists);
-                        sqlite3_reset(e.st_like_ins);
-                        sqlite3_bind_int64(e.st_like_ins, 1, pw->user_id);
-                        sqlite3_bind_int64(e.st_like_ins, 2, pw->post_id);
-                        if (sqlite3_step(e.st_like_ins) == SQLITE_DONE) {
-                            int already = sqlite3_changes(e.db) == 0;
-                            APPEND(p, "{\"liked\":true,\"already_liked\":");
-                            if (already) APPEND(p, "true,"); else APPEND(p, "false,");
-                            APPEND(p, "\"post_id\":");
-                            p = c_i64toa(p, pw->post_id);
-                            *p++ = '}';
-                            code = already ? 200 : 201;
-                            reason = already ? "OK" : "Created";
-                        } else failed = 1;
-                        sqlite3_reset(e.st_like_ins);
-                    } else {
-                        sqlite3_reset(e.st_like_exists);
-                        c_error(s, 404, "Not Found", "{\"error\":\"post not found\"}");
-                        c_arm_send(&e, pw->slot_idx);
-                        continue;
-                    }
-                }
-                if (failed) {
-                    c_error(s, 500, "Internal Server Error", "{\"error\":\"internal server error\"}");
-                } else {
-                    c_respond(s, code, reason, "application/json", out, (size_t)(p - out));
-                }
-                c_arm_send(&e, pw->slot_idx);
-            }
-
-            int crc = sqlite3_step(e.st_commit);
-            if (crc != SQLITE_DONE && crc != SQLITE_OK) {
-                fprintf(stderr, "HolyPHP: commit failed: %s\n", sqlite3_errmsg(e.db));
-                sqlite3_exec(e.db, "ROLLBACK;", NULL, NULL, NULL);
-            }
-            sqlite3_reset(e.st_commit);
-            e.pending_count = 0;
-        }
-    }
-    return hp_of_int(0);
+/* Request-scope memory: the server loop wraps one poll cycle in
+ * scope_begin()/scope_end(); strings allocated in between are released in
+ * one shot. str_persist() copies a value out of the scope, str_free()/
+ * arr_free() release heap values early. */
+hval hpbi_scope_begin(void) { hp_scope_begin(); return hp_of_bool(true); }
+hval hpbi_scope_end(void) { hp_scope_end(); return hp_of_bool(true); }
+hval hpbi_str_persist(hval s) { return hp_of_str(hp_str_persist(hp_val_to_str(s))); }
+hval hpbi_str_free(hval s) {
+    if (s.tag == HV_STR) hp_str_free(s.u.s);
+    return hp_of_bool(true);
 }
-#else
-hval hpbi_holy_challenge_start(hval port_val, hval db_path_val) {
-    (void)port_val; (void)db_path_val;
-    hp_throw_str("holy_challenge_start() requires Linux io_uring");
-    return hp_of_int(-1);
+hval hpbi_live_allocs(void) { return hp_of_int(hp_live_allocs()); }
+hval hpbi_live_bytes(void) { return hp_of_int(hp_live_bytes()); }
+hval hpbi_arr_clear(hval a) {
+    if (a.tag == HV_ARR && a.u.a) {
+        harr *x = a.u.a;
+        x->len = 0;
+        x->next_index = 0;
+        x->is_map = false;
+        if (x->index) {
+            memset(x->index, 0, (size_t)x->icap * sizeof(uint32_t));
+            x->ibudget = x->icap;
+        }
+    }
+    return hp_of_bool(true);
+}
+hval hpbi_arr_free(hval a) {
+    if (a.tag == HV_ARR && a.u.a) hp_arr_free(a.u.a);
+    return hp_of_bool(true);
+}
+hval hpbi_object_free(hval obj) {
+    if (obj.tag == HV_OBJ && obj.u.p) hp_free(obj.u.p);
+    return hp_of_bool(true);
+}
+
+/* ---- generic string builder ---- */
+/* head: bytes of free space in front of the contents. The contents are
+ * b.data[head .. b.len). A reserved builder starts with HP_SB_HEADROOM bytes
+ * there, so sb_prepend() of a short prefix (a response header) writes into
+ * that space instead of moving the whole body. */
+#define HP_SB_HEADROOM 192
+HpSb *sb_h(hval v) { return (HpSb *)(intptr_t)hp_val_to_int(v); }
+
+
+hval hpbi_sb_new(void) {
+    HpSb *s = (HpSb *)hp_alloc(sizeof *s);
+    hbuf_init(&s->b);
+    s->head = 0;
+    return hp_of_int((int64_t)(intptr_t)s);
+}
+hval hpbi_sb_put(hval h, hval str) {
+    HpSb *s = sb_h(h);
+    hstr *x = hp_val_to_str(str);
+    hbuf_write(&s->b, x->data, x->len);
+    return hp_of_bool(true);
+}
+hval hpbi_sb_bytes(hval h, hval ptr, hval len) {
+    HpSb *s = sb_h(h);
+    int64_t n = hp_val_to_int(len);
+    const char *p = (const char *)hp_addr_arg(ptr);
+    if (p && n > 0) hbuf_write(&s->b, p, (size_t)n);
+    return hp_of_bool(true);
+}
+hval hpbi_sb_data_ptr(hval h) {
+    HpSb *s = sb_h(h);
+    return hp_of_int(s->b.data ? (int64_t)(intptr_t)(s->b.data + s->head) : 0);
+}
+hval hpbi_sb_discard(hval h) {
+    HpSb *s = sb_h(h);
+    if (s) {
+        char *p = hbuf_take(&s->b);
+        free(p);
+        hp_free(s);
+    }
+    return hp_of_bool(true);
+}
+hval hpbi_sb_int(hval h, hval n) {
+    HpSb *s = sb_h(h);
+    char tmp[24];
+    char *p = hp_fmt_i64(tmp + sizeof tmp, hp_val_to_int(n));
+    hbuf_write(&s->b, p, (size_t)(tmp + sizeof tmp - p));
+    return hp_of_bool(true);
+}
+/* int_digits(n): decimal digit count of an integer, so a caller can compute a
+ * Content-Length (or any numeric prefix width) without building a throwaway
+ * string. Generic. */
+int64_t hp_int_digits_t(int64_t v) {
+    unsigned long long u = v < 0 ? (unsigned long long)(-(v + 1)) + 1ULL
+                                 : (unsigned long long)v;
+    int64_t d = 1;
+    while (u >= 10ULL) { u /= 10ULL; d++; }
+    return d;
+}
+hval hpbi_int_digits(hval n) { return hp_of_int(hp_int_digits_t(hp_val_to_int(n))); }
+/* Copy clean bytes while checking them for JSON escapes. The AVX2 path fuses
+ * each 32-byte scan with its destination store, avoiding a second read of the
+ * clean prefix. */
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+__attribute__((target("avx2")))
+static size_t json_copy_clean_avx2(const unsigned char *p, size_t n, char *dst) {
+    size_t i = 0;
+    const __m256i zero = _mm256_setzero_si256();
+    const __m256i high = _mm256_set1_epi8((char)0x80);
+    const __m256i ctlmax = _mm256_set1_epi8(0x20);
+    const __m256i quote = _mm256_set1_epi8('"');
+    const __m256i slash = _mm256_set1_epi8('\\');
+    while (i + 32 <= n) {
+        __m256i x = _mm256_loadu_si256((const __m256i *)(const void *)(p + i));
+        __m256i ascii = _mm256_cmpeq_epi8(_mm256_and_si256(x, high), zero);
+        __m256i ctl = _mm256_and_si256(_mm256_cmpgt_epi8(ctlmax, x), ascii);
+        __m256i special = _mm256_or_si256(ctl,
+            _mm256_or_si256(_mm256_cmpeq_epi8(x, quote), _mm256_cmpeq_epi8(x, slash)));
+        unsigned mask = (unsigned)_mm256_movemask_epi8(special);
+        if (mask) {
+            size_t clean = (size_t)__builtin_ctz(mask);
+            if (clean) memcpy(dst + i, p + i, clean);
+            return i + clean;
+        }
+        _mm256_storeu_si256((__m256i *)(void *)(dst + i), x);
+        i += 32;
+    }
+    return i;
 }
 #endif
+
+/* append a quoted, escaped JSON string for n bytes at p */
+static void sb_json_esc(Buf *b, const unsigned char *p, size_t n) {
+    static const char H[] = "0123456789abcdef";
+    size_t old = b->len;
+    if (n > SIZE_MAX - old - 2) return;
+    hbuf_reserve(b, old + n + 2);
+    char *dst = b->data + old;
+    *dst++ = '"';
+    size_t i = 0;
+    bool avx2 = false;
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    static _Thread_local int have_avx2 = -1;
+    if (have_avx2 < 0) {
+        __builtin_cpu_init();
+        have_avx2 = __builtin_cpu_supports("avx2") ? 1 : 0;
+    }
+    avx2 = have_avx2 != 0;
+    if (avx2) i = json_copy_clean_avx2(p, n, dst);
+#endif
+    while (i + 8 <= n) {
+        uint64_t v;
+        memcpy(&v, p + i, 8);
+        uint64_t lt = (v - 0x2020202020202020ULL) & ~v & 0x8080808080808080ULL;
+        uint64_t zq = v ^ 0x2222222222222222ULL;
+        uint64_t zb = v ^ 0x5C5C5C5C5C5C5C5CULL;
+        uint64_t q = (zq - 0x0101010101010101ULL) & ~zq & 0x8080808080808080ULL;
+        uint64_t bs = (zb - 0x0101010101010101ULL) & ~zb & 0x8080808080808080ULL;
+        if (lt | q | bs) break;
+        memcpy(dst + i, p + i, 8);
+        i += 8;
+    }
+    while (i < n) {
+        unsigned char c = p[i];
+        if (c < 0x20 || c == '"' || c == '\\') break;
+        dst[i++] = (char)c;
+    }
+    if (i < n) {
+        size_t prefix_len = (size_t)((dst + i) - b->data);
+        size_t encoded = 1; /* closing quote */
+        for (size_t k = i; k < n; k++) {
+            unsigned char c = p[k];
+            size_t width = c == '"' || c == '\\' || c == '\n' || c == '\r' ||
+                           c == '\t' || c == '\b' || c == '\f' ? 2 :
+                           c < 0x20 ? 6 : 1;
+            if (encoded > SIZE_MAX - width) return;
+            encoded += width;
+        }
+        if (encoded > SIZE_MAX - prefix_len) return;
+        b->len = prefix_len;
+        hbuf_reserve(b, prefix_len + encoded);
+        dst = b->data + b->len;
+        for (; i < n; i++) {
+            unsigned char c = p[i];
+            if (c == '"' || c == '\\') { *dst++ = '\\'; *dst++ = (char)c; }
+            else if (c == '\n') { *dst++ = '\\'; *dst++ = 'n'; }
+            else if (c == '\r') { *dst++ = '\\'; *dst++ = 'r'; }
+            else if (c == '\t') { *dst++ = '\\'; *dst++ = 't'; }
+            else if (c == '\b') { *dst++ = '\\'; *dst++ = 'b'; }
+            else if (c == '\f') { *dst++ = '\\'; *dst++ = 'f'; }
+            else if (c < 0x20) {
+                *dst++ = '\\'; *dst++ = 'u'; *dst++ = '0'; *dst++ = '0';
+                *dst++ = H[(c >> 4) & 15]; *dst++ = H[c & 15];
+            } else *dst++ = (char)c;
+        }
+    } else dst += i;
+    *dst++ = '"';
+    b->len = (size_t)(dst - b->data);
+}
+hval hpbi_sb_json(hval h, hval ptr, hval len) {
+    HpSb *s = sb_h(h);
+    const unsigned char *p = (const unsigned char *)(intptr_t)hp_val_to_int(ptr);
+    int64_t n = hp_val_to_int(len);
+    if (p && n > 0) sb_json_esc(&s->b, p, (size_t)n);
+    else hbuf_puts(&s->b, "\"\"");
+    return hp_of_bool(true);
+}
+hval hpbi_sb_json_str(hval h, hval str) {
+    HpSb *s = sb_h(h);
+    hstr *x = hp_val_to_str(str);
+    sb_json_esc(&s->b, (const unsigned char *)x->data, x->len);
+    return hp_of_bool(true);
+}
+/* An empty builder reuses the capacity of an already-sent response buffer
+ * (they return to the pool on send completion) instead of a fresh malloc per
+ * response. Only capacity is reused, never bytes. */
+static void hp_sb_reserve_pooled(HpSb *s, int64_t want) {
+    if (want <= 0) return;
+    size_t extra = 0;
+    if (s->b.len == 0 && s->head == 0) {
+        extra = HP_SB_HEADROOM;
+        if (!s->b.data && (size_t)want + extra < HP_RESP_BUF_POOL_CAP_MAX) {
+            size_t cap = 0;
+            char *p = hp_resp_buf_acquire_min((size_t)want + extra + 1, &cap);
+            if (p) { s->b.data = p; s->b.cap = cap; s->b.len = 0; }
+        }
+    }
+    hbuf_reserve(&s->b, s->b.len + (size_t)want + extra);
+    if (extra && s->b.data) {
+        s->b.len = s->head = extra;
+        s->b.data[s->b.len] = 0;
+    }
+}
+/* Put x in front of the contents: into the headroom when it fits, else by
+ * moving the contents once (and dropping the headroom). */
+static void hp_sb_prepend_bytes(HpSb *s, const char *x, size_t n) {
+    if (n == 0) return;
+    if (n <= s->head) {
+        s->head -= n;
+        memcpy(s->b.data + s->head, x, n);
+        return;
+    }
+    size_t body = s->b.len - s->head;
+    hbuf_reserve(&s->b, body + n);
+    if (body) memmove(s->b.data + n, s->b.data + s->head, body);
+    memcpy(s->b.data, x, n);
+    s->b.len = body + n;
+    s->b.data[s->b.len] = 0;
+    s->head = 0;
+}
+hval hpbi_sb_reserve(hval h, hval n) {
+    HpSb *s = sb_h(h);
+    hp_sb_reserve_pooled(s, hp_val_to_int(n));
+    return hp_of_bool(true);
+}
+/* sb_len(sb): bytes currently in the builder. */
+hval hpbi_sb_len(hval h) { HpSb *s = sb_h(h); return hp_of_int((int64_t)(s->b.len - s->head)); }
+/* sb_prepend(sb, str): put str in front of the current contents. Used to add
+ * a response header to a body that is already built, without a second buffer
+ * or a header string concatenation. */
+hval hpbi_sb_prepend(hval h, hval str) {
+    HpSb *s = sb_h(h);
+    hstr *x = hp_val_to_str(str);
+    hp_sb_prepend_bytes(s, x->data, x->len);
+    return hp_of_bool(true);
+}
+hval hpbi_str_from_bytes(hval ptr, hval len) {
+    const char *p = (const char *)hp_addr_arg(ptr);
+    int64_t n = hp_val_to_int(len);
+    if (!p || n < 0) return hp_of_str(hp_null_str());
+    return hp_of_str(hp_str_new(p, (size_t)n));
+}
+/* Fixed-size int64 array indexed directly, for per-connection state keyed by
+ * fd. A hash map of boxed hvals costs a probe plus a 16-byte key and value per
+ * entry; this is 8 bytes per slot and one pointer add. 0 means "absent". */
+hval hpbi_iarr_new(hval size) {
+    int64_t n = hp_val_to_int(size);
+    return hp_of_int((int64_t)(intptr_t)hp_iarr_acquire(n, true));
+}
+hval hpbi_iarr_new_uninit(hval size) {
+    int64_t n = hp_val_to_int(size);
+    return hp_of_int((int64_t)(intptr_t)hp_iarr_acquire(n, false));
+}
+hval hpbi_iarr_release(hval h) {
+    hp_iarr_release_ptr((hp_iarr_t *)(intptr_t)hp_val_to_int(h));
+    return hp_of_bool(true);
+}
+int64_t hp_iarr_len_t(int64_t h) {
+    hp_iarr_t *a = (hp_iarr_t *)(intptr_t)h;
+    return a && a->leased ? a->len : 0;
+}
+hval hpbi_iarr_get(hval h, hval i) {
+    hp_iarr_t *a = iarr_of(h);
+    int64_t k = hp_val_to_int(i);
+    if (!a || !a->leased || k < 0 || k >= a->cap) return hp_of_int(0);
+    return hp_of_int(a->v[k]);
+}
+hval hpbi_iarr_set(hval h, hval i, hval v) {
+    hp_iarr_t *a = iarr_of(h);
+    int64_t k = hp_val_to_int(i);
+    if (a && a->leased && k >= 0 && k < a->cap) a->v[k] = hp_val_to_int(v);
+    return hp_of_bool(true);
+}
+hval hpbi_iarr_get_fast(hval h, hval i) {
+    return hp_of_int(hp_iarr_get_fast_impl(hp_val_to_int(h), hp_val_to_int(i)));
+}
+hval hpbi_iarr_set_fast(hval h, hval i, hval v) {
+    return hp_of_bool(hp_iarr_set_fast_impl(hp_val_to_int(h), hp_val_to_int(i),
+                                            hp_val_to_int(v)));
+}
+hval hpbi_iarr_data_ptr(hval h) {
+    hp_iarr_t *a = iarr_of(h);
+    return hp_of_int((a && a->leased) ? (int64_t)(intptr_t)a->v : 0);
+}
+hval hpbi_iarr_len(hval h) {
+    hp_iarr_t *a = iarr_of(h);
+    return hp_of_int(a && a->leased ? a->len : 0);
+}
+
+/* Response buffer pool (generic): the io_uring send path and the string
+ * builder share the capacity of completed responses. Moved here from the
+ * transport module so a program that only uses sb_* does not pull in
+ * io_uring. */
+#define HP_RESP_BUF_POOL_MAX 8192
+#define HP_RESP_BUF_POOL_CAP_MAX (16u * 1024u)
+#define HP_RESP_BUF_POOL_BYTES_MAX (32u * 1024u * 1024u)
+typedef struct { char *data; size_t cap; } hp_resp_buf_entry;
+/* Two size classes: small buffers (most responses) and large ones (feed-sized
+ * builders). One mixed stack let a run of small buffers hide every large
+ * one, so large builders fell back to malloc. */
+#define HP_RESP_BUF_SMALL_MAX 4096u
+typedef struct {
+    hp_resp_buf_entry e[HP_RESP_BUF_POOL_MAX / 2];
+    unsigned n;
+} hp_resp_buf_stack;
+static _Thread_local hp_resp_buf_stack hp_resp_buf_pool[2];
+static _Thread_local size_t hp_resp_buf_pool_bytes;
+
+static char *hp_resp_buf_take(hp_resp_buf_stack *st, unsigned i, size_t *cap) {
+    hp_resp_buf_entry e = st->e[i];
+    st->e[i] = st->e[st->n - 1];
+    st->n--;
+    if (hp_resp_buf_pool_bytes >= e.cap) hp_resp_buf_pool_bytes -= e.cap;
+    else hp_resp_buf_pool_bytes = 0;
+    *cap = e.cap;
+    return e.data;
+}
+
+char *hp_resp_buf_acquire(size_t *cap) {
+    for (int c = 0; c < 2; c++) {
+        hp_resp_buf_stack *st = &hp_resp_buf_pool[c];
+        if (st->n) return hp_resp_buf_take(st, st->n - 1, cap);
+    }
+    *cap = 0;
+    return NULL;
+}
+
+/* Take a pooled buffer of at least `want` bytes from the matching class (a
+ * small request may also use a large buffer). The hit is swapped out. */
+char *hp_resp_buf_acquire_min(size_t want, size_t *cap) {
+    for (int c = want > HP_RESP_BUF_SMALL_MAX ? 1 : 0; c < 2; c++) {
+        hp_resp_buf_stack *st = &hp_resp_buf_pool[c];
+        unsigned n = st->n;
+        unsigned look = n < 8 ? n : 8;
+        for (unsigned k = 0; k < look; k++) {
+            unsigned i = n - 1 - k;
+            if (st->e[i].cap >= want) return hp_resp_buf_take(st, i, cap);
+        }
+    }
+    *cap = 0;
+    return NULL;
+}
+
+void hp_resp_buf_release(char *data, size_t cap) {
+    if (!data) return;
+    hp_resp_buf_stack *st = &hp_resp_buf_pool[cap > HP_RESP_BUF_SMALL_MAX ? 1 : 0];
+    if (cap && cap <= HP_RESP_BUF_POOL_CAP_MAX &&
+        st->n < HP_RESP_BUF_POOL_MAX / 2 &&
+        cap <= HP_RESP_BUF_POOL_BYTES_MAX - hp_resp_buf_pool_bytes) {
+        st->e[st->n++] = (hp_resp_buf_entry){ data, cap };
+        hp_resp_buf_pool_bytes += cap;
+    } else {
+        free(data);
+    }
+}
+
+/* ---- raw-memory accessors -------------------------------------------------
+ * The challenge runtime let programs do pointer arithmetic directly
+ * (*($p + n)). This core's checker has no arithmetic on *T yet, so the same
+ * accesses go through these builtins: the address stays an integer, the
+ * offset is added in C, and memcpy keeps unaligned int64 access defined.
+ * Unsafe, like *T itself. */
+
+hval hpbi_u8_at(hval p, hval off) {
+    const unsigned char *b = (const unsigned char *)hp_addr_arg(p);
+    return hp_of_int(b ? (int64_t)b[hp_val_to_int(off)] : 0);
+}
+hval hpbi_u8_set(hval p, hval off, hval v) {
+    unsigned char *b = (unsigned char *)hp_addr_arg(p);
+    if (b) b[hp_val_to_int(off)] = (unsigned char)(hp_val_to_int(v) & 255);
+    return hp_of_int(hp_val_to_int(v));
+}
+hval hpbi_i64_at(hval p, hval off) {
+    const char *b = (const char *)hp_addr_arg(p);
+    int64_t v = 0;
+    if (b) memcpy(&v, b + hp_val_to_int(off) * 8, sizeof v);
+    return hp_of_int(v);
+}
+hval hpbi_i64_set(hval p, hval off, hval v) {
+    char *b = (char *)hp_addr_arg(p);
+    int64_t x = hp_val_to_int(v);
+    if (b) memcpy(b + hp_val_to_int(off) * 8, &x, sizeof x);
+    return hp_of_int(x);
+}
+hval hpbi_sb_take(hval h) {
+    HpSb *s = sb_h(h);
+    size_t head = s->head;
+    size_t n = s->b.len - head;
+    char *p = hbuf_take(&s->b);
+    hstr *r = hp_str_new(p + head, n);
+    free(p);
+    hp_free(s);
+    return hp_of_str(r);
+}
+
+/* ---- request scope (compatibility) ---------------------------------------
+ * The challenge runtime released every string allocated in a poll cycle at
+ * hp_scope_end(). This core has no request arena yet, so the scope is a
+ * counter-free no-op and persisting a value is the identity: every string is
+ * a plain heap block. Phase 1/2 of the memory plan replaces both with the
+ * automatic region allocator, and the builtins disappear from user code. */
+uint64_t hp_st[HP_ST_N];
+void hp_scope_begin(void) { }
+void hp_scope_end(void) { hp_st[HP_ST_SCOPE_END]++; }
+hstr *hp_str_persist(hstr *s) { return s; }
+int64_t hp_live_allocs(void) { return 0; }   /* no live counter in this core */
+int64_t hp_live_bytes(void) { return 0; }

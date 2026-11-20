@@ -42,6 +42,7 @@
 #define PKG_DEFAULT_REGISTRY "http://hphp.ch:8930"
 
 #include "runtime_embed.h" /* the runtime, embedded in this binary */
+#include "sqlite_embed.h"  /* generated: sqlite3.h + this host's libsqlite3.a */
 #include "pkgcore.h"
 #include "pkgnet.h"
 
@@ -545,7 +546,12 @@ static char *embed_read(const char *self, const char *file) {
     if (strcmp(file, "hphp_thr.c") == 0) return xstrdup(hp_embed_thr_c);
     if (strcmp(file, "hphp_ui.c") == 0) return xstrdup(hp_embed_ui_c);
     if (strcmp(file, "hphp_wv2.c") == 0) return xstrdup(hp_embed_wv2_c);
+    if (strcmp(file, "hphp_uring.c") == 0) return xstrdup(hp_embed_uring_c);
+    if (strcmp(file, "hphp_sqlite.c") == 0) return xstrdup(hp_embed_sqlite_c);
+    if (strcmp(file, "sqlite3.h") == 0) return xstrdup(hp_embed_sqlite3_h);
     if (strcmp(file, "hphp_rt.h") == 0) return xstrdup(hp_embed_rt_h);
+    if (strcmp(file, "hphp_modules.h") == 0) return xstrdup(hp_embed_modules_h);
+    if (strcmp(file, "hphp_ext.h") == 0) return xstrdup(hp_embed_ext_h);
     fatal("hphp: unknown runtime file '%s'", file);
     return NULL;
 }
@@ -558,15 +564,17 @@ static void mkdir_p(const char *dir) {
 #endif
 }
 
-/* Write the three runtime files into <wd>/rt. Overwrite unconditionally so
+/* Write the runtime files into <wd>/rt. Overwrite unconditionally so
  * the runtime always matches the compiler version. */
 static void extract_runtime(const char *wd, const char *self) {
     static const char *files[] = {"hphp_rt.c", "hphp_std.c", "hphp_thr.c", "hphp_ui.c",
-                                  "hphp_wv2.c", "hphp_rt.h"};
+                                  "hphp_wv2.c", "hphp_uring.c", "hphp_sqlite.c",
+                                  "hphp_rt.h", "hphp_modules.h", "hphp_ext.h",
+                                  "sqlite3.h"};
     mkdir_p(wd);
     char *rtdir = path_join(wd, "rt");
     mkdir_p(rtdir);
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 11; i++) {
         char *data = embed_read(self, files[i]);
         char *dest = fmt("%s/%s", rtdir, files[i]);
         FILE *f = fopen(dest, "wb");
@@ -601,9 +609,10 @@ static void build_tag(char *buf, size_t n) {
  * so nothing else can be using them. HPHP_KEEP_C=1 keeps the generated C
  * (prog_<tag>.c) so it can be read after the build. */
 static void cleanup_build_files(const char *wd, const char *tag) {
-    static const char *base[6] = {"prog", "hp_rt", "hp_std", "hp_thr", "hp_ui", "hp_wv2"};
+    static const char *base[8] = {"prog", "hp_rt", "hp_std", "hp_thr", "hp_ui",
+                                 "hp_wv2", "hp_uring", "hp_sqlite"};
     char path[1024];
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 8; i++) {
         snprintf(path, sizeof path, "%s/%s_%s.o", wd, base[i], tag);
         remove_quiet(path);
     }
@@ -611,7 +620,71 @@ static void cleanup_build_files(const char *wd, const char *tag) {
     if (!getenv("HPHP_KEEP_C")) remove_quiet(path);
     snprintf(path, sizeof path, "%s/prog_%s.out", wd, tag);
     remove_quiet(path);
+    snprintf(path, sizeof path, "%s/hp_sqlite_%s.a", wd, tag);
+    remove_quiet(path);
 }
+
+/* The SQLite archive is embedded in the compiler as base64 (see
+ * scripts/genembed.c); decode it when a program uses the SQLite or B-tree
+ * builtins. */
+static int b64_val(int c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1; /* padding and line breaks are skipped */
+}
+
+static unsigned char *b64_decode(const char *s, size_t n, size_t *outn) {
+    unsigned char *out = malloc(n / 4 * 3 + 3);
+    if (!out) return NULL;
+    size_t o = 0;
+    unsigned acc = 0;
+    int bits = 0;
+    for (size_t i = 0; i < n; i++) {
+        int v = b64_val((unsigned char)s[i]);
+        if (v < 0) continue;
+        acc = (acc << 6) | (unsigned)v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out[o++] = (unsigned char)((acc >> bits) & 0xFF);
+        }
+    }
+    *outn = o;
+    return out;
+}
+
+/* Return the linker argument for SQLite. HPHP_SQLITE_LIB overrides the
+ * embedded archive (a system library or a local debug build). The archive is
+ * written into the build dir, whose name is relative and quote-free because
+ * the link command already runs inside it. */
+static char *sqlite_link_lib(const char *wd, const char *tag) {
+    const char *env = getenv("HPHP_SQLITE_LIB");
+    if (env && *env) return xstrdup(env);
+    if (hp_embed_sqlite_lib_b64_len > 0) {
+        char *name = fmt("hp_sqlite_%s.a", tag);
+        char *path = path_join(wd, name);
+        size_t n = 0;
+        unsigned char *bytes = b64_decode(hp_embed_sqlite_lib_b64,
+                                          hp_embed_sqlite_lib_b64_len, &n);
+        FILE *f = bytes ? fopen(path, "wb") : NULL;
+        int ok = f != NULL && n > 0 && fwrite(bytes, 1, n, f) == n;
+        if (f && fclose(f) != 0) ok = 0;
+        free(bytes);
+        free(path);
+        if (ok) return name;
+        free(name);
+        fprintf(stderr, "hphp: cannot unpack the embedded SQLite library\n");
+    }
+#if defined(_WIN32)
+    fprintf(stderr, "hphp: this compiler has no embedded SQLite library; "
+                    "set HPHP_SQLITE_LIB\n");
+#endif
+    return xstrdup("-lsqlite3");
+}
+
 
 /* Compile the C inputs in wd (relative paths only) and link them to
  * <wd>/prog-<tag>.out, then move the finished image to exepath. Never links
@@ -649,10 +722,11 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
     /* Cache slots keep stable names (the cache is keyed by source hash, not
      * by run), while the files on disk carry the per-run tag so parallel
      * hphp processes never collide. */
-    const char *objbase[6] = {"prog", "hp_rt", "hp_std", "hp_thr", "hp_ui", "hp_wv2"};
-    char objnames[6][64];   /* cache names:  prog.o, hp_rt.o, ... */
-    char objs[6][64];       /* on-disk names: prog_<tag>.o, ... */
-    for (int i = 0; i < 6; i++) {
+    const char *objbase[8] = {"prog", "hp_rt", "hp_std", "hp_thr", "hp_ui", "hp_wv2",
+                              "hp_uring", "hp_sqlite"};
+    char objnames[8][64];   /* cache names:  prog.o, hp_rt.o, ... */
+    char objs[8][64];       /* on-disk names: prog_<tag>.o, ... */
+    for (int i = 0; i < 8; i++) {
         snprintf(objnames[i], sizeof objnames[i], "%s.o", objbase[i]);
         snprintf(objs[i], sizeof objs[i], "%s_%s.o", objbase[i], tag);
     }
@@ -673,12 +747,13 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
      * hpwv2_*. The base is linked into every program, so those references are
      * there whatever the program does: scanning only the generated code left
      * every hello world with an undefined hpui_dispatch at link time. */
-    bool needed[6] = {true, true, true, false, false, false};
+    bool needed[8] = {true, true, true, false, false, false, false, false};
     {
         char *genc = read_file_string(cpath);
         const char *stdc = hp_embed_std_c ? hp_embed_std_c : "";
         if (!genc) {
             needed[3] = needed[4] = needed[5] = true;   /* cannot tell: all */
+            needed[6] = needed[7] = true;
         } else {
             needed[3] = strstr(genc, "hp_thr_") != NULL ||
                         strstr(genc, "hpbi_thr_") != NULL ||
@@ -696,6 +771,18 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
                         strstr(stdc, "hp_ui_") != NULL || strstr(stdc, "hpui_") != NULL;
             needed[5] = strstr(genc, "hp_wv2_") != NULL || strstr(genc, "hpwv2_") != NULL ||
                         strstr(stdc, "hp_wv2_") != NULL || strstr(stdc, "hpwv2_") != NULL;
+            /* Optional modules: only a generated call pulls them in. hphp_std.c
+             * does not reference them, so a plain program neither compiles nor
+             * links io_uring or the SQLite B-tree binding. */
+            needed[6] = strstr(genc, "hpbi_stream_") != NULL ||
+                        strstr(genc, "hpbi_epoll_") != NULL ||
+                        strstr(genc, "hpbi_uring_") != NULL ||
+                        strstr(genc, "hpbi_nofile_limit") != NULL ||
+                        strstr(genc, "hpbi_accept_emfile") != NULL ||
+                        strstr(genc, "hpbi_runtime_stats") != NULL ||
+                        strstr(genc, "hpbi_runtime_diag_write") != NULL;
+            needed[7] = strstr(genc, "hpbi_sqlite_") != NULL ||
+                        strstr(genc, "hpbi_bt_") != NULL;
             free(genc);
         }
     }
@@ -716,10 +803,10 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
      * a new program does not pay for compiling them again. Only this
      * program's own object and its linked image are under the program key. */
     bool use_cache = cache_key && cache_key[0];
-    bool have[6] = {false};
+    bool have[8] = {false};
     if (use_cache) {
         if (rt_cache_key && rt_cache_key[0]) {
-            for (int i = 1; i < 6; i++) {
+            for (int i = 1; i < 8; i++) {
                 if (!needed[i]) continue;
                 if (!cache_has_object(rt_cache_key, objnames[i])) continue;
                 char *dest = path_join(wd, objs[i]);
@@ -737,7 +824,7 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
                              (int)have[3], (int)have[4], (int)have[5]);
     }
     bool all_cached = use_cache;
-    for (int i = 0; i < 6; i++)
+    for (int i = 0; i < 8; i++)
         if (needed[i] && !have[i]) all_cached = false;
     if (all_cached && verbose) fprintf(stderr, "[hphp backend] cache hit: all objects restored, skipping compile\n");
 
@@ -757,21 +844,24 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
     }
 #endif
 
+    char *sqlite_lib = needed[7] ? sqlite_link_lib(wd, tag) : NULL;
+
     for (int attempt = 1; attempt <= 3; attempt++) {
         /* --- compile the objects (skip if fully cached) --- */
         bool compiled = true;
-        const char *srcs[6] = {csrc, "rt/hphp_rt.c", "rt/hphp_std.c",
-                               "rt/hphp_thr.c", "rt/hphp_ui.c", "rt/hphp_wv2.c"};
+        const char *srcs[8] = {csrc, "rt/hphp_rt.c", "rt/hphp_std.c",
+                               "rt/hphp_thr.c", "rt/hphp_ui.c", "rt/hphp_wv2.c",
+                               "rt/hphp_uring.c", "rt/hphp_sqlite.c"};
         if (!all_cached) {
         /* compile only the objects that are missing (and wanted at all) */
-        char *ccmds[6];
-        int cidx[6];
+        char *ccmds[8];
+        int cidx[8];
         int ncmd = 0;
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < 8; i++) {
             if (!needed[i] || have[i]) continue;
             const char *thread_mode = (i == 1 && !needed[3])
                 ? "-DHP_RUNTIME_NO_THREADS " : "";
-            ccmds[ncmd] = fmt("gcc %s %s-std=c11 -I rt -c %s -o %s",
+            ccmds[ncmd] = fmt("gcc %s %s-std=c11 -I rt -include rt/hphp_ext.h -c %s -o %s",
                               opt, thread_mode, srcs[i], objs[i]);
             cidx[ncmd] = i;
             ncmd++;
@@ -822,6 +912,7 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
                 remove_quiet(exepath);
                 if (move_file(cached, exepath) == 0 && file_looks_like_exe(exepath)) {
                     free(cached);
+                    free(sqlite_lib);
                     cleanup_build_files(wd, tag);
                     return 0;
                 }
@@ -832,7 +923,7 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
         /* --- link: mingw ld directly, plain gcc as fallback --- */
         /* only the modules that were actually built go to the linker */
         char objlist[512] = "";
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < 8; i++) {
             if (!needed[i]) continue;
             if (objlist[0]) strcat(objlist, " ");
             strcat(objlist, objs[i]);
@@ -858,13 +949,13 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
             char *crtdir = path_dir_of(crt2);
             char *link = fmt(
                 "\"%s\" -m i386pep -Bdynamic -o %s %s %s "
-                "-L\"%s\" -L\"%s\" %s "
+                "-L\"%s\" -L\"%s\" %s %s "
                 "-lmingw32 -lgcc -lgcc_eh -lmingwex -lmsvcrt -lkernel32 "
                 "-lws2_32 -lpthread -ladvapi32 -lshell32 -luser32 "
                 "-lgdi32 -lgdiplus -lcomctl32 -lcomdlg32 -lole32 -loleaut32 -luuid "
                 "-lversion -lshlwapi -lwinmm \"%s\" \"%s\"",
                 ld, out, crt2, crtbegin, gccdir, crtdir, objlist,
-                manifest, crtend);
+                sqlite_lib ? sqlite_lib : "", manifest, crtend);
             rc = run_direct(link, !verbose);
             if (verbose) fprintf(stderr, "[hphp backend] direct-ld rc=%d nonempty=%d exe=%d\n",
                                   rc, (int)file_nonempty(out_abs),
@@ -875,14 +966,18 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
         }
         if (rc != 0 || !file_nonempty(out_abs)) {
 #ifdef _WIN32
-            char *link = fmt("gcc %s %s %s -o %s -lm -lws2_32 "
+            char *link = fmt("gcc %s %s %s %s -o %s -lm -lws2_32 "
                              "-lgdi32 -lgdiplus -lcomctl32 -lcomdlg32 -lole32 -loleaut32 "
                              "-luuid -lversion -lshlwapi -lwinmm",
-                             opt, subsys, objlist, out);
+                             opt, subsys, objlist, sqlite_lib ? sqlite_lib : "", out);
 #else
-            /* POSIX: sockets live in libc, the UI layer is inert stubs */
-            char *link = fmt("gcc %s %s -o %s -lm -lpthread -lsqlite3 -luring",
-                             opt, objlist, out);
+            /* POSIX: sockets live in libc, the UI layer is inert stubs, and
+             * the io_uring module talks to the kernel through raw syscalls
+             * (no liburing). SQLite is an optional module: a program links
+             * the archive embedded in this compiler (or HPHP_SQLITE_LIB)
+             * only when it calls one of its builtins. */
+            char *link = fmt("gcc %s %s %s -o %s -lm -lpthread", opt, objlist,
+                             sqlite_lib ? sqlite_lib : "", out);
 #endif
             rc = run_direct(link, !verbose);
             if (verbose) fprintf(stderr, "[hphp backend] gcc-fallback rc=%d nonempty=%d exe=%d\n",
@@ -902,10 +997,12 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
             if (verbose) fprintf(stderr, "[hphp backend] moving %s -> %s\n", out, exepath);
             remove_quiet(exepath);
             if (move_file(out_abs, exepath) == 0 && file_looks_like_exe(exepath)) {
+                free(sqlite_lib);
                 cleanup_build_files(wd, tag);
                 return 0;
             }
             fprintf(stderr, "hphp: cannot place executable at %s\n", exepath);
+            free(sqlite_lib);
             cleanup_build_files(wd, tag);
             return -1;
         }
@@ -919,6 +1016,7 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
 #else
     chdir(prev);
 #endif
+    free(sqlite_lib);
     cleanup_build_files(wd, tag);
     return -1;
 }

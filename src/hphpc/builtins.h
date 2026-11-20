@@ -49,7 +49,7 @@ const Builtin *builtin_lookup(const char *name);
 void builtins_init(void);      /* create shared Type singletons */
 
 /* shared primitive type singletons */
-extern Type *ty_int, *ty_i8, *ty_i16, *ty_i32, *ty_i64,
+extern Type *ty_int, *ty_i8, *ty_i16, *ty_i32, *ty_i64, *ty_i128,
     *ty_float, *ty_f32, *ty_f64, *ty_bool, *ty_string, *ty_void, *ty_mixed,
     *ty_null;
 Type *type_array_of(const Type *elem);

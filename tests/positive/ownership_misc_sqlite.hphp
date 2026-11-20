@@ -1,0 +1,39 @@
+<?php
+/* ownership_misc_sqlite.hphp — sqlite_column_text() copies out of SQLite's
+ * page memory; the string stays valid after finalize/close. Handles are raw
+ * pointers and therefore unsafe. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$src = "tests/positive/data/bt_fixture.db";
+if (!file_exists($src)) {
+    echo "ownership misc sqlite ok (fixture missing, skipped)\n";
+    exit(0);
+}
+$dir = sys_get_temp_dir();
+$path = $dir . "/hphp_ownership_sqlite.db";
+unlink($path);
+check("copy the fixture", copy($src, $path));
+
+$sql = "SELECT username FROM users WHERE id = 3";
+unsafe {
+    $db = sqlite_open($path);
+    check("sqlite_open", $db != 0);
+    $st = sqlite_prepare($db, $sql);
+    check("sqlite_prepare", $st != 0);
+    check("sqlite_step finds the row", sqlite_step($st) == 100);
+    $name = sqlite_column_text($st, 0);
+    check("sqlite_column_text value", $name == "carol");
+    check("sqlite_column_int on a text column", is_int(sqlite_column_int($st, 0)));
+    check("sqlite_step reaches the end", sqlite_step($st) == 101);
+    sqlite_finalize($st);
+    sqlite_close($db);
+}
+check("the copied text outlived the statement", $name == "carol");
+
+unlink($path);
+echo "ownership misc sqlite ok\n";

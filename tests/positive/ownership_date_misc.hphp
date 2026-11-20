@@ -1,0 +1,36 @@
+<?php
+/* ownership_date_misc.hphp — more date() format characters; every result is a
+ * fresh string and every argument is borrowed. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$ts = mktime(0, 0, 0, 1, 2, 2024);
+$fmt = "d/m/y";
+$r = date($fmt, $ts);
+check("date d/m/y", $r == "02/01/24");
+check("format survived", $fmt == "d/m/y");
+
+$r = date("N", $ts);
+check("date ISO weekday", $r == "2");
+
+$r = date("L", $ts);
+check("date leap-year flag", $r == "1");
+
+$r = date("t", $ts);
+check("date days in month", $r == "31");
+
+$r = date("j", $ts);
+check("date day without leading zero", $r == "2");
+
+$r = date("n", $ts);
+check("date month without leading zero", $r == "1");
+
+$r = date("Y-m-d", $ts);
+$unix = strtotime($r);
+check("date -> strtotime round trip", $unix == $ts);
+
+echo "ownership date misc ok\n";

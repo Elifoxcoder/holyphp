@@ -1,0 +1,32 @@
+<?php
+/* ownership_math_loop.hphp — math builtins borrow numbers and return scalars;
+ * no heap value is created, so the loop is flat. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$values = [1, 2, 3, 4];
+$fourtytwo = "42";
+$twofive = "2.5";
+$acc = 0;
+for ($round = 0; $round < 10; $round++) {
+    for ($i = 0; $i < 20000; $i++) {
+        $acc += abs(-7);
+        $acc += round(2.6);
+        $acc += floor(2.9);
+        $acc += ceil(2.1);
+        $acc += intdiv(9, 2);
+        $acc += intval(fmod(9.0, 4.0));
+        $acc += intval(pow(2, 3));
+        $acc += max($values);
+        $acc += min($values);
+        $acc += is_int($i) ? 1 : 0;
+        $acc += intval($fourtytwo);
+        $acc += intval(floatval($twofive));
+    }
+}
+check("math loop accumulated work", $acc > 0);
+echo "ownership math loop ok\n";

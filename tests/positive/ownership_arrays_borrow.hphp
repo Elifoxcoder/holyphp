@@ -1,0 +1,35 @@
+<?php
+/* ownership_arrays_borrow.hphp — reading builtins borrow the array and its
+ * elements; they never transfer ownership and never free anything. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$nums = [10, 20, 30];
+$needle = 20;
+
+check("end borrows the last value", end($nums) == 30);
+check("reset borrows the first value", reset($nums) == 10);
+check("array_search returns the key", array_search($needle, $nums) == 1);
+check("array_key_exists", array_key_exists(2, $nums));
+check("in_array", in_array($needle, $nums));
+check("max borrows the largest value", max($nums) == 30);
+check("min borrows the smallest value", min($nums) == 10);
+check("array_sum", array_sum($nums) == 60);
+check("array_product", array_product($nums) == 6000);
+check("count", count($nums) == 3);
+
+$map = ["a" => 1, "b" => 2];
+$keyA = "a";
+check("array_key_first", array_key_first($map) == $keyA);
+check("array_key_last", array_key_last($map) == "b");
+check("array_search on a map", array_search(2, $map) == "b");
+check("array_values does not change the map", count($map) == 2);
+
+/* The borrowed values are still readable after the reads above. */
+check("array survived the borrows", $nums[0] == 10 && $nums[2] == 30);
+
+if ($fail == 0) { echo "ownership arrays borrow ok\n"; } else { exit(1); }

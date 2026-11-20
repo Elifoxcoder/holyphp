@@ -1,0 +1,8 @@
+// i128_narrow_implicit.hphp — must FAIL: narrowing i128 to int is only
+// allowed with an explicit (int) cast.
+function take(int $value): int {
+    return $value;
+}
+
+$big = (i128)1 << 100;
+echo take($big);

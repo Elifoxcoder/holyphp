@@ -19,7 +19,7 @@ typedef struct AstClass AstClass;
 /* ---- Types ---- */
 typedef enum {
     TY_ERROR = 0,
-    TY_INT, TY_I8, TY_I16, TY_I32, TY_I64,
+    TY_INT, TY_I8, TY_I16, TY_I32, TY_I64, TY_I128,
     TY_FLOAT, TY_F32, TY_F64,
     TY_BOOL, TY_STRING, TY_VOID, TY_MIXED,
     TY_ARRAY,      /* .elem   : value array (COW), PHP-like */
@@ -103,7 +103,7 @@ struct Expr {
     bool is_stmt_value;        /* discardable result */
     bool is_move_source;       /* this expression moves an own<T> place */
     union {
-        struct { long long ival; } i;
+        struct { long long ival; __int128 wide; bool is_wide; } i;
         struct { double fval; } f;
         struct { const char *s; } str;
         struct { PtrVec strs; PtrVec exprs; } tpl;   /* const char* / Expr* */

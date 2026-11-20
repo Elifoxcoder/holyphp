@@ -1,0 +1,122 @@
+// i128_basic.hphp — the 128-bit integer type.
+// Run: hphp run tests/positive/i128_basic.hphp   (exit 0 = all good)
+//
+// i128 is a native 128-bit signed value (gcc __int128). It widens from
+// int/i8..i64 implicitly, narrows only through (int), and does NOT fit into
+// an hval: arrays, maps, mixed slots and closures reject it at compile time
+// (tests/negative/i128_into_array.hphp, i128_narrow_implicit.hphp).
+
+function check(bool $cond, string $what): void {
+    if ($cond) {
+        echo "OK   " . $what . "\n";
+    } else {
+        echo "FAIL " . $what . "\n";
+        exit(1);
+    }
+}
+
+// The sample from the task. F(186) is 332825110087067562321196029789634457848,
+// which is larger than INT128_MAX (2^127-1); i128 overflow wraps like int, so
+// the exact result is checked at n=184 and the wrap is asserted at n=186.
+function fib(int $n): i128 {
+    $a = (i128)0;
+    $b = (i128)1;
+    for ($i = 0; $i < $n; $i++) {
+        $t = $a + $b;
+        $a = $b;
+        $b = $t;
+    }
+    return $a;
+}
+
+check(fib(184) == 127127879743834334146972278486287885163, "fib(184) exact");
+check(fib(186) == -7457256833870901142178577642133753608, "fib(186) wraps");
+
+$max = (i128)170141183460469231731687303715884105727;
+$min = -(i128)170141183460469231731687303715884105727 - 1;
+check($max == 170141183460469231731687303715884105727, "INT128_MAX literal");
+check($min == -170141183460469231731687303715884105728, "INT128_MIN");
+check($min < 0 && $max > 0, "sign");
+
+// literals beyond the int64 range are i128
+check(9223372036854775808 > 9223372036854775807, "literal beyond int64");
+check(9223372036854775808 + 1 == 9223372036854775809, "beyond int64 arithmetic");
+
+// arithmetic
+check((i128)7 + (i128)5 == 12, "+");
+check((i128)7 - (i128)5 == 2, "-");
+check((i128)7 * (i128)5 == 35, "*");
+check((i128)100 / (i128)7 == 14, "/ is integer division on i128");
+check((i128)100 % (i128)7 == 2, "%");
+check((i128)2 ** 100 == 1267650600228229401496703205376, "**");
+check(-(i128)5 == -5, "unary -");
+
+// comparisons and spaceship
+check((i128)5 == 5, "==");
+check((i128)5 != 6, "!=");
+check((i128)5 < 6, "<");
+check((i128)5 <= 5, "<=");
+check((i128)6 > 5, ">");
+check((i128)6 >= 6, ">=");
+check(((i128)5 <=> 6) == -1 && ((i128)6 <=> 5) == 1 &&
+      ((i128)5 <=> 5) == 0, "<=>");
+
+// bit operations
+check(((i128)0xF0 & (i128)0x3C) == 0x30, "&");
+check(((i128)0xF0 | (i128)0x0F) == 0xFF, "|");
+check(((i128)0xFF ^ (i128)0x0F) == 0xF0, "^");
+check((~(i128)0) == -1, "~");
+check(((i128)1 << 100) == 1267650600228229401496703205376, "<<");
+check((((i128)1 << 100) >> 90) == 1024, ">>");
+
+// compound assignment and ++/--
+$x = (i128)10;
+$x += 5;  check($x == 15, "+=");
+$x -= 3;  check($x == 12, "-=");
+$x *= 2;  check($x == 24, "*=");
+$x /= 5;  check($x == 4, "/=");
+$x %= 3;  check($x == 1, "%=");
+$x **= 5; check($x == 1, "**=");
+$x++;     check($x == 2, "++");
+$x--;     check($x == 1, "--");
+
+// widening from int, and mixed arithmetic keeps the 128-bit width
+$i = 250;
+$w = $i + (i128)1;
+check($w == 251, "int widens to i128");
+check($w * 4 == 1004, "mixed arithmetic result is i128");
+
+// casts
+check(((int)(i128)42) == 42, "(int) explicit narrowing");
+check(((i128)3.9) == 3, "(i128) from float");
+check(((i128)"-77") == -77, "(i128) from string");
+check(((string)(i128)-77) == "-77", "(string) from i128");
+check(strval((i128)123456789012345678901234567890) ==
+      "123456789012345678901234567890", "strval");
+
+// string round-trip, concatenation and templates
+$big = (i128)123456789012345678901234567890;
+$text = (string)$big;
+check($text == "123456789012345678901234567890", "round-trip text");
+check(((i128)$text) == $big, "round-trip value");
+check("n=" . $big == "n=123456789012345678901234567890", "concatenation");
+check("tpl={$big}" == "tpl=123456789012345678901234567890", "template");
+
+// print_r returns the printed text; var_dump and json_encode are checked by
+// the shape they print (var_dump writes int(…) itself).
+check(print_r((i128)-5) == "-5", "print_r");
+check(json_encode((i128)123456789012345678901234567890) ==
+      "123456789012345678901234567890", "json_encode is a JSON number");
+var_dump($big);
+
+// division by zero throws like the int path
+$threw = false;
+try {
+    $zero = (i128)0;
+    $bad = (i128)1 / $zero;
+} catch (Exception $e) {
+    $threw = true;
+}
+check($threw, "division by zero throws");
+
+echo "all i128 checks passed\n";

@@ -1,0 +1,169 @@
+// controlflow.hphp — regression suite for loops and exceptions.
+// Run: hphp run tests/positive/controlflow.hphp   (exit 0 = all good)
+// check() prints OK/FAIL and exits(1) on the first failure.
+//
+// Guards these formerly-broken behaviours:
+//   * `continue` inside a `for` skipped the step statement → infinite loop.
+//   * a `throw` inside `catch` unwound past the enclosing try, so the
+//     `finally` block never ran.
+
+function check(bool $cond, string $what): void {
+    if ($cond) {
+        echo "OK   " . $what . "\n";
+    } else {
+        echo "FAIL " . $what . "\n";
+        exit(1);
+    }
+}
+
+// --- continue in every loop form -------------------------------------
+$t = "";
+for ($i = 0; $i < 5; $i++) {
+    if ($i == 2) { continue; }
+    $t = $t . $i;
+}
+check($t == "0134", "continue in for still runs the step (got '{$t}')");
+
+$t = "";
+$j = 0;
+while ($j < 5) {
+    $j++;
+    if ($j == 3) { continue; }
+    $t = $t . $j;
+}
+check($t == "1245", "continue in while (got '{$t}')");
+
+$t = "";
+$k = 0;
+do {
+    $k++;
+    if ($k == 2) { continue; }
+    $t = $t . $k;
+} while ($k < 4);
+check($t == "134", "continue in do-while (got '{$t}')");
+
+$t = "";
+foreach ([1, 2, 3, 4] as $v) {
+    if ($v % 2 == 0) { continue; }
+    $t = $t . $v;
+}
+check($t == "13", "continue in foreach (got '{$t}')");
+
+// continue only affects the innermost loop
+$t = "";
+for ($a = 0; $a < 3; $a++) {
+    for ($b = 0; $b < 3; $b++) {
+        if ($b == 1) { continue; }
+        $t = $t . $a . $b;
+    }
+}
+check($t == "000210122022", "nested continue targets the inner for (got '{$t}')");
+
+// --- break in every loop form ----------------------------------------
+$t = "";
+for ($i = 0; $i < 10; $i++) {
+    if ($i == 3) { break; }
+    $t = $t . $i;
+}
+check($t == "012", "break in for (got '{$t}')");
+
+$t = "";
+foreach ([9, 8, 7, 6] as $v) {
+    if ($v == 7) { break; }
+    $t = $t . $v;
+}
+check($t == "98", "break in foreach (got '{$t}')");
+
+// --- switch break vs. loop break -------------------------------------
+$t = "";
+foreach (["a", "b"] as $x) {
+    switch ($x) {
+        case "a":
+            $t = $t . "A";
+            break;
+        default:
+            $t = $t . "D";
+            break;
+    }
+}
+check($t == "AD", "break inside switch (got '{$t}')");
+
+// --- try/finally around control flow ---------------------------------
+$t = "";
+for ($i = 0; $i < 4; $i++) {
+    try {
+        if ($i == 1) { continue; }
+        $t = $t . "t" . $i;
+    } finally {
+        $t = $t . "f" . $i;
+    }
+}
+check($t == "t0f0f1t2f2t3f3", "finally runs before continue (got '{$t}')");
+
+$t = "";
+for ($i = 0; $i < 5; $i++) {
+    try {
+        if ($i == 2) { break; }
+        $t = $t . "b" . $i;
+    } finally {
+        $t = $t . "g" . $i;
+    }
+}
+check($t == "b0g0b1g1g2", "finally runs before break (got '{$t}')");
+
+// --- catch, rethrow and finally --------------------------------------
+$t = "";
+try {
+    try {
+        throw "inner";
+    } catch (string $e) {
+        $t = $t . "caught:" . $e;
+        throw "outer";
+    } finally {
+        $t = $t . "|finally";
+    }
+} catch (string $e2) {
+    $t = $t . "|outer:" . $e2;
+}
+check($t == "caught:inner|finally|outer:outer",
+      "finally runs when catch rethrows (got '{$t}')");
+
+// a handler that handles normally does NOT rethrow
+$t = "";
+try {
+    throw "boom";
+} catch (string $e) {
+    $t = $t . "handled";
+} finally {
+    $t = $t . "|fin";
+}
+check($t == "handled|fin", "handled exception (got '{$t}')");
+
+// nested try: inner throws, outer catches
+$t = "";
+try {
+    try {
+        throw "deep";
+    } finally {
+        $t = $t . "inner-fin";
+    }
+} catch (string $e) {
+    $t = $t . "|" . $e;
+}
+check($t == "inner-fin|deep", "unhandled inner try reaches outer catch (got '{$t}')");
+
+// --- return inside try still runs finally ----------------------------
+function f(int $n): string {
+    $log = "start";
+    try {
+        if ($n > 0) { return $log . "|ret"; }
+        $log = $log . "|neg";
+    } finally {
+        echo "";   // finally is honoured on the return path
+    }
+    return $log;
+}
+check(f(1) == "start|ret", "return from try");
+check(f(0) == "start|neg", "fall through try");
+
+echo "ALL CONTROL-FLOW CHECKS PASSED\n";

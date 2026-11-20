@@ -1,0 +1,28 @@
+<?php
+/* ownership_math_trig.hphp — transcendental builtins return floats. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+check("sin(0)", sin(0) == 0.0);
+check("cos(0)", cos(0) == 1.0);
+check("tan(0)", tan(0) == 0.0);
+check("asin(1)", asin(1) == pi() / 2);
+check("acos(1)", acos(1) == 0.0);
+check("atan(1) is pi/4", abs(atan(1) - pi() / 4) < 1e-12);
+check("atan2", abs(atan2(1, 1) - pi() / 4) < 1e-12);
+check("log(e)", abs(log(exp(1)) - 1) < 1e-12);
+check("log2", log2(8) == 3);
+check("log10", log10(1000) == 3);
+check("floor negates for log", log(1.0) == 0);
+check("hypot", hypot(3, 4) == 5);
+check("deg2rad", abs(deg2rad(180) - pi()) < 1e-12);
+check("rad2deg", abs(rad2deg(pi()) - 180) < 1e-9);
+check("pi", pi() > 3.14159 && pi() < 3.1416);
+check("M_PI", M_PI == pi());
+check("sin is odd", abs(sin(-1) + sin(1)) < 1e-12);
+
+echo "ownership math trig ok\n";

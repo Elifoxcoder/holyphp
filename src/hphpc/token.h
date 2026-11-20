@@ -54,6 +54,8 @@ struct Token {
     const char *text;   /* identifier / literal source text */
     size_t len;
     long long ival;
+    __int128 ival128;   /* T_INT value beyond the int64 range (type i128) */
+    bool ival_big;
     double fval;
     /* T_TPL parts: alternating (string chunk, expr source) */
     struct { PtrVec strs, exprs; } tpl;

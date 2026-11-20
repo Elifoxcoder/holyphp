@@ -1,0 +1,42 @@
+<?php
+/* ownership_math_types.hphp — type inspection returns scalars; gettype and
+ * the converters return fresh values. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$i = 42;
+$f = 2.5;
+$s = "42";
+$b = true;
+$n = null;
+$a = [1, 2];
+
+check("is_int", is_int($i) && is_integer($i) && !is_int($f));
+check("is_float", is_float($f) && !is_float($i));
+check("is_string", is_string($s) && !is_string($i));
+check("is_bool", is_bool($b) && !is_bool($i));
+check("is_array", is_array($a) && !is_array($s));
+check("is_null", is_null($n) && !is_null($i));
+check("is_numeric", is_numeric($s) && is_numeric("2.5") && !is_numeric("x"));
+
+check("intval string", intval($s) == 42);
+check("intval float", intval($f) == 2);
+check("floatval", floatval("2.5") == 2.5);
+check("doubleval alias", doubleval("2.5") == 2.5);
+check("boolval", boolval(1) == true && boolval(0) == false);
+
+$t = gettype($i);
+check("gettype int", $t == "integer");
+$t = gettype($a);
+check("gettype array", $t == "array");
+
+$copy = "keep";
+$t = strval($copy);
+check("strval value", $t == "keep");
+check("strval left the input intact", $copy == "keep");
+
+echo "ownership math types ok\n";

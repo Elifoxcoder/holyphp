@@ -41,6 +41,16 @@ void hbuf_free(Buf *b);
 #define buf_len   hbuf_len
 #define buf_free  hbuf_free
 
+/* ---------- 128-bit integers ----------
+ *
+ * `i128` is a primitive language type backed by gcc's __int128. It is a
+ * native C value everywhere (variables, fields, parameters, returns); it is
+ * NOT an hval payload, because hval's union holds 64 bits. Storing an i128
+ * into an array or a mixed slot is rejected by the compiler, and the few
+ * places that print a value convert it to a string first. */
+typedef __int128 hp_i128;
+typedef unsigned __int128 hp_u128;
+
 /* ---------- forward types ---------- */
 typedef struct hstr hstr;
 typedef struct harr harr;
@@ -88,6 +98,10 @@ hstr *hp_str_from_double(double v);
 hstr *hp_str_from_bool(bool b);
 int64_t hp_str_to_int(hstr *s);
 double hp_str_to_double(hstr *s);
+/* i128 <-> string: gcc's printf has no 128-bit conversion, so the decimal
+ * form is produced by hand (and handles the minimum value). */
+hstr *hp_i128_to_str(hp_i128 v);
+hp_i128 hp_str_to_i128(hstr *s);
 bool hp_str_is_numeric(hstr *s); /* PHP is_numeric() on a string value */
 uint32_t hp_str_hash(hstr *s);
 hstr *hp_str_toupper(hstr *s);
@@ -123,6 +137,7 @@ hval hp_of_arr(harr *a);
 hval hp_of_ptr(void *p);
 hval hp_of_clo(hclosure *c);
 static inline hval hp_hv_id(hval v) { return v; }
+hval hp_of_i128_str(hp_i128 v);     /* box an i128 as its decimal string */
 #define hv(x) _Generic((x), \
     hval: hp_hv_id, \
     int: hp_of_int, \
@@ -132,6 +147,7 @@ static inline hval hp_hv_id(hval v) { return v; }
     unsigned int: hp_of_int, \
     double: hp_of_float, \
     bool: hp_of_bool, \
+    hp_i128: hp_of_i128_str, \
     hstr*: hp_of_str, \
     harr*: hp_of_arr, \
     hclosure*: hp_of_clo, \
@@ -283,6 +299,23 @@ static inline bool hp_ge_f(double a, double b) { return a >= b; }
 static inline bool hp_lt_f(double a, double b) { return a < b; }
 static inline bool hp_gt_f(double a, double b) { return a > b; }
 static inline bool hp_eq_f(double a, double b) { return a == b; }
+
+/* i128 fast paths. Division and modulo throw the same errors as the int
+ * versions; comparison yields the PHP spaceship value. */
+static inline hp_i128 hp_i128_div(hp_i128 a, hp_i128 b) {
+    if (b == 0) hp_throw_str("Division by zero");
+    return a / b;
+}
+static inline hp_i128 hp_i128_mod(hp_i128 a, hp_i128 b) {
+    if (b == 0) hp_throw_str("Modulo by zero");
+    return a % b;
+}
+static inline int64_t hp_i128_cmp(hp_i128 a, hp_i128 b) {
+    return a < b ? -1 : (a > b ? 1 : 0);
+}
+hp_i128 hp_i128_pow(hp_i128 a, hp_i128 b);
+hval hp_i128_var_dump(hp_i128 v);   /* var_dump in the int(…) shape */
+hstr *hp_i128_print_r(hp_i128 v);   /* print_r: prints and returns the text */
 int64_t hp_cmp(hval a, hval b);   /* spaceship on hvals */
 int64_t hp_mod(int64_t a, int64_t b);
 hval hp_powv(hval a, hval b);

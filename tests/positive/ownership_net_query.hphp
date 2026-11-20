@@ -1,0 +1,27 @@
+<?php
+/* ownership_net_query.hphp — http_build_query returns a fresh string built
+ * from borrowed keys and values. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$q = ["a" => "1", "b" => "x y"];
+$r = http_build_query($q);
+check("query value", $r == "a=1&b=x+y");
+check("query left the map intact", count($q) == 2 && $q["b"] == "x y");
+
+$r = http_build_query([]);
+check("empty query is empty", $r == "");
+
+$special = ["k" => "a&b=c"];
+$r = http_build_query($special);
+check("special characters are encoded", str_contains($r, "%26") && str_contains($r, "%3D"));
+
+$nums = ["n" => 42];
+$r = http_build_query($nums);
+check("numeric values are converted", $r == "n=42");
+
+echo "ownership net query ok\n";

@@ -1,7 +1,7 @@
 /* builtins.c — PHP-compatible standard library function table. */
 #include "builtins.h"
 
-Type *ty_int, *ty_i8, *ty_i16, *ty_i32, *ty_i64,
+Type *ty_int, *ty_i8, *ty_i16, *ty_i32, *ty_i64, *ty_i128,
     *ty_float, *ty_f32, *ty_f64, *ty_bool, *ty_string, *ty_void, *ty_mixed,
     *ty_null;
 
@@ -28,6 +28,7 @@ void builtins_init(void) {
     ty_int = type_new(TY_INT);
     ty_i8 = type_new(TY_I8); ty_i16 = type_new(TY_I16);
     ty_i32 = type_new(TY_I32); ty_i64 = type_new(TY_I64);
+    ty_i128 = type_new(TY_I128);
     ty_float = type_new(TY_FLOAT); ty_f32 = type_new(TY_F32); ty_f64 = type_new(TY_F64);
     ty_bool = type_new(TY_BOOL);
     ty_string = type_new(TY_STRING);
@@ -202,7 +203,7 @@ void builtins_init(void) {
     add("cos",           B_ABS,     ty_float,  false, false);
     add("tan",           B_ABS,     ty_float,  false, false);
     add("atan",          B_ABS,     ty_float,  false, false);
-    add("atan2",         B_ABS,     ty_float,  false, false);
+    add("atan2",         B_MISC,    ty_float,  false, false);
     add("asin",          B_ABS,     ty_float,  false, false);
     add("acos",          B_ABS,     ty_float,  false, false);
     add("log",           B_ABS,     ty_float,  false, false);
@@ -506,8 +507,136 @@ void builtins_init(void) {
     add("ffi_load",      B_STR1,    ty_mixed,  true,  false);
     add("ffi_call",      B_MISC,    ty_mixed,  true,  true);
     add("heap_dump",     B_MISC,    ty_string, true,  false);
-    add("holy_maxout_start", B_MISC, ty_int, false, false);
-    add("holy_challenge_start", B_MISC, ty_int, false, false);
+
+    /* ported with the challenge runtime: generic transport, SQLite,
+     * string builders and typed int arrays (hphp_uring.c,
+     * hphp_sqlite.c, hphp_std.c). Bounds-skipping and raw-pointer
+     * builtins carry the unsafe flag; enforcement comes later. */
+    add("accept_emfile",              B_MISC,  ty_bool, false, false);
+    add("arr_clear",                  B_MISC,  ty_bool, false, false);
+    add("arr_free",                   B_MISC,  ty_bool, true, false);
+    add("bt_close",                   B_MISC,  ty_bool, false, false);
+    add("bt_col_int",                 B_MISC,  ty_int, false, false);
+    add("bt_col_int_at",              B_MISC,  ty_int, false, false);
+    add("bt_col_len",                 B_MISC,  ty_int, true, false);
+    add("bt_col_off",                 B_MISC,  ty_int, true, false);
+    add("bt_cols",                    B_MISC,  ty_int, false, false);
+    add("bt_count_key",               B_MISC,  ty_int, false, false);
+    add("bt_count_range",             B_MISC,  ty_int, false, false);
+    add("bt_first",                   B_MISC,  ty_int, false, false);
+    add("bt_last",                    B_MISC,  ty_int, false, false);
+    add("bt_multi_keys",              B_MISC,  ty_int, false, false);
+    add("bt_multi_payloads",          B_MISC,  ty_bool, true, false);
+    add("bt_multi_release",           B_MISC,  ty_bool, true, false);
+    add("bt_multi_seek",              B_MISC,  ty_int, true, false);
+    add("bt_next",                    B_MISC,  ty_int, false, false);
+    add("bt_open",                    B_MISC,  ty_int, true, false);
+    add("bt_page_release",            B_MISC,  ty_bool, true, false);
+    add("bt_payload_pin",             B_MISC,  ty_int, true, false);
+    add("bt_payload_ptr",             B_MISC,  ty_int, true, false);
+    add("bt_payload_size",            B_MISC,  ty_int, false, false);
+    add("bt_prev",                    B_MISC,  ty_int, false, false);
+    add("bt_read",                    B_MISC,  ty_int, true, false);
+    add("bt_root",                    B_MISC,  ty_int, true, false);
+    add("bt_rowid",                   B_MISC,  ty_int, false, false);
+    add("bt_seek",                    B_MISC,  ty_int, false, false);
+    add("bt_tail",                    B_MISC,  ty_int, true, false);
+    add("epoll_add",                  B_MISC,  ty_int, false, false);
+    add("epoll_del",                  B_MISC,  ty_int, false, false);
+    add("epoll_mod",                  B_MISC,  ty_int, false, false);
+    add("epoll_wait2",                B_MISC,  ty_int, false, false);
+    add("epoll_wait_iarr2",           B_MISC,  ty_bool, true, false);
+    add("epoll_wait_into",            B_MISC,  ty_int, false, false);
+    add("http_request_bounds",        B_MISC,  ty_int, false, false);
+    add("iarr_data_ptr",              B_MISC,  ty_int, true, false);
+    add("iarr_get",                   B_MISC,  ty_int, false, false);
+    add("iarr_get_fast",              B_MISC,  ty_int, true, false);
+    add("iarr_len",                   B_MISC,  ty_int, false, false);
+    add("iarr_new",                   B_MISC,  ty_int, false, false);
+    add("iarr_new_uninit",            B_MISC,  ty_int, true, false);
+    add("iarr_release",               B_MISC,  ty_bool, true, false);
+    add("iarr_set",                   B_MISC,  ty_bool, false, false);
+    add("iarr_set_fast",              B_MISC,  ty_bool, true, false);
+    add("int_digits",                 B_MISC,  ty_int, false, false);
+    add("json_num_field",             B_MISC,  ty_int, false, false);
+    add("json_str_field",             B_MISC,  ty_string, false, false);
+    add("jwt_verifier_new",           B_MISC,  ty_string, false, false);
+    add("jwt_verify",                 B_MISC,  ty_string, false, false);
+    add("jwt_verify_prepared",        B_MISC,  ty_string, false, false);
+    add("live_allocs",                B_MISC,  ty_mixed, false, false);
+    add("live_bytes",                 B_MISC,  ty_mixed, false, false);
+    add("nofile_limit",               B_MISC,  ty_int, false, false);
+    add("object_free",                B_MISC,  ty_bool, true, false);
+    add("runtime_diag_write",         B_MISC,  ty_bool, false, false);
+    add("runtime_stats",              B_MISC,  ty_string, false, false);
+    add("sb_bytes",                   B_MISC,  ty_bool, true, false);
+    add("sb_data_ptr",                B_MISC,  ty_int, true, false);
+    add("sb_discard",                 B_MISC,  ty_bool, true, false);
+    add("sb_int",                     B_MISC,  ty_bool, false, false);
+    add("sb_json",                    B_MISC,  ty_int, false, false);
+    add("sb_json_str",                B_MISC,  ty_int, false, false);
+    add("sb_len",                     B_MISC,  ty_int, false, false);
+    add("sb_new",                     B_MISC,  ty_int, false, false);
+    add("sb_prepend",                 B_MISC,  ty_bool, false, false);
+    add("sb_put",                     B_MISC,  ty_bool, false, false);
+    add("sb_reserve",                 B_MISC,  ty_bool, false, false);
+    add("scalar_binop",               B_MISC,  ty_mixed, false, false);
+    add("scope_begin",                B_MISC,  ty_bool, false, false);
+    add("scope_end",                  B_MISC,  ty_bool, true, false);
+    add("sqlite_bg_checkpoint_active", B_MISC,  ty_mixed, false, false);
+    add("sqlite_bg_checkpoint_hold",  B_MISC,  ty_mixed, false, false);
+    add("sqlite_bg_checkpoint_start", B_MISC,  ty_mixed, false, false);
+    add("sqlite_bg_checkpoint_tick",  B_MISC,  ty_mixed, false, false);
+    add("sqlite_bind_int",            B_MISC,  ty_bool, false, false);
+    add("sqlite_bind_text",           B_MISC,  ty_bool, false, false);
+    add("sqlite_busy_timeout",        B_MISC,  ty_bool, false, false);
+    add("sqlite_changes",             B_MISC,  ty_int, false, false);
+    add("sqlite_clear_bindings",      B_MISC,  ty_bool, false, false);
+    add("sqlite_close",               B_MISC,  ty_mixed, false, false);
+    add("sqlite_column_int",          B_MISC,  ty_int, false, false);
+    add("sqlite_column_text",         B_MISC,  ty_string, false, false);
+    add("sqlite_errmsg",              B_MISC,  ty_mixed, false, false);
+    add("sqlite_exec",                B_MISC,  ty_bool, false, false);
+    add("sqlite_extended_errcode",    B_MISC,  ty_int, false, false);
+    add("sqlite_finalize",            B_MISC,  ty_bool, false, false);
+    add("sqlite_is_lock_error",       B_MISC,  ty_bool, false, false);
+    add("sqlite_last_insert_rowid",   B_MISC,  ty_int, false, false);
+    add("sqlite_open",                B_MISC,  ty_int, true, false);
+    add("sqlite_open_vfs",            B_MISC,  ty_int, true, false);
+    add("sqlite_prepare",             B_MISC,  ty_int, true, false);
+    add("sqlite_reset",               B_MISC,  ty_int, false, false);
+    add("sqlite_status",              B_MISC,  ty_string, false, false);
+    add("sqlite_step",                B_MISC,  ty_int, false, false);
+    add("str_at_eq",                  B_MISC,  ty_bool, false, false);
+    add("str_find_range",             B_MISC,  ty_int, false, false);
+    add("str_free",                   B_MISC,  ty_bool, true, false);
+    add("str_from_bytes",             B_MISC,  ty_string, true, false);
+    add("str_int_range",              B_MISC,  ty_int, false, false);
+    add("str_persist",                B_MISC,  ty_string, false, false);
+    add("str_pos_ci",                 B_MISC,  ty_mixed, false, false);
+    add("str_prefix_ci",              B_MISC,  ty_mixed, false, false);
+    add("str_to_int",                 B_MISC,  ty_int, false, false);
+    add("str_to_int_range",           B_MISC,  ty_int, false, false);
+    add("str_trim_range",             B_MISC,  ty_mixed, false, false);
+    add("stream_ready_into",          B_MISC,  ty_bool, true, false);
+    add("stream_recv_release",        B_MISC,  ty_int, false, false);
+    add("stream_send2",               B_MISC,  ty_int, false, false);
+    add("stream_send2_nb",            B_MISC,  ty_int, false, false);
+    add("stream_send_nb",             B_MISC,  ty_int, false, false);
+    add("stream_send_sb",             B_MISC,  ty_int, false, false);
+    add("stream_set_nodelay",         B_MISC,  ty_bool, false, false);
+    add("stream_set_socket_buffers",  B_MISC,  ty_bool, false, false);
+    add("stream_socket_server_reuseport", B_MISC,  ty_int, false, false);
+    add("uring_active",               B_MISC,  ty_bool, false, false);
+    add("uring_direct",               B_MISC,  ty_bool, false, false);
+    add("uring_direct_slots",         B_MISC,  ty_int, false, false);
+
+    /* raw-memory accessors for programs that used *($p + n) */
+    add("sb_take",                    B_MISC,  ty_string, true, false);
+    add("u8_at",                      B_MISC,  ty_int, true, false);
+    add("u8_set",                     B_MISC,  ty_int, true, false);
+    add("i64_at",                     B_MISC,  ty_int, true, false);
+    add("i64_set",                    B_MISC,  ty_int, true, false);
 }
 
 const Builtin *builtin_lookup(const char *name) {

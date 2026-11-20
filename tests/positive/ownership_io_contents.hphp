@@ -1,0 +1,39 @@
+<?php
+/* ownership_io_contents.hphp — file_get_contents returns a fresh string;
+ * file_put_contents borrows its data and returns a scalar. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$dir = sys_get_temp_dir();
+$path = $dir . "/hphp_ownership_contents.txt";
+$text = "hello";
+$more = "-world";
+$append = 8;
+
+check("first write", file_put_contents($path, $text) == strlen($text));
+$r = file_get_contents($path);
+check("read back", $r == "hello");
+check("the written string survived", $text == "hello");
+
+check("append write", file_put_contents($path, $more, $append) == strlen($more));
+$r = file_get_contents($path);
+check("append read back", $r == "hello-world");
+
+$path2 = $dir . "/hphp_ownership_parts.txt";
+check("write an array", file_put_contents($path2, ["a", "b"], $append) == true);
+$r = file_get_contents($path2);
+check("array write result", $r == "ab");
+
+check("filesize", filesize($path) == 11);
+check("file_exists", file_exists($path));
+check("is_file", is_file($path));
+check("is_dir false for a file", !is_dir($path));
+
+unlink($path);
+unlink($path2);
+check("unlink removes the file", !file_exists($path));
+echo "ownership io contents ok\n";

@@ -1,0 +1,30 @@
+<?php
+/* ownership_date_loop.hphp — date builtins return a fresh string or a
+ * scalar; the format string is borrowed. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$fmt = "Y-m-d H:i:s";
+$iso = "2024-02-29 12:00:00";
+$delta = "+1 day";
+$acc = 0;
+for ($round = 0; $round < 10; $round++) {
+    for ($i = 0; $i < 20000; $i++) {
+        $r = date($fmt, 0);
+        $acc += strlen($r);
+        $acc += strtotime($iso);
+        $acc += strtotime($delta);
+        $acc += mktime(12, 0, 0, 2, 29, 2024);
+        $acc += checkdate(2, 29, 2024) ? 1 : 0;
+        $acc += time() > 0 ? 1 : 0;
+        $acc += microtime() > 0 ? 1 : 0;
+        $acc += hrtime(1) > 0 ? 1 : 0;
+        usleep(0);
+    }
+}
+check("date loop accumulated work", $acc > 0);
+echo "ownership date loop ok\n";

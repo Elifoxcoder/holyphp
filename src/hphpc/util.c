@@ -2,6 +2,11 @@
 #include "diag.h"
 #include <stdarg.h>
 
+/* Non-NULL only inside the fuzz target: a fatal compiler error unwinds to the
+ * fuzzer instead of terminating the process, so one bad input does not end the
+ * run. Normal compiler runs leave this NULL and exit as before. */
+jmp_buf *hp_fatal_jmp = NULL;
+
 void *xmalloc(size_t n) {
     void *p = malloc(n ? n : 1);
     if (!p) { fprintf(stderr, "hphpc: out of memory\n"); exit(1); }
@@ -39,6 +44,7 @@ void fatal(const char *fmt, ...) {
     /* Render it like any other diagnostic: a terminal gets the source frame,
      * a pipe the one-line form. */
     diag_fatal_message(msg);
+    if (hp_fatal_jmp) longjmp(*hp_fatal_jmp, 1);
     exit(1);
 }
 

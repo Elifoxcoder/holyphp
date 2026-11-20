@@ -1,0 +1,155 @@
+// tests/positive/modern8.hphp — new language + stdlib features.
+// Covers: ??=, PHP_* constants, destructuring, closure sorting/walking,
+// round($x, $p, mode), real date(), number_format(seps), file handles,
+// mkdir/basename/dirname/glob, array_column/chunk/pad/replace/key_first,
+// array_map with (v,k), vsprintf, str_shuffle, http_get, str functions.
+
+function ck(bool $c, string $name, array &$fails): void {
+    if (!$c) { $fails[] = $name; }
+}
+
+$fails = [];
+
+/* ---- ??= ---- */
+$a = null;
+$a ??= "filled";
+$b = "already";
+$b ??= "nope";
+ck($a == "filled", "??= fills null", $fails);
+ck($b == "already", "??= keeps non-null", $fails);
+$map = ["x" => null];
+$map["x"] ??= 7;
+ck($map["x"] == 7, "??= on map element", $fails);
+
+/* ---- PHP_* constants ---- */
+ck(PHP_INT_SIZE == 8, "PHP_INT_SIZE", $fails);
+ck(PHP_INT_MAX == 9223372036854775807, "PHP_INT_MAX", $fails);
+ck(PHP_EOL == "\r\n", "PHP_EOL on Windows", $fails);
+ck(PHP_OS == "Windows", "PHP_OS", $fails);
+ck(PHP_FILE_APPEND == 8, "PHP_FILE_APPEND", $fails);
+
+/* ---- destructuring ---- */
+[$p, $q] = [10, 20];
+ck($p == 10 && $q == 20, "list destructuring", $fails);
+[$m, , $o] = [1, 2, 3];
+ck($m == 1 && $o == 3, "destructuring skip slot", $fails);
+$u = ["n" => "Ada", "j" => "Dev"];
+["n" => $nm, "j" => $jb] = $u;
+ck($nm == "Ada" && $jb == "Dev", "keyed destructuring", $fails);
+[$x1, $y1] = [1, 2, 3];          // extra source elements are ignored
+ck($x1 == 1 && $y1 == 2, "destructuring extra elems", $fails);
+[$z1, $z2] = [7];                 // missing slots become null
+ck($z1 == 7 && $z2 == null, "destructuring missing slot", $fails);
+
+/* ---- closures + sorting/walking ---- */
+$nums = [5, 2, 8, 1];
+usort($nums, fn($x, $y) => $x <=> $y);
+ck($nums[0] == 1 && $nums[3] == 8, "usort ascending", $fails);
+usort($nums, fn($x, $y) => $y <=> $x);
+ck($nums[0] == 8 && $nums[3] == 1, "usort descending", $fails);
+
+$doubled = array_map(fn($v) => $v * 2, [1, 2, 3]);
+ck($doubled[0] == 2 && $doubled[2] == 6, "array_map closure", $fails);
+$withkey = [];
+array_map(function($v, $k) use (&$withkey) { $withkey[] = $k; }, ["a" => 1]);
+ck(count($withkey) == 1, "array_map sees key", $fails);
+
+$walked = 0;
+array_walk([1, 2, 3], function($v, $k) use (&$walked) { $walked += $v; });
+ck($walked == 6, "array_walk", $fails);
+
+$filtered = array_filter([1, 2, 3, 4], fn($v) => $v % 2 == 0);
+ck(count($filtered) == 2, "array_filter closure", $fails);
+$sum = array_reduce([1, 2, 3, 4], fn($acc, $v) => $acc + $v, 0);
+ck($sum == 10, "array_reduce closure", $fails);
+
+/* ---- round with mode ---- */
+ck(round(2.5) == 3.0, "round half up", $fails);
+ck(round(2.5, 0, PHP_ROUND_HALF_DOWN) == 2.0, "round half down", $fails);
+ck(round(2.567, 2) == 2.57, "round precision", $fails);
+
+/* ---- number_format with separators ---- */
+ck(number_format(1234567.891) == "1,234,567.89", "number_format default", $fails);
+ck(number_format(1234567.891, 2, ",", ".") == "1.234.567,89", "number_format seps", $fails);
+
+/* ---- date() formats real values ---- */
+$ds = date("Y-m-d H:i");
+ck(strlen($ds) == 16 && substr($ds, 4, 1) == "-", "date Y-m-d H:i", $fails);
+ck(strlen(date("y")) == 2, "date y", $fails);
+
+/* ---- new string functions ---- */
+ck(substr_count("aXbXcX", "X") == 3, "substr_count", $fails);
+ck(strlen(str_shuffle("abcdef")) == 6, "str_shuffle keeps length", $fails);
+ck(strip_tags("<b>hi</b> there") == "hi there", "strip_tags", $fails);
+ck(html_entity_decode("&lt;b&gt; &amp; &quot;q&quot;") == "<b> & \"q\"", "html_entity_decode", $fails);
+ck(vsprintf("%s=%d", ["x", 42]) == "x=42", "vsprintf", $fails);
+
+/* ---- array additions ---- */
+$rows = [["n" => "A", "s" => 1], ["n" => "B", "s" => 2]];
+ck(array_column($rows, "s")[1] == 2, "array_column", $fails);
+$chunks = array_chunk([1, 2, 3, 4, 5], 2);
+ck(count($chunks) == 3 && count($chunks[0]) == 2, "array_chunk", $fails);
+$padded = array_pad([1], 4, 0);
+ck(count($padded) == 4 && $padded[0] == 1, "array_pad", $fails);
+$repl = array_replace(["a" => 1, "b" => 2], ["b" => 9]);
+ck($repl["b"] == 9, "array_replace", $fails);
+ck(array_key_first(["k1" => 1, "k2" => 2]) == "k1", "array_key_first", $fails);
+ck(array_key_last(["k1" => 1, "k2" => 2]) == "k2", "array_key_last", $fails);
+$merged = array_merge([1, 2], [3], ["z" => 4]);
+ck(count($merged) == 4, "array_merge variadic", $fails);
+$diff = array_diff([1, 2, 3, 4], [2, 4]);
+ck(count($diff) == 2, "array_diff variadic", $fails);
+$inter = array_intersect([1, 2, 3, 4], [2, 4, 6]);
+ck(count($inter) == 2, "array_intersect variadic", $fails);
+
+/* ---- filesystem path helpers ---- */
+ck(basename("/a/b/c.txt") == "c.txt", "basename", $fails);
+ck(basename("c.txt", ".txt") == "c", "basename with suffix", $fails);
+ck(dirname("/a/b/c.txt") == "/a/b", "dirname", $fails);
+$pi = pathinfo("/x/y/photo.jpg");
+ck($pi["basename"] == "photo.jpg" && $pi["extension"] == "jpg", "pathinfo", $fails);
+ck(sys_get_temp_dir() != "", "sys_get_temp_dir", $fails);
+
+/* ---- file handles end-to-end ---- */
+$tmp = sys_get_temp_dir() . "/hphp_modern8_test.txt";
+$h = fopen($tmp, "w");
+ck($h != false, "fopen returns handle", $fails);
+fwrite($h, "line1\n");
+fwrite($h, "line2\n");
+fclose($h);
+$h2 = fopen($tmp, "r");
+$ln = fgets($h2);
+ck($ln == "line1", "fgets reads line", $fails);
+$rest = fread($h2, 100);
+ck($rest == "line2\n", "fread reads rest", $fails);
+ck(feof($h2), "feof at end", $fails);
+fclose($h2);
+$n = file_put_contents($tmp, "appended!", PHP_FILE_APPEND);
+ck($n == strlen("appended!"), "file_put_contents FILE_APPEND", $fails);
+$h3 = fopen($tmp, "r");
+$all = fread($h3, 1000);
+ck(strpos($all, "appended!") !== false, "append really appended", $fails);
+fclose($h3);
+
+/* ---- mkdir recursive + glob ---- */
+$ndir = sys_get_temp_dir() . "/hphp_mkdir_a/b/c";
+ck(mkdir($ndir, true), "mkdir recursive", $fails);
+ck(is_dir($ndir), "mkdir created dirs", $fails);
+$gdir = sys_get_temp_dir() . "/hphp_glob";
+mkdir($gdir, true);
+file_put_contents($gdir . "/zeta.txt", "x");
+file_put_contents($gdir . "/alpha.txt", "y");
+$found = glob($gdir . "/*.txt");
+ck(count($found) == 2, "glob finds both", $fails);
+
+/* ---- http_get (no server => false is fine, must not crash) ---- */
+$resp = http_get("http://127.0.0.1:1/nope");
+ck($resp == false, "http_get to dead port is false", $fails);
+
+if (count($fails) == 0) {
+    echo "modern8: ALL PASS\n";
+} else {
+    echo "modern8: FAILED: ";
+    foreach ($fails as $f) { echo $f . "; "; }
+    echo "\n";
+}

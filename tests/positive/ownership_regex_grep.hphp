@@ -1,0 +1,25 @@
+<?php
+/* ownership_regex_grep.hphp — preg_grep returns a new array that borrows the
+ * matching elements; the input array keeps owning them. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$words = ["ann", "bob", "abe", "cat"];
+$r = preg_grep("/^a/", $words);
+check("preg_grep count", count($r) == 2);
+check("preg_grep values", $r[0] == "ann" && $r[1] == "abe");
+check("the input still owns every word", count($words) == 4 && $words[1] == "bob");
+
+$r = preg_grep("/z/", $words);
+check("preg_grep without matches is empty", count($r) == 0);
+
+$r = preg_grep("/[a-z]+/i", ["A1", "b2"]);
+check("preg_grep with a flag", count($r) == 2);
+
+check("invalid pattern returns false", preg_grep("/[/", $words) === false);
+
+echo "ownership regex grep ok\n";

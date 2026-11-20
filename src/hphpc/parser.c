@@ -17,6 +17,20 @@
 #include "parser.h"
 #include <ctype.h>
 
+/* A recursive-descent parser runs out of stack on deeply nested input
+ * (`((((…`, `!!!!…`, `1**1**…`, `{{{…`). One fuzzer input killed the process
+ * with a stack overflow before this limit existed; report a normal error
+ * instead. The deepest legal test file needs well under 100 levels. */
+#define MAX_PARSE_DEPTH 400
+
+static void parser_enter(Parser *p) {
+    if (++p->depth <= MAX_PARSE_DEPTH) return;
+    const Token *t = ts_peek(p->ts);
+    fatal("%s:%zu:%zu: nesting too deep (limit %d)",
+          t->file, t->line, t->col, MAX_PARSE_DEPTH);
+}
+static void parser_leave(Parser *p) { p->depth--; }
+
 static Expr *parse_expr(Parser *p);
 static Expr *parse_assign(Parser *p);
 static Expr *parse_ternary(Parser *p);
@@ -215,6 +229,22 @@ Expr *parse_embedded_expr(const char *src, const char *file) {
 static bool at_ident(Parser *p, const char *kw) {
     const Token *t = ts_peek(p->ts);
     return t->kind == T_IDENT && t->len == strlen(kw) && memcmp(t->text, kw, t->len) == 0;
+}
+
+/* A primitive type spelling for a C/PHP-style cast `(int)$x`. Keep this in
+ * step with the primitive table in parse_type(). */
+static bool cast_type_name(const Token *t) {
+    static const char *names[] = {
+        "int", "i8", "i16", "i32", "i64", "i128",
+        "u8", "u16", "u32", "u64", "usize", "isize",
+        "float", "f32", "f64", "double",
+        "bool", "string", "str", "array", "list", "mixed", "void", NULL
+    };
+    if (!t || t->kind != T_IDENT || !t->text) return false;
+    for (int i = 0; names[i]; i++)
+        if (t->len == strlen(names[i]) && memcmp(t->text, names[i], t->len) == 0)
+            return true;
+    return false;
 }
 /* contextual keyword: also accept the reserved keyword form (e.g. "extends"
  * lexed as T_KW_EXTENDS) so class headers read like PHP */
@@ -513,7 +543,7 @@ static Type *parse_type_base(Parser *p) {
     (void)nm;
     static const struct { const char *n; TypeKind k; } prims[] = {
         {"int", TY_INT}, {"i8", TY_I8}, {"i16", TY_I16}, {"i32", TY_I32},
-        {"i64", TY_I64}, {"u8", TY_I8}, {"u16", TY_I16}, {"u32", TY_I32},
+        {"i64", TY_I64}, {"i128", TY_I128}, {"u8", TY_I8}, {"u16", TY_I16}, {"u32", TY_I32},
         {"u64", TY_I64}, {"usize", TY_I64}, {"isize", TY_I64},
         {"float", TY_FLOAT}, {"f32", TY_F32}, {"f64", TY_F64},
         {"double", TY_FLOAT},
@@ -711,7 +741,15 @@ static Stmt *parse_simple_stmt(Parser *p) {
     return s;
 }
 
+static Stmt *parse_stmt_inner(Parser *p);
 static Stmt *parse_stmt(Parser *p) {
+    parser_enter(p);
+    Stmt *s = parse_stmt_inner(p);
+    parser_leave(p);
+    return s;
+}
+
+static Stmt *parse_stmt_inner(Parser *p) {
     const Token *t0 = ts_peek(p->ts);
     switch (t0->kind) {
     case T_KW_LET: {
@@ -1012,7 +1050,12 @@ static Stmt *parse_stmt(Parser *p) {
 }
 
 /* ---- Expressions ---- */
-static Expr *parse_expr(Parser *p) { return parse_assign(p); }
+static Expr *parse_expr(Parser *p) {
+    parser_enter(p);
+    Expr *e = parse_assign(p);
+    parser_leave(p);
+    return e;
+}
 
 /* Tokens that can begin a type annotation. This is what tells a typed
  * declaration ("$x: int = 5") apart from a ternary branch
@@ -1171,7 +1214,7 @@ static Expr *parse_shift(Parser *p) { return parse_binop_level(p, 8); }
 static Expr *parse_additive(Parser *p) { return parse_binop_level(p, 9); }
 static Expr *parse_multiplicative(Parser *p) { return parse_binop_level(p, 10); }
 
-static Expr *parse_pow(Parser *p) {
+static Expr *parse_pow_inner(Parser *p) {
     Expr *base = parse_unary(p);
     if (ts_check(p->ts, T_POW)) {
         Token op = *ts_advance(p->ts);
@@ -1185,8 +1228,34 @@ static Expr *parse_pow(Parser *p) {
     return base;
 }
 
-static Expr *parse_unary(Parser *p) {
+static Expr *parse_pow(Parser *p) {
+    parser_enter(p);
+    Expr *e = parse_pow_inner(p);
+    parser_leave(p);
+    return e;
+}
+
+static Expr *parse_unary_inner(Parser *p) {
     const Token *t = ts_peek(p->ts);
+    /* PHP/C-style cast: `(int)$x`, `(i128)$n`, `(string)$v`. The parser's
+     * native form is `$x as int`; both produce the same EX_CAST. Only the
+     * primitive spellings are recognised, so a parenthesised identifier or
+     * `($x)` is untouched. */
+    if (t->kind == T_LPAREN) {
+        const Token *n1 = ts_peek2(p->ts), *n2 = ts_peek3(p->ts);
+        if (n1 && n1->kind == T_IDENT && n2 && n2->kind == T_RPAREN &&
+            cast_type_name(n1)) {
+            Token lp = *ts_advance(p->ts);          /* ( */
+            const Type *to = parse_type(p);
+            ts_expect(p->ts, T_RPAREN, "')' after cast type");
+            Expr *operand = parse_unary(p);
+            Expr *e = expr_new(EX_CAST, lp);
+            e->u.cast.to = to;
+            e->u.cast.operand = operand;
+            e->u.cast.ty_tok = *n1;
+            return e;
+        }
+    }
     if (t->kind == T_NOT || t->kind == T_MINUS || t->kind == T_PLUS || t->kind == T_TILDE) {
         Token op = *ts_advance(p->ts);
         Expr *operand = parse_unary(p);
@@ -1216,6 +1285,13 @@ static Expr *parse_unary(Parser *p) {
         return e;
     }
     return parse_postfix(p);
+}
+
+static Expr *parse_unary(Parser *p) {
+    parser_enter(p);
+    Expr *e = parse_unary_inner(p);
+    parser_leave(p);
+    return e;
 }
 
 static Expr *parse_call_args(Parser *p, PtrVec *args) {
@@ -1455,6 +1531,8 @@ static Expr *parse_primary(Parser *p) {
         ts_advance(p->ts);
         Expr *e = expr_new(EX_INT, *t);
         e->u.i.ival = t->ival;
+        e->u.i.wide = t->ival128;
+        e->u.i.is_wide = t->ival_big;
         return e;
     }
     case T_FLOAT: {

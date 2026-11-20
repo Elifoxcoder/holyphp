@@ -12,6 +12,8 @@ hphp_out.*
 hp_demo*
 *.gen.c
 build_log.txt
+# generated: the vendored SQLite archive built for this host (differs per OS)
+/src/hphpc/sqlite_embed.h
 
 # cargo build output (the Rust baseline lives in scratch/)
 target/
@@ -26,6 +28,14 @@ holybrowser/native/build/
 
 # registry runtime state
 registry/server.log
+
+# fuzzing: crash inputs, logs and the growing corpus stay local. The curated
+# seeds under tests/fuzz/corpus/ and tests/fuzz/repro/ are committed.
+tests/fuzz/artifacts/
+tests/fuzz/logs/
+
+# challenge benchmark: the server binary built by run.sh
+benchmarks/challenge/bin/
 
 # editor / OS
 .freebuff/

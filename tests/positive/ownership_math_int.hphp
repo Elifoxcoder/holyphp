@@ -1,0 +1,30 @@
+<?php
+/* ownership_math_int.hphp — random builtins return scalars and keep their
+ * seed state; no value changes hands. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+srand(1234);
+$a = rand(0, 1000000);
+$b = rand(0, 1000000);
+check("rand stays in range", $a >= 0 && $b >= 0);
+srand(1234);
+check("srand makes rand repeatable", rand(0, 1000000) == $a);
+
+check("rand min/max", rand(5, 5) == 5);
+check("mt_rand min/max", mt_rand(7, 7) == 7);
+$r = random_int(1, 1);
+check("random_int min/max", $r == 1);
+$f = lcg_value();
+check("lcg_value is in [0,1)", $f >= 0.0 && $f < 1.0);
+
+check("intdiv truncates toward zero", intdiv(-7, 2) == -3);
+check("fmod keeps the sign", fmod(-7.0, 2.0) == -1.0);
+check("pow of zero", pow(0, 3) == 0);
+check("hypot of zero", hypot(0, 0) == 0);
+
+echo "ownership math int ok\n";

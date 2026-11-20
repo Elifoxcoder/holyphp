@@ -1,0 +1,32 @@
+<?php
+/* ownership_net_misc.hphp — transport helpers take handles/scalars and return
+ * scalars or fresh values; invalid handles are reported, never dereferenced. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$bad = -1;
+check("accept_emfile is a bool", is_bool(accept_emfile()));
+check("nofile_limit is an int", is_int(nofile_limit()));
+check("nofile_limit is non-negative", nofile_limit() >= 0);
+check("uring_active is a bool", is_bool(uring_active()));
+check("uring_direct is a bool", is_bool(uring_direct()));
+check("uring_direct_slots is an int", is_int(uring_direct_slots()));
+
+check("stream_set_nodelay rejects a bad handle", stream_set_nodelay($bad) == false);
+check("stream_set_socket_buffers rejects a bad handle", stream_set_socket_buffers($bad, 1024, 1024) == false);
+check("stream_eof on a bad handle is true", stream_eof($bad) == true);
+check("stream_close on a bad handle is false", stream_close($bad) == false);
+
+$p = stream_peer($bad);
+check("stream_peer on a bad handle is empty", $p == "");
+
+$list = [];
+$ready = stream_ready($list, 0);
+check("stream_ready returns an array", is_array($ready));
+check("stream_ready with no handles is empty", count($ready) == 0);
+
+echo "ownership net misc ok\n";

@@ -1,0 +1,5 @@
+// unterminated_comment.hphp — must FAIL: the block comment never closes.
+// The lexer used to run past the end of the source here (fuzzer finding).
+$n = 1;
+/* comment without the closing star-slash
+$n = 2;

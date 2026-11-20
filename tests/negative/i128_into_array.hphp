@@ -1,0 +1,5 @@
+// i128_into_array.hphp — must FAIL: an hval holds 64 bits, so an i128 array
+// element would silently lose its top half. The compiler asks for a cast.
+$big = (i128)1 << 100;
+$items = [1, $big, 3];
+echo count($items);

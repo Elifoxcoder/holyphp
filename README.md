@@ -6,13 +6,14 @@ written in **HolyPHP** (a PHP-syntax language that compiles straight to native
 C11 via its own toolchain — no interpreter, no VM), the other is the
 **official Rust submission** to the [twelve-dollar-server-challenge](https://github.com/arjaythedev/twelve-dollar-server-challenge/tree/main/submissions/rust-epoll-scooter1337).
 
-The HolyPHP binary embeds a real Linux `io_uring` network stack and SQLite
-through a C runtime built into the compiler — it is **not** PHP-FPM, not HHVM,
-not PHP over a CGI/FastCGI layer. It is a native binary whose source is
-`scratch/server.hphp` plus a C engine (`benchmarks/maxout/engine_v2.c` for the MaxOut
-contract, `benchmarks/maxout/engine_challenge.c` for the challenge spec) that
-becomes a runtime builtin (`holy_maxout_start` / `holy_challenge_start`) in
-`src/hphpc/runtime/hphp_std.c`.
+The HolyPHP binary can use a Linux `io_uring` network stack and SQLite
+through optional C runtime modules that are compiled into a program only when
+it calls one of their builtins — it is **not** PHP-FPM, not HHVM, not PHP over
+a CGI/FastCGI layer. A program that uses neither links neither library. The
+benchmark servers built on those modules are archived under
+`benchmarks/maxout/` (`engine_v2.c` for the MaxOut contract,
+`engine_challenge.c` for the challenge spec); they are not part of the
+language runtime.
 
 ---
 
@@ -240,8 +241,8 @@ run. Results: `/root/challenge/results/summary.all.csv`.
 
 | Artifact | Source | Hash (VPS) |
 |---|---|---|
-| `holy_challenge_server` (challenge spec) | `src/hphpc/runtime/hphp_std.c` (this session's `engine_challenge.c` embedded) + `scratch/server_challenge.hphp` | `a92bb5a4…` |
-| `holy_server` (MaxOut) | `src/hphpc/runtime/hphp_std.c` (this session's `engine_v2.c` embedded) + `scratch/server.hphp` | `e32018ca…` |
+| `holy_challenge_server` (challenge spec) | `benchmarks/maxout/engine_challenge.c` (archived engine source) + `scratch/server_challenge.hphp` | `a92bb5a4…` |
+| `holy_server` (MaxOut) | `benchmarks/maxout/engine_v2.c` (archived engine source) + `scratch/server.hphp` | `e32018ca…` |
 | `twelve-rust-poll` | `submissions/rust-epoll-scooter1337` (official submission, unchanged) | `4a208a63…` |
 
 The two HolyPHP binaries are different engines for different contracts; they
@@ -290,9 +291,9 @@ are not interchangeable. The Rust binary is the unmodified official submission.
 |---|---|
 | `scratch/server.hphp` | HolyPHP MaxOut server (the program the user writes) |
 | `scratch/server_challenge.hphp` | HolyPHP challenge-spec server |
-| `benchmarks/maxout/engine_v2.c` | MaxOut io_uring + SQLite engine (becomes `holy_maxout_start`) |
-| `benchmarks/maxout/engine_challenge.c` | Challenge-spec engine (becomes `holy_challenge_start`) |
-| `src/hphpc/runtime/hphp_std.c` | HolyPHP runtime — where the engines are embedded as builtins |
+| `benchmarks/maxout/engine_v2.c` | Archived MaxOut io_uring + SQLite engine (former `holy_maxout_start`) |
+| `benchmarks/maxout/engine_challenge.c` | Archived challenge-spec engine (former `holy_challenge_start`) |
+| `src/hphpc/runtime/hphp_uring.c`, `hphp_sqlite.c` | Optional runtime modules, linked only when a program uses them |
 | `src/hphpc/runtime/hphp_rt.h` | Runtime headers |
 | `benchmarks/maxout/seed.sql` | MaxOut seed (100 k posts) |
 | `benchmarks/maxout/post.lua`, `like.lua`, `mixed.lua` | wrk scripts for the MaxOut write/mixed scenarios |

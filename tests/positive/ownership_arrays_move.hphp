@@ -1,0 +1,39 @@
+<?php
+/* ownership_arrays_move.hphp — pop/shift/splice transfer elements out of the
+ * array. The moved value is the caller's to release; the array no longer owns
+ * it. A second read of the same slot returns null. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$list = ["a", "b", "c"];
+$last = array_pop($list);
+check("array_pop moved the last value", $last == "c");
+check("array_pop shortened the array", count($list) == 2);
+
+$first = array_shift($list);
+check("array_shift moved the first value", $first == "a");
+check("array_shift shortened the array", count($list) == 1);
+
+$only = $list[0];
+check("the remaining element is intact", $only == "b");
+
+$nums = [1, 2, 3, 4, 5];
+$removed = array_splice($nums, 1, 2);
+check("array_splice returns the removed slice", count($removed) == 2);
+check("array_splice removed the values from the source", count($nums) == 3);
+check("array_splice kept the head", $nums[0] == 1);
+check("array_splice kept the tail", $nums[1] == 4 && $nums[2] == 5);
+
+$rest = [1, 2, 3, 4];
+$tail = array_splice($rest, 2, 2);
+check("array_splice removes the requested tail", count($tail) == 2 && count($rest) == 2);
+
+$front = [1, 2, 3, 4];
+$head = array_splice($front, 0, 1);
+check("array_splice at the front", count($head) == 1 && $front[0] == 2);
+
+if ($fail == 0) { echo "ownership arrays move ok\n"; } else { exit(1); }

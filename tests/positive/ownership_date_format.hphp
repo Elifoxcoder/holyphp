@@ -1,0 +1,28 @@
+<?php
+/* ownership_date_format.hphp — date() returns a fresh string built from the
+ * borrowed format; releasing it cannot touch the format. */
+$fail = 0;
+function check(string $name, bool $ok): bool {
+    if ($ok) { echo "OK   " . $name . "\n"; return true; }
+    echo "FAIL " . $name . "\n";
+    exit(1);
+}
+
+$ts = mktime(12, 34, 56, 2, 29, 2024);
+$fmt = "Y-m-d H:i:s";
+$r = date($fmt, $ts);
+check("date format", $r == "2024-02-29 12:34:56");
+check("date left the format intact", $fmt == "Y-m-d H:i:s");
+
+$yearFmt = "Y";
+$r = date($yearFmt, $ts);
+check("date year", $r == "2024");
+
+$r = date("U", $ts);
+$expect = strval($ts);
+check("date unix timestamp", $r == $expect);
+
+$r = date("\\Y=Y", $ts);
+check("date escapes", $r == "Y=2024");
+
+echo "ownership date format ok\n";

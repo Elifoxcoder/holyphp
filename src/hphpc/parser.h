@@ -9,6 +9,7 @@ typedef struct Parser {
     const char *file;
     int loop_depth;
     bool enforce_memory_safety;
+    int depth;          /* recursive-descent depth, see MAX_PARSE_DEPTH */
 } Parser;
 
 Program *parse_program(const char *src, const char *filename);
