@@ -16,7 +16,7 @@
   <label class="doc-search"><span class="sr-only">Search functions</span><input id="doc-q" type="search" placeholder="Search functions…" autocomplete="off"></label>
   <div class="doc-group"><h3>Language</h3><a class="doc-link" href="#variables-and-types" data-tab-button="variables-and-types">Variables &amp; types</a><a class="doc-link" href="#functions" data-tab-button="functions">Functions</a><a class="doc-link" href="#operators" data-tab-button="operators">Operators</a><a class="doc-link" href="#control-flow" data-tab-button="control-flow">Control flow</a><a class="doc-link" href="#classes-and-oop" data-tab-button="classes-and-oop">Classes &amp; OOP</a><a class="doc-link" href="#closures-and-captures" data-tab-button="closures-and-captures">Closures &amp; captures</a><a class="doc-link" href="#exceptions" data-tab-button="exceptions">Exceptions</a><a class="doc-link" href="#enums" data-tab-button="enums">Enums</a><a class="doc-link" href="#memory-model" data-tab-button="memory-model">Memory model</a><a class="doc-link" href="#imports-and-the-stdlib" data-tab-button="imports-and-the-stdlib">Imports &amp; the stdlib</a><a class="doc-link" href="#strings" data-tab-button="strings">Strings</a><a class="doc-link" href="#arrays-and-maps" data-tab-button="arrays-and-maps">Arrays &amp; maps</a></div>
 <div class="doc-group"><h3>Standard library</h3><a class="doc-link" href="#std-strings" data-tab-button="std-strings">Strings <small>65</small></a><a class="doc-link" href="#std-math" data-tab-button="std-math">Math <small>35</small></a><a class="doc-link" href="#std-arrays" data-tab-button="std-arrays">Arrays <small>50</small></a><a class="doc-link" href="#std-regex" data-tab-button="std-regex">Regex <small>5</small></a><a class="doc-link" href="#std-time" data-tab-button="std-time">Time <small>10</small></a><a class="doc-link" href="#std-hash-encode" data-tab-button="std-hash-encode">Hash &amp; encode <small>8</small></a><a class="doc-link" href="#std-types-vars" data-tab-button="std-types-vars">Types &amp; vars <small>24</small></a><a class="doc-link" href="#std-system-i-o" data-tab-button="std-system-i-o">System &amp; I/O <small>39</small></a><a class="doc-link" href="#std-http-mysql" data-tab-button="std-http-mysql">HTTP &amp; MySQL <small>10</small></a><a class="doc-link" href="#sqlite" data-tab-button="sqlite">SQLite</a><a class="doc-link" href="#std-predefined-constants" data-tab-button="std-predefined-constants">Predefined constants <small>14</small></a><a class="doc-link" href="#std-ui-desktop" data-tab-button="std-ui-desktop">UI (desktop) <small>44</small></a><a class="doc-link" href="#std-unsafe-ffi" data-tab-button="std-unsafe-ffi">Unsafe / FFI <small>6</small></a><a class="doc-link" href="#std-other" data-tab-button="std-other">Other <small>9</small></a></div>
-<div class="doc-group"><h3>Tooling</h3><a class="doc-link" href="#command-line" data-tab-button="command-line">Command line</a><a class="doc-link" href="#projects" data-tab-button="projects">Projects &amp; packages</a><a class="doc-link" href="libraries/">Libraries ↗</a></div>
+<div class="doc-group"><h3>Tooling</h3><a class="doc-link" href="#command-line" data-tab-button="command-line">Command line</a><a class="doc-link" href="#projects" data-tab-button="projects">Projects &amp; packages</a><a class="doc-link" href="#holyide" data-tab-button="holyide">HolyIDE</a><a class="doc-link" href="libraries/">Libraries ↗</a></div>
 </aside>
 <div class="doc-body">
   <button class="doc-menu" type="button" aria-label="Topics" onclick="document.querySelector('.doc-side').classList.toggle('open')">☰ Topics</button>
@@ -1134,6 +1134,124 @@ hphp run app.hphp                     # import "mathx" just works</code></pre>
     <li><b>Install</b> — the client downloads, unpacks to a temp dir, validates the
       manifest, then moves it into <code>packages/&lt;name&gt;</code>.</li>
   </ul>
+
+  </section>
+  <section class="tab-panel" data-tab-panel="holyide">
+<!-- HolyIDE: the HolyIDE tab of docs.html (scripts/gensite.js). It ships in packages/lib/ide but is a program, not a library. -->
+<h2>HolyIDE</h2>
+<p class="lead">HolyIDE: an editor and a workbench for HolyPHP, written in
+  HolyPHP on top of the <a href="libraries/html/">html</a> library. Its package (<code>packages/lib/ide</code>) is the
+  whole IDE except the window, which is why all of it is tested without one.</p>
+
+  <div>
+    <span class="pill e">a program written in HolyPHP</span>
+    <span class="pill">text buffer + undo</span>
+    <span class="pill">syntax + completions</span>
+    <span class="pill">explorer, tabs, palette</span>
+    <span class="pill p">runs hphp from the IDE</span>
+  </div>
+<h2>Two halves, one import</h2>
+  <table>
+    <tr><th>File</th><th>What it is</th></tr>
+    <tr><td><code>ide/editor.hphp</code></td><td>the document model: lines, caret and selection, editing keys, undo/redo, the syntax tokenizer, the completion vocabulary</td></tr>
+    <tr><td><code>ide/workbench.hphp</code></td><td>the chrome: explorer tree, tabs, code pane, terminal and problems panel, status bar, command palette, key table, runner — rendered to HTML and handed to an <code>HtmlView</code></td></tr>
+    <tr><td><code>holyide/holyide.hphp</code></td><td>the window: one canvas, forwarded events, a frame timer. Not part of the library — it is the ~140-line app around it.</td></tr>
+  </table>
+
+
+
+<h2>The editor on its own</h2>
+  <p>The buffer, the caret and the editing operations have no idea a screen
+  exists. Load a file, type into it, undo, save — no window anywhere.</p>
+<pre><code class="hphp">import "ide";
+
+$ed = new IdeEditor();
+$ed->load("holyide/holyide.hphp");
+$ed->move("docstart", false);
+$ed->type_char("/");
+$ed->type_char("/");
+echo substr($ed->line(0), 0, 20);   // //// ==== ...
+$ed->undo_step();
+echo $ed->status();         // undo/redo state, position, tokens
+
+echo $ed->word_at_cursor();
+foreach ($ed->completions("str", 8) as $w) { echo $w; }</code></pre>
+
+<h2>The workbench, driven headlessly</h2>
+  <p>The workbench owns state and renders it to HTML. A test — or your own
+  tool — builds one with no canvas (<code>0</code>), opens a folder, lays the
+  document out with <code>ensure()</code> and then reads boxes, clicks and key
+  results. <code>tests/positive/ide_workbench.hphp</code> does exactly that.</p>
+<pre><code class="hphp">import "ide";
+
+$wb = new IdeWorkbench(0, 1180, 760, html_theme_dark());
+$wb->open_root(".");
+$wb->open("lib/ide/workbench.hphp");
+$wb->ensure();                          // parse, style, lay out (no ink)
+
+echo $wb->ed()->line_count() . " lines";
+echo "code pane: " . $wb->ed_rows() . " rows x " . $wb->ed_cols() . " cols";
+
+$wb->key(80, "", 1);                    // Ctrl+P: the file palette
+$wb->key(0, "work", 0);                 // type a query
+$wb->key(13, "", 0);                    // Enter: open the first match</code></pre>
+
+<h2>Opening it in a window</h2>
+<pre><code class="hphp">hphp run holyide/holyide.hphp                 # the current folder
+hphp run holyide/holyide.hphp ../my-project   # another one
+hphp build holyide/holyide.hphp -o holyide.exe</code></pre>
+  <p>The app forwards canvas events to <code>key()</code> / <code>mouse()</code>,
+  pumps the running program from a frame timer, follows window resizes and acts
+  on the one string that needs a window: <code>"quit"</code>.</p>
+
+<h2>Keys</h2>
+  <table>
+    <tr><th>Keys</th><th>Action</th></tr>
+    <tr><td><code>Ctrl+P</code> / <code>Ctrl+Shift+P</code> / <code>Ctrl+G</code></td><td>go to file · all commands · go to line</td></tr>
+    <tr><td><code>Ctrl+S</code> / <code>Ctrl+K Ctrl+S</code></td><td>save · save all</td></tr>
+    <tr><td><code>F5</code> / <code>Shift+F5</code> / <code>Ctrl+R</code></td><td>run the active file · stop · run</td></tr>
+    <tr><td><code>Ctrl+Space</code> / <code>Tab</code> / <code>Enter</code></td><td>complete the word at the caret · accept · accept</td></tr>
+    <tr><td><code>Ctrl+`</code></td><td>the terminal's command line</td></tr>
+    <tr><td><code>Ctrl+B</code> / <code>Ctrl+J</code></td><td>toggle explorer · toggle panel</td></tr>
+    <tr><td><code>Ctrl+/</code> / <code>Ctrl+D</code> / <code>Alt+↑↓</code></td><td>toggle comment · duplicate line · move line</td></tr>
+    <tr><td><code>Ctrl+=</code> / <code>Ctrl+-</code> / <code>Ctrl+0</code></td><td>zoom in · out · reset</td></tr>
+    <tr><td><code>Ctrl+Shift+W</code></td><td>quit</td></tr>
+  </table>
+
+<h2>What the mouse does</h2>
+  <ul>
+    <li>A click in the code puts the caret where the pointer is; the gutter
+      picks the whole line. Hold the button and drag to select.</li>
+    <li>A double click selects the word under the pointer.</li>
+    <li>The explorer folds: clicking a folder shows or hides what is in it,
+      clicking a file opens it in a tab.</li>
+    <li>The 5px strip between the explorer and the editor, and between the
+      editor and the panel, is a grip: drag it and that pane changes size.
+      Hovering lights it up, so it can be found.</li>
+    <li>The wheel moves the code one line a notch - it is a scroll, not a jump
+      - and two rows a notch in the explorer.</li>
+  </ul>
+
+<h2>What runs a file</h2>
+  <p><code>Ctrl+R</code> starts <code>hphp run &lt;file&gt;</code> through the
+  runtime's <code>proc_*</code> pipe API, in the file's own folder. Output
+  appears in the terminal panel; a failing compile is parsed into the problems
+  list, and clicking a problem opens the file at its line.</p>
+  <p>The panel is also a terminal, in the small sense: a command line at the
+  bottom, <code>Ctrl+`</code> or a click to focus it, Enter to run through
+  <code>cmd /c</code> in the project folder, Up/Down for history, Tab to hand
+  the keyboard back to the editor. It is a command line over pipes, not a TTY
+  - no interactive prompt, no colours, no full-screen programs.</p>
+
+<h2>Status</h2>
+  <p>The workbench is complete and tested headlessly: 100+ assertions cover the
+  editor, the layout numbers, the palette ranking, tabs, the runner and the draw
+  list. The window app exists and passes a pixel self-check
+  (<code>holyide --selftest</code>). What is <i>not</i> there yet — search across
+  files, git, a settings system, split editors, a debugger — is listed in
+  <code>STATUS.md</code> at the repo root, next to the rest of the roadmap.</p>
+
+
 
   </section>
 </div>

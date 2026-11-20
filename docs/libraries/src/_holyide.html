@@ -1,11 +1,11 @@
-<!-- docs/libraries/src/ide.html: source of hphp.ch/libraries/ide/ (scripts/gensite.js) -->
-<section data-tab="overview">
+<!-- HolyIDE: the HolyIDE tab of docs.html (scripts/gensite.js). It ships in packages/lib/ide but is a program, not a library. -->
+<h2>HolyIDE</h2>
 <p class="lead">HolyIDE: an editor and a workbench for HolyPHP, written in
-  HolyPHP on top of <a href="lib-html.html">HolyHTML</a>. The library is the
+  HolyPHP on top of the <a href="libraries/html/">html</a> library. Its package (<code>packages/lib/ide</code>) is the
   whole IDE except the window, which is why all of it is tested without one.</p>
 
   <div>
-    <span class="pill e">stdlib — embedded</span>
+    <span class="pill e">a program written in HolyPHP</span>
     <span class="pill">text buffer + undo</span>
     <span class="pill">syntax + completions</span>
     <span class="pill">explorer, tabs, palette</span>
@@ -18,16 +18,8 @@
     <tr><td><code>ide/workbench.hphp</code></td><td>the chrome: explorer tree, tabs, code pane, terminal and problems panel, status bar, command palette, key table, runner — rendered to HTML and handed to an <code>HtmlView</code></td></tr>
     <tr><td><code>holyide/holyide.hphp</code></td><td>the window: one canvas, forwarded events, a frame timer. Not part of the library — it is the ~140-line app around it.</td></tr>
   </table>
-</section>
 
-<section data-tab="documentation">
-<h2>Two halves, one import</h2>
-  <table>
-    <tr><th>File</th><th>What it is</th></tr>
-    <tr><td><code>ide/editor.hphp</code></td><td>the document model: lines, caret and selection, editing keys, undo/redo, the syntax tokenizer, the completion vocabulary</td></tr>
-    <tr><td><code>ide/workbench.hphp</code></td><td>the chrome: explorer tree, tabs, code pane, terminal and problems panel, status bar, command palette, key table, runner — rendered to HTML and handed to an <code>HtmlView</code></td></tr>
-    <tr><td><code>holyide/holyide.hphp</code></td><td>the window: one canvas, forwarded events, a frame timer. Not part of the library — it is the ~140-line app around it.</td></tr>
-  </table>
+
 
 <h2>The editor on its own</h2>
   <p>The buffer, the caret and the editing operations have no idea a screen
@@ -119,8 +111,5 @@ hphp build holyide/holyide.hphp -o holyide.exe</code></pre>
   (<code>holyide --selftest</code>). What is <i>not</i> there yet — search across
   files, git, a settings system, split editors, a debugger — is listed in
   <code>STATUS.md</code> at the repo root, next to the rest of the roadmap.</p>
-</section>
 
-<section data-tab="examples">
-<p>See the Documentation tab for annotated examples.</p>
-</section>
+

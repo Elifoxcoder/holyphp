@@ -36,7 +36,11 @@ const LIBS = {
   websocket: { rank: 7,  cat: "Web & networking", glyph: "⇄",  tagline: "WebSocket servers: handshake, frames, chat-style broadcasting.", tags: ["websocket", "realtime", "chat", "push"] },
   ui:        { rank: 8,  cat: "Desktop",          glyph: "▣",  tagline: "Native windows, widgets, menus, dialogs and themes.", tags: ["gui", "desktop", "windows", "widgets"] },
   html:      { rank: 9,  cat: "Desktop",          glyph: "</>", tagline: "Parse HTML and CSS, lay out and paint documents.", tags: ["html", "css", "layout", "dom", "render"] },
-  ide:       { rank: 10, cat: "Desktop",          glyph: "⌘",  tagline: "HolyIDE: editor, explorer, palette, terminal and runner.", tags: ["editor", "ide", "workbench"] },
+};
+/* Folders in packages/lib that are programs, not libraries: they ship with
+ * the compiler but are documented as tools. name -> where their docs live. */
+const NOT_LIBRARIES = {
+  ide: { href: "docs.html#holyide", title: "HolyIDE", src: "_holyide.html" },
 };
 const POPULAR = 6;
 
@@ -118,8 +122,8 @@ function loadLibraries() {
   }
   /* every bundled library needs an entry above, so none is left without a page */
   for (const d of fs.readdirSync(LIBDIR)) {
-    if (fs.existsSync(path.join(LIBDIR, d, "hphp.json")) && !LIBS[d])
-      throw new Error(`gensite: packages/lib/${d} has no entry in LIBS (scripts/gensite.js)`);
+    if (fs.existsSync(path.join(LIBDIR, d, "hphp.json")) && !LIBS[d] && !NOT_LIBRARIES[d])
+      throw new Error(`gensite: packages/lib/${d} has no entry in LIBS or NOT_LIBRARIES (scripts/gensite.js)`);
   }
   return libs.sort((a, b) => a.rank - b.rank);
 }
@@ -269,9 +273,9 @@ function redirectPage(to, title) {
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <title>${esc(title)} — moved</title>
-<link rel="canonical" href="https://hphp.ch/${to}">
+<link rel="canonical" href="https://hphp.ch/${to.replace(/^\/+/, "")}">
 <meta http-equiv="refresh" content="0; url=${to}">
-<script>location.replace(${JSON.stringify(to)} + location.hash);</script>
+<script>location.replace(${JSON.stringify(to)} + (${JSON.stringify(to)}.indexOf("#") < 0 ? location.hash : ""));</script>
 </head><body><p>This page moved to <a href="${to}">${to}</a>.</p></body></html>
 `;
 }
@@ -328,6 +332,9 @@ function documentationPage() {
     tabs: [
       { id: "command-line", title: "Command line", html: mainOf(read(path.join(DOCS, "cli.html"))).replace(/<h1[\s\S]*?<\/h1>/, "<h2>Command line</h2>") },
       { id: "projects", title: "Projects & packages", html: mainOf(read(path.join(DOCS, "pkg.html"))).replace(/<h1[\s\S]*?<\/h1>/, "<h2>Projects &amp; packages</h2>") },
+      ...Object.values(NOT_LIBRARIES).map((t) => ({
+        id: t.href.split("#")[1], title: t.title, html: read(path.join(SRC, t.src)),
+      })),
       { id: "libraries", title: "Libraries ↗", href: "libraries/" },
     ],
   });
@@ -391,6 +398,12 @@ for (const lib of libs) {
   } else if (!fs.existsSync(old)) {
     write(old, redirectPage(`libraries/${lib.name}/`, lib.name));
   }
+}
+/* tools that are not libraries: old library URLs point to their docs tab */
+for (const [name, t] of Object.entries(NOT_LIBRARIES)) {
+  write(path.join(DOCS, `lib-${name}.html`), redirectPage(t.href, t.title));
+  const libPage = path.join(DOCS, "libraries", name, "index.html");
+  write(libPage, redirectPage(`/${t.href}`, t.title));
 }
 const sqliteOld = path.join(DOCS, "lib-sqlite.html");
 if (fs.existsSync(sqliteOld) && !/http-equiv="refresh"/.test(read(sqliteOld))) {
