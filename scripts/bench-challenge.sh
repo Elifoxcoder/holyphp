@@ -113,7 +113,8 @@ oha -z "$WARMUP" -c "$CONNECTIONS" --no-tui --output-format json "$URL" >/dev/nu
 
 echo "tag,path,run,requests_per_sec,p50_ms,p95_ms,p99_ms,rss_kb,status"
 for run in $(seq 1 "$RUNS"); do
-    json=$OUT/$TAG-$(echo "$PATH_REQ" | tr -c 'A-Za-z0-9' '_')-run$run.json
+    slug=$(echo "$PATH_REQ" | tr -c 'A-Za-z0-9' '_')
+    json=$OUT/$TAG-$slug-run$run.json
     oha -z "$DURATION" -c "$CONNECTIONS" --no-tui \
         --output-format json "$URL" > "$json" 2>"$OUT/$TAG-run$run.err" || true
     rss=$(ps -o rss= -p "$PID" 2>/dev/null | tr -d ' ')
@@ -130,11 +131,11 @@ print(f"{tag},{req},{run},{s:.1f},{lat['p50']:.3f},{lat['p95']:.3f},{lat['p99']:
 PY
 done
 
-python3 - "$OUT" "$TAG" <<'PY'
+python3 - "$OUT" "$TAG" "$(echo "$PATH_REQ" | tr -c 'A-Za-z0-9' '_')" <<'PY'
 import glob, json, os, statistics, sys
-out, tag = sys.argv[1], sys.argv[2]
+out, tag, slug = sys.argv[1], sys.argv[2], sys.argv[3]
 rows = []
-for path in sorted(glob.glob(os.path.join(out, tag + "-*-run*.json"))):
+for path in sorted(glob.glob(os.path.join(out, tag + "-" + slug + "-run*.json"))):
     d = json.load(open(path))
     lat = d["metrics"]["latency_ms"]
     rows.append((d["summary"]["requestsPerSec"], lat["p50"], lat["p95"], lat["p99"]))
