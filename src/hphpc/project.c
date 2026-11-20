@@ -932,6 +932,8 @@ static void lock_read(const char *root, LockList *out) {
     free(path);
 }
 
+static const char *trust_of(const char *source);
+
 static void lock_write(const char *root, LockList *l) {
     for (size_t i = 1; i < l->n; i++)            /* sort by name */
         for (size_t j = i; j > 0 && strcmp(l->v[j - 1].name, l->v[j].name) > 0; j--) {
@@ -946,6 +948,7 @@ static void lock_write(const char *root, LockList *l) {
         buf_puts(&b, "\n    version: "); y_put(&b, l->v[i].version);
         buf_puts(&b, "\n    source: ");  y_put(&b, l->v[i].source && *l->v[i].source ? l->v[i].source : "unknown");
         buf_puts(&b, "\n    checksum: "); y_put(&b, l->v[i].checksum && *l->v[i].checksum ? l->v[i].checksum : "none");
+        buf_puts(&b, "\n    trust: ");   buf_puts(&b, trust_of(l->v[i].source));
         buf_puts(&b, "\n    dev: ");     buf_puts(&b, l->v[i].dev ? "true" : "false");
         buf_puts(&b, "\n");
     }
@@ -966,6 +969,7 @@ typedef struct {
     const char *refresh;      /* package to re-resolve even when locked */
     bool no_dev;
     bool quiet;
+    bool trust;               /* --trust: install community packages without asking */
 } Resolve;
 
 static char *vendor_dir(const char *root) { return fmt("%s/" PROJECT_VENDOR, root); }
@@ -979,8 +983,29 @@ static char *vendor_version(const char *root, const char *name) {
     return v;
 }
 
-/* Fetch one dependency into .hphp/packages/<name>. */
-static void fetch_one(const Resolve *r, const Dep *d, Locked *out) {
+/* `hphp install <pkg>` writes the new dependency before resolving; when the
+ * user then declines a package, the project file goes back to how it was. */
+static char *g_manifest_path = NULL, *g_manifest_backup = NULL;
+
+static void restore_manifest(void) {
+    if (g_manifest_path && g_manifest_backup) {
+        p_write(g_manifest_path, g_manifest_backup);
+        fprintf(stderr, "  %s left unchanged.\n", g_manifest_path);
+    }
+}
+
+/* official | community | local, from where a package came */
+static const char *trust_of(const char *source) {
+    if (!source || !*source) return "community";
+    if (!strcmp(source, "bundled")) return "official";
+    if (!strncmp(source, "path:", 5)) return "local";
+    return "community";
+}
+
+/* Fetch one dependency into .hphp/packages/<name>. `lk` is its entry in the
+ * old hphp.lock (or NULL): a community package whose exact archive was
+ * accepted before is not reviewed again. */
+static void fetch_one(const Resolve *r, const Dep *d, const Locked *lk, Locked *out) {
     char *hpx = NULL;
     char *source = NULL;
     bool is_path = !strncmp(d->spec, "path:", 5);
@@ -1025,6 +1050,18 @@ static void fetch_one(const Resolve *r, const Dep *d, Locked *out) {
         fatal("%s: the project requires \"%s\", but %s offers %s\n"
               "  (the registry serves the newest version only; relax the constraint)",
               d->name, d->spec, source, pver);
+    if (!strcmp(trust_of(source), "community")) {
+        bool accepted = lk && lk->checksum && !strcmp(lk->checksum, sum);
+        if (!accepted && !project_review_package(tmp, d->name, pver, source, r->trust)) {
+            pkg_remove_tree(tmp);
+            restore_manifest();
+            if (g_manifest_backup)
+                fatal("%s was not installed.", d->name);
+            fatal("%s was not installed. Install it after reviewing it with\n"
+                  "  `hphp install %s` in a terminal, or drop it with `hphp remove %s`.",
+                  d->name, d->name, d->name);
+        }
+    }
     char *dest = fmt("%s/%s", vdir, d->name);
     pkg_remove_tree(dest);
     if (!p_rename(tmp, dest)) {
@@ -1081,7 +1118,7 @@ static int resolve(const Resolve *r) {
             e.dev = d.dev;
             kept++;
         } else {
-            fetch_one(r, &d, &e);
+            fetch_one(r, &d, lk, &e);
             if (lk && !refresh && !path_dep && strcmp(lk->version, e.version) &&
                 project_version_satisfies(lk->version, d.spec))
                 fatal("%s: hphp.lock pins %s, but only %s is available now\n"
@@ -1135,6 +1172,137 @@ static int resolve(const Resolve *r) {
 }
 
 /* ------------------------------------------------------------------ */
+/* reviewing community packages                                        */
+/* ------------------------------------------------------------------ */
+
+/* What a package's code can do, found by looking for the builtins that do
+ * it. A hint for the reader, not a sandbox: anything that runs can do harm. */
+typedef struct {
+    const char *what;
+    const char *calls[12];
+    int hits;
+    char *first;           /* "file.hphp:12  shell_exec(" */
+} Capability;
+
+static bool ident_char(char c) {
+    return isalnum((unsigned char)c) || c == '_' || c == '$' || c == '>' || c == ':';
+}
+
+static void scan_file(const char *path, const char *rel, Capability *caps, size_t ncaps) {
+    char *text = p_read(path, NULL);
+    if (!text) return;
+    int lineno = 0;
+    for (char *line = text; *line;) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = 0;
+        lineno++;
+        const char *t = line;
+        while (*t == ' ' || *t == '\t') t++;
+        bool comment = !strncmp(t, "//", 2) || *t == '*' || !strncmp(t, "/*", 2) || *t == '#';
+        for (size_t c = 0; c < ncaps && !comment; c++) {
+            for (size_t k = 0; caps[c].calls[k]; k++) {
+                const char *needle = caps[c].calls[k];
+                for (const char *hit = strstr(line, needle); hit; hit = strstr(hit + 1, needle)) {
+                    /* "exec(" must not match "my_exec(" or "$x->exec(" */
+                    if (isalpha((unsigned char)needle[0]) && hit > line && ident_char(hit[-1])) continue;
+                    caps[c].hits++;
+                    if (!caps[c].first) {
+                        char snippet[48];
+                        snprintf(snippet, sizeof snippet, "%s", t);
+                        caps[c].first = fmt("%s:%d  %s%s", rel, lineno, snippet,
+                                            strlen(t) > 47 ? "..." : "");
+                    }
+                    break;
+                }
+            }
+        }
+        if (!nl) break;
+        line = nl + 1;
+    }
+    free(text);
+}
+
+static void scan_dir(const char *dir, const char *rel, Capability *caps, size_t ncaps,
+                     int *files, int *sources) {
+    size_t n = 0;
+    char **names = p_list(dir, &n);
+    for (size_t i = 0; i < n; i++) {
+        char *full = fmt("%s/%s", dir, names[i]);
+        char *sub = *rel ? fmt("%s/%s", rel, names[i]) : xstrdup(names[i]);
+        if (p_is_dir(full)) {
+            scan_dir(full, sub, caps, ncaps, files, sources);
+        } else {
+            (*files)++;
+            size_t ln = strlen(names[i]);
+            if (ln > 5 && !strcmp(names[i] + ln - 5, ".hphp")) {
+                (*sources)++;
+                scan_file(full, sub, caps, ncaps);
+            }
+        }
+        free(sub);
+        free(full);
+    }
+}
+
+bool project_review_package(const char *dir, const char *name, const char *version,
+                            const char *source, bool trust) {
+    Capability caps[] = {
+        {"run shell commands",      {"exec(", "shell_exec(", "system(", "passthru(", "proc_open(", "popen(", NULL}, 0, NULL},
+        {"write or delete files",   {"unlink(", "rmdir(", "file_put_contents(", "rename(", "fwrite(", "copy(", "mkdir(", NULL}, 0, NULL},
+        {"open network connections",{"stream_socket_client(", "stream_socket_server(", "fsockopen(", "http_get(", "http_post(", "async_get(", "->listen(", "->connect(", NULL}, 0, NULL},
+        {"use unsafe code",         {"unsafe {", "unsafe{", "malloc(", "memcpy(", "memset(", "u8_set(", "i64_set(", NULL}, 0, NULL},
+        {"load native libraries",   {"ffi_load(", "ffi_call(", NULL}, 0, NULL},
+        {"change the environment",  {"putenv(", "chdir(", NULL}, 0, NULL},
+        {"read files",              {"file_get_contents(", "fopen(", "scandir(", "glob(", NULL}, 0, NULL},
+    };
+    size_t ncaps = sizeof caps / sizeof caps[0];
+    int files = 0, sources = 0;
+    scan_dir(dir, "", caps, ncaps, &files, &sources);
+
+    Manifest m;
+    char *author = mf_load(dir, &m) ? mf_get(&m, "author") : NULL;
+    char *desc = m.text ? mf_get(&m, "description") : NULL;
+
+    fprintf(stderr, "\n  ! community package: %s %s\n", name, version);
+    fprintf(stderr, "    from:    %s\n", source);
+    fprintf(stderr, "    author:  %s   (as written in its manifest, not verified)\n",
+            author && *author ? author : "unknown");
+    if (desc && *desc) fprintf(stderr, "    about:   %s\n", desc);
+    fprintf(stderr, "    files:   %d (%d HolyPHP source%s)\n", files, sources, sources == 1 ? "" : "s");
+    bool any = false;
+    for (size_t c = 0; c < ncaps; c++) {
+        if (!caps[c].hits) continue;
+        fprintf(stderr, "    %-9s%-26s %s%s\n", any ? "" : "it can:", caps[c].what, caps[c].first,
+                caps[c].hits > 1 ? fmt("  (+%d more)", caps[c].hits - 1) : "");
+        any = true;
+    }
+    if (!any) fprintf(stderr, "    it can:  nothing risky found in its source\n");
+    fprintf(stderr, "\n    Official libraries ship with hphp and are reviewed with it. Community\n"
+                    "    packages are written by anyone: install only what you trust. The list\n"
+                    "    above is a hint from reading the source, not a guarantee.\n\n");
+    free(author);
+    free(desc);
+
+    if (trust) {
+        fprintf(stderr, "    --trust given: installing without asking.\n\n");
+        return true;
+    }
+    fprintf(stderr, "  Install %s %s? [y/N] ", name, version);
+    fflush(stderr);
+    char line[64];
+    if (!fgets(line, sizeof line, stdin)) {
+        fprintf(stderr, "\n  no answer (no terminal?): not installed. Pass --trust to install\n"
+                        "  community packages in scripts and CI.\n");
+        return false;
+    }
+    char c = line[0];
+    while (c == ' ') c = line[1];
+    bool yes = c == 'y' || c == 'Y' || c == 'j' || c == 'J';
+    if (!yes) fprintf(stderr, "  not installed.\n");
+    return yes;
+}
+
+/* ------------------------------------------------------------------ */
 /* commands                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -1156,7 +1324,7 @@ static void read_all_deps(const char *root, DepList *deps) {
  * hphp install ../mylib        add a local package folder (path:../mylib)
  * hphp install --no-dev        skip require-dev (deployments) */
 int project_cmd_install(const char *root, int argc, char **argv) {
-    Resolve r = {root, true, NULL, flag(argc, argv, "--no-dev"), false};
+    Resolve r = {root, true, NULL, flag(argc, argv, "--no-dev"), false, flag(argc, argv, "--trust")};
     bool dev = flag(argc, argv, "--dev");
     const char *what = NULL;
     for (int i = 0; i < argc; i++) if (argv[i][0] != '-') { what = argv[i]; break; }
@@ -1204,6 +1372,8 @@ int project_cmd_install(const char *root, int argc, char **argv) {
     } else {
         deps_add(&deps, name, spec ? spec : "*", dev);
     }
+    g_manifest_path = mf_path(root);
+    g_manifest_backup = g_manifest_path ? p_read(g_manifest_path, NULL) : NULL;
     mf_write_deps(root, &deps);
     r.refresh = name;
     printf("adding %s to %s\n", name, dev ? "require-dev" : "require");
@@ -1228,7 +1398,7 @@ int project_cmd_install(const char *root, int argc, char **argv) {
 int project_cmd_update(const char *root, int argc, char **argv) {
     const char *only = NULL;
     for (int i = 0; i < argc; i++) if (argv[i][0] != '-') { only = argv[i]; break; }
-    Resolve r = {root, only != NULL, only, flag(argc, argv, "--no-dev"), false};
+    Resolve r = {root, only != NULL, only, flag(argc, argv, "--no-dev"), false, flag(argc, argv, "--trust")};
     if (only) printf("updating %s\n", only);
     else printf("updating all dependencies\n");
     return resolve(&r);
@@ -1262,11 +1432,12 @@ int project_cmd_deps(const char *root) {
         printf("no locked dependencies (run: hphp install)\n");
         return 0;
     }
-    printf("%-20s %-10s %-5s %s\n", "PACKAGE", "VERSION", "DEV", "SOURCE");
+    printf("%-20s %-10s %-10s %-5s %s\n", "PACKAGE", "VERSION", "TRUST", "DEV", "SOURCE");
     for (size_t i = 0; i < l.n; i++) {
         char *have = vendor_version(root, l.v[i].name);
-        printf("%-20s %-10s %-5s %s%s\n", l.v[i].name, l.v[i].version,
-               l.v[i].dev ? "yes" : "", l.v[i].source ? l.v[i].source : "",
+        printf("%-20s %-10s %-10s %-5s %s%s\n", l.v[i].name, l.v[i].version,
+               trust_of(l.v[i].source), l.v[i].dev ? "yes" : "",
+               l.v[i].source ? l.v[i].source : "",
                have ? "" : "   (missing: run hphp install)");
         free(have);
     }

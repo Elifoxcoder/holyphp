@@ -28,6 +28,15 @@
  * falling back to the libraries bundled in the compiler). Returns the path
  * of a .hpx file and sets *source ("registry <url>" or "bundled"), or NULL. */
 char *pkg_fetch_hpx(const char *name, char **source);
+/* Implemented in main.c: true for a library bundled with hphp (official). */
+bool pkg_is_official(const char *name);
+
+/* Show what a community package in `dir` can do (shell commands, files,
+ * network, unsafe code, ...) and ask whether to install it. Returns true to
+ * go ahead: when the user says yes, or when `trust` (--trust) is set. Without
+ * an answer (no input) it refuses. */
+bool project_review_package(const char *dir, const char *name, const char *version,
+                            const char *source, bool trust);
 
 /* Nearest folder at or above `start_dir` that holds an hphp.json, or NULL. */
 char *project_find_root(const char *start_dir);

@@ -131,6 +131,14 @@ function hpx_files(string $hpx) {
     return $files;
 }
 
+/* Names of the official libraries (packages/lib in the compiler repo) and
+ * the hphp_ / holyphp prefixes. Keep in step with packages/lib. */
+function is_reserved_name(string $name): bool {
+    $official = ["async", "cli", "dotenv", "html", "http", "ide", "testing", "thread", "ui", "websocket", "std", "core", "hphp", "holyphp"];
+    if (in_array($name, $official)) { return true; }
+    return strpos($name, "hphp_") === 0 || strpos($name, "holyphp") === 0;
+}
+
 function handle_publish($client, string $hpx): void {
     global $store;
     if (strlen($hpx) > 33554432) {
@@ -150,6 +158,13 @@ function handle_publish($client, string $hpx): void {
     $safe = sanitize_name($m["name"]);
     if ($safe === false) {
         send_response($client, 400, "Bad Request", "text/plain", "invalid package name (use [a-z0-9_-])\n");
+        return;
+    }
+    /* official names belong to the libraries bundled with hphp; clients
+     * never fetch them from here, and nobody may publish look-alikes */
+    if (is_reserved_name($safe)) {
+        send_response($client, 403, "Forbidden", "text/plain",
+            "\"" . $safe . "\" is reserved for an official HolyPHP library\n");
         return;
     }
     file_put_contents($store . "/" . $safe . "-" . $m["version"] . ".hpx", $hpx);

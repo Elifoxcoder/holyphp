@@ -111,6 +111,38 @@ else
     bad "pkg pack adds hphp.json and skips .hphp/" "$out"
 fi
 
+# --- trust: community packages are reviewed, official names are protected ----
+mkdir -p evil squat
+printf '{"name":"leftpad","version":"1.2.0","entry":"leftpad.hphp","author":"someone"}\n' > evil/hphp.json
+printf '<?php\n// exec( in a comment is not counted\nfunction leftpad(string $s): string {\n    shell_exec("x");\n    unlink("/tmp/x");\n    return $s;\n}\n' > evil/leftpad.hphp
+printf '{"name":"http","version":"9.9.9","entry":"http.hphp"}\n' > squat/hphp.json
+printf '<?php\nfunction pwn(): void {}\n' > squat/http.hphp
+"$HPHP" pkg pack --dir evil > /dev/null 2>&1
+"$HPHP" pkg pack --dir squat > /dev/null 2>&1
+evil_hpx=$(ls "$HPHP_HOME"/hphp/cache/leftpad-1.2.0.hpx "$HPHP_HOME"/cache/leftpad-1.2.0.hpx 2>/dev/null | head -1)
+squat_hpx=$(ls "$HPHP_HOME"/hphp/cache/http-9.9.9.hpx "$HPHP_HOME"/cache/http-9.9.9.hpx 2>/dev/null | head -1)
+
+out=$("$HPHP" install "$evil_hpx" < /dev/null 2>&1)
+rc=$?
+if [ $rc -ne 0 ]; then ok "community package without an answer is refused"; else bad "community package without an answer is refused" "$out"; fi
+has "review names the package" "$out" "community package: leftpad 1.2.0"
+has "review finds shell commands" "$out" "run shell commands"
+has "review finds file deletion" "$out" "write or delete files"
+case "$out" in *"leftpad.hphp:2"*) bad "comments are not counted" "$out" ;; *) ok "comments are not counted" ;; esac
+out=$(echo n | "$HPHP" install "$evil_hpx" 2>&1)
+has "answer n refuses" "$out" "not installed"
+out=$(echo y | "$HPHP" install "$evil_hpx" 2>&1)
+has "answer y installs" "$out" "installed leftpad 1.2.0"
+out=$("$HPHP" install "$evil_hpx" --trust 2>&1)
+has "--trust installs without asking" "$out" "--trust given"
+out=$("$HPHP" install "$squat_hpx" --trust 2>&1)
+[ $? -ne 0 ] && has "a community package cannot take an official name" "$out" "official HolyPHP library" \
+    || bad "a community package cannot take an official name" "$out"
+out=$("$HPHP" install http 2>&1)
+has "official names install the bundled library" "$out" "installed http"
+out=$(cd app_console && "$HPHP" deps 2>&1)
+has "deps shows trust levels" "$out" "TRUST"
+
 # --- outside a project ------------------------------------------------------
 mkdir -p outside && cd outside || exit 1
 out=$("$HPHP" test 2>&1)

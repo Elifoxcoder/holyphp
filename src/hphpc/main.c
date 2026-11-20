@@ -1316,12 +1316,34 @@ static int pkg_cmd_pack(int argc, char **argv) {
 }
 
 /* Install from a local .hpx file (no network needed). */
-static int pkg_install_file(const char *hpx_path) {
+/* project.h hook: is `name` one of the libraries bundled with hphp? */
+bool pkg_is_official(const char *name) {
+    char *entry = fmt("%s/%s.hphp", name, name);
+    bool known = false;
+    for (size_t i = 0; i < hp_embed_libs_len; i++)
+        if (strcmp(hp_embed_libs[i].name, entry) == 0) { known = true; break; }
+    free(entry);
+    return known;
+}
+
+/* Install an archive for the user. `source` is "bundled", "registry <url>"
+ * or "file <path>"; anything but bundled is a community package and is
+ * shown for review first (skipped with --trust). */
+static int pkg_install_file_from(const char *hpx_path, const char *source, bool trust) {
     /* peek the manifest: extract to a temp pkg dir then read it */
     char *tmp = pkg_home_file("cache/.tmp-install");
+    rm_rf(tmp);
     pkg_extract(hpx_path, tmp);
     PkgManifest m;
     pkg_read_manifest_of(tmp, &m);
+    bool official = !strcmp(source, "bundled");
+    if (!official && pkg_is_official(m.name))
+        fatal("\"%s\" is the name of an official HolyPHP library; a community package\n"
+              "  may not replace it (%s)", m.name, source);
+    if (!official && !project_review_package(tmp, m.name, m.version, source, trust)) {
+        rm_rf(tmp);
+        return 1;
+    }
     char *destdir = pkg_dir_of(m.name);
     rm_rf(destdir);
     mkdir_p(destdir);
@@ -1377,32 +1399,39 @@ static char *pkg_registry_hpx(const char *name, const char **why) {
     return out;
 }
 
-static int pkg_install_registry(const char *name) {
+static int pkg_install_registry(const char *name, bool trust) {
     const char *why = NULL;
     char *hpx = pkg_registry_hpx(name, &why);
     if (!hpx) {
         if (strcmp(why, "registry unreachable"))
             fprintf(stderr, "%s: %s\n", name, why);
-        return 2;   /* caller may fall back to the bundled copy */
+        return 2;
     }
-    return pkg_install_file(hpx);
+    char *base = pkg_registry_url_or_default();
+    char *source = fmt("registry %s", base);
+    int rc = pkg_install_file_from(hpx, source, trust);
+    free(source);
+    free(base);
+    return rc;
 }
 
 static char *pkg_embedded_hpx(const char *name);
 
 /* project.h hook: an archive for `name` without installing it anywhere. */
 char *pkg_fetch_hpx(const char *name, char **source) {
+    /* official libraries always come from the compiler itself: a registry
+     * package with the same name can never replace them */
+    char *hpx = pkg_embedded_hpx(name);
+    if (hpx) {
+        *source = xstrdup("bundled");
+        return hpx;
+    }
     const char *why = NULL;
-    char *hpx = pkg_registry_hpx(name, &why);
+    hpx = pkg_registry_hpx(name, &why);
     if (hpx) {
         char *base = pkg_registry_url_or_default();
         *source = fmt("registry %s", base);
         free(base);
-        return hpx;
-    }
-    hpx = pkg_embedded_hpx(name);
-    if (hpx) {
-        *source = xstrdup("bundled");
         return hpx;
     }
     return NULL;
@@ -1417,7 +1446,7 @@ char *pkg_fetch_hpx(const char *name, char **source) {
 static int pkg_install_embedded(const char *name) {
     char *hpx = pkg_embedded_hpx(name);
     if (!hpx) return 1;
-    int rc = pkg_install_file(hpx);
+    int rc = pkg_install_file_from(hpx, "bundled", true);
     free(hpx);
     return rc;
 }
@@ -1486,19 +1515,26 @@ static char *pkg_embedded_hpx(const char *name) {
 }
 
 static int pkg_cmd_install(int argc, char **argv) {
-    if (argc < 1) { fprintf(stderr, "usage: hphp pkg install <name | ./file.hpx>\n"); return 1; }
-    const char *what = argv[0];
-    bool looks_file = strchr(what, '/') || strstr(what, ".hpx");
-    if (looks_file) return pkg_install_file(what);
-    int rc = pkg_install_registry(what);
-    if (rc == 2) {
-        /* registry unreachable / missing: fall back to the bundled copy */
-        fprintf(stderr, "(registry unreachable — trying the libraries bundled in hphp)\n");
-        rc = pkg_install_embedded(what);
-        if (rc != 0)
-            fatal("cannot install \"%s\": registry unreachable and not a bundled library", what);
-        return 0;
+    const char *what = NULL;
+    bool trust = false;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--trust") || !strcmp(argv[i], "--yes") || !strcmp(argv[i], "-y")) trust = true;
+        else if (!what) what = argv[i];
     }
+    if (!what) { fprintf(stderr, "usage: hphp pkg install <name | ./file.hpx> [--trust]\n"); return 1; }
+    bool looks_file = strchr(what, '/') || strstr(what, ".hpx");
+    if (looks_file) {
+        char *source = fmt("file %s", what);
+        int rc = pkg_install_file_from(what, source, trust);
+        free(source);
+        return rc;
+    }
+    /* official libraries come from the compiler, never from the registry */
+    if (pkg_install_embedded(what) == 0) return 0;
+    int rc = pkg_install_registry(what, trust);
+    if (rc == 2)
+        fatal("cannot install \"%s\": not an official library and not on the registry\n"
+              "  (check the name with: hphp pkg search %s)", what, what);
     return rc;
 }
 
