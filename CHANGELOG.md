@@ -9,6 +9,43 @@ behaves differently, what they have to change.
 
 ## Unreleased
 
+- Turning numbers into strings (`"id" . $n`, `(string)$n`, `strval`) and the
+  results of `json_encode`, `base64_encode`, `hash_hmac`, `number_format`,
+  `realpath` and `password_hash` no longer pile up in memory for the whole
+  run. They used to be kept forever and looked up one by one, so a long-running
+  server got slower and bigger with every new value. A server handling 280k
+  connections now answers about twice as many requests per second.
+- `unset($list[2])` keeps the keys of the other elements, as in PHP. It used
+  to move the last element into the gap, so `$list[2]` afterwards returned
+  the old last element and a later `$list[2] = …` overwrote it.
+- Maps that see many `unset()` and insert rounds (connection tables in a
+  server) no longer slow down or hang on a lookup of a missing key. Copied
+  maps, `array_shift`, `array_pop` and `array_unshift` keep fast key lookups.
+- `(string)` on an `int` or `float` value compiles again. It failed in the C
+  backend with an unknown function `hp_str_from_num`.
+- `"text" . $number` and `echo $number` no longer leak memory. Each number
+  glued into a string used to leave one unreleased copy behind; a server that
+  writes `Content-Length: ` . $len for every reply grew without bound.
+- `"x" . false` gives `"x"` as in PHP. It used to print `"x0"`.
+- `$c = $s[$i]` on a string no longer leaks. Every byte read this way used
+  to keep about 48 bytes alive, so a hand-written parser grew by megabytes
+  per second. Reading single bytes also allocates nothing any more.
+- `iarr_*` calls and `sb_json()` with `int` operands compile to direct calls
+  without boxing every operand, and short `sb_put`/`sb_int` appends copy
+  without a libc call. Using `iarr_*` no longer links the SQLite module.
+- `arr_clear()` releases the elements it removes. A queue emptied with it
+  used to keep every row it ever held.
+- `hash_hmac('sha256', …)` and the JWT verifier are much faster: the key
+  part is prepared once, no memory is allocated per call, and CPUs with
+  SHA extensions use them. HMAC keys longer than 256 bytes are no longer
+  cut off (they gave a wrong signature).
+- A variable assigned in both arms of an `if`/`else` keeps a plain `int`,
+  `float` or `bool` type when both arms store the same kind of value
+  (`if ($a) { $lo = 1; } else { $lo = $x * 2; }`). It used to become a
+  dynamic value, which made every later use slower. A later assignment of a
+  different type to such a variable is now a compile error, as for any other
+  `int` variable.
+
 - `isset($object->items[$key])` now returns false for an absent integer index
   on a list property instead of throwing. String-byte temporaries used in
   comparisons are released, and `str_persist()` keeps its borrowed alias

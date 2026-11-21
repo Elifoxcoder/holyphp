@@ -7,7 +7,7 @@
 module.exports = {
   /* ============ Transport / SQLite / typed runtime (ported) ============ */
   accept_emfile: "Whether the last accept failed because the process ran out of descriptors.",
-  arr_clear: "Empties an array in place, keeping its allocated key/value storage.",
+  arr_clear: "Empties an array in place, keeping its allocated key/value storage. The elements are released (strings, arrays and objects no longer referenced elsewhere are freed).",
   arr_free: "Unsafe: frees an array and its element storage early (the values themselves are not released). A second call is a double free.",
   bt_close: "Closes a B-tree cursor.",
   bt_col_int: "Integer value of a column inside the current record.",

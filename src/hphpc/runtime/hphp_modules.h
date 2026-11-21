@@ -65,13 +65,21 @@ static inline void hp_free(void *p) { if (p) free(p); }
 /* Integer -> decimal into [end-24, end); returns the first digit. Same
  * helper the challenge runtime had in its hphp_rt.h. */
 static inline char *hp_fmt_i64(char *end, int64_t v) {
+    /* two digits per division step */
+    static const char d2[201] =
+        "00010203040506070809101112131415161718192021222324252627282930313233343536373839"
+        "40414243444546474849505152535455565758596061626364656667686970717273747576777879"
+        "8081828384858687888990919293949596979899";
+    uint64_t u = v < 0 ? (uint64_t)0 - (uint64_t)v : (uint64_t)v;
     char *p = end;
-    uint64_t u;
-    bool neg = v < 0;
-    u = neg ? (uint64_t)(-(v + 1)) + 1u : (uint64_t)v;
-    if (u == 0) *--p = '0';
-    while (u) { *--p = (char)('0' + (int)(u % 10u)); u /= 10u; }
-    if (neg) *--p = '-';
+    while (u >= 100) {
+        unsigned r = (unsigned)(u % 100);
+        u /= 100;
+        p -= 2; memcpy(p, d2 + 2 * r, 2);
+    }
+    if (u >= 10) { p -= 2; memcpy(p, d2 + 2 * u, 2); }
+    else *--p = (char)('0' + u);
+    if (v < 0) *--p = '-';
     return p;
 }
 
@@ -267,6 +275,8 @@ bool hp_sb_discard_t(int64_t h);
 int64_t hp_sb_len_t(int64_t h);
 bool hp_sb_prepend_t(int64_t h, hstr *s);
 bool hp_sb_int_t(int64_t h, int64_t n);
+bool hp_sb_put_t(int64_t h, hstr *x);
+bool hp_sb_bytes_t(int64_t h, int64_t ptr, int64_t n);
 bool hp_sb_json_t(int64_t h, int64_t ptr, int64_t len);
 bool hp_sb_json_str_t(int64_t h, hstr *s);
 hstr *hp_sb_take_t(int64_t h);

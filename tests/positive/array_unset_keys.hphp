@@ -1,0 +1,46 @@
+<?php
+// unset() on a list keeps the other keys (PHP semantics), and maps that see
+// many unset/insert rounds keep answering lookups (the hash index used to
+// fill up with tombstones until a lookup for a missing key never returned).
+$a = [];
+for ($i = 0; $i < 5; $i++) { $a[$i] = "x" . $i; }
+unset($a[2]);
+if (count($a) !== 4) { exit(1); }
+if (array_key_exists(2, $a)) { exit(2); }
+if ($a[4] !== "x4") { exit(3); }
+$a[2] = "y";
+if (count($a) !== 5) { exit(4); }
+$a[] = "z";
+if (!array_key_exists(5, $a)) { exit(5); }
+
+class Conns {
+    public array $out = [];
+    public function churn(int $n, int $rounds): int {
+        for ($i = 0; $i < $n; $i++) { $this->out[$i] = "o"; }
+        $hits = 0;
+        for ($r = 0; $r < $rounds; $r++) {
+            $fd = ($r * 7919) % $n;
+            if (array_key_exists($fd, $this->out)) { unset($this->out[$fd]); $hits++; }
+            else { $this->out[$fd] = "o"; }
+            if (isset($this->out[$n + $r])) { exit(6); }   /* missing-key probe */
+        }
+        return $hits;
+    }
+}
+$c = new Conns();
+$t = hrtime(true);
+$h = $c->churn(5000, 200000);
+if ($h <= 0) { exit(7); }
+$ms = intdiv(hrtime(true) - $t, 1000000);
+if ($ms > 5000) { echo "too slow: " . $ms . " ms\n"; exit(8); }
+
+$m = ["a" => 1, "b" => 2, "c" => 3, "d" => 4, "e" => 5, "f" => 6, "g" => 7,
+      "h" => 8, "i" => 9, "j" => 10, "k" => 11, "l" => 12, "m" => 13];
+$first = array_shift($m);
+if ($first !== 1 || $m["m"] !== 13 || $m["b"] !== 2) { exit(9); }
+$last = array_pop($m);
+if ($last !== 13 || isset($m["m"]) || $m["l"] !== 12) { exit(10); }
+$copy = $m;
+$copy["zz"] = 1;
+if ($copy["c"] !== 3 || isset($m["zz"])) { exit(11); }
+echo "ok\n";

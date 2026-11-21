@@ -402,36 +402,6 @@ hval hpbi_bt_read(hval h, hval out, hval cols) {
     if (!a || c < 0 || c > a->cap / 4) return hp_of_int(-1);
     return hp_of_int(hp_bt_read_raw(hp_val_to_int(h), a->v, c));
 }
-int64_t hp_iarr_new_t(int64_t n) {
-    return (int64_t)(intptr_t)hp_iarr_acquire(n, true);
-}
-int64_t hp_iarr_new_uninit_t(int64_t n) {
-    return (int64_t)(intptr_t)hp_iarr_acquire(n, false);
-}
-bool hp_iarr_release_t(int64_t h) {
-    hp_iarr_release_ptr((hp_iarr_t *)(intptr_t)h);
-    return true;
-}
-int64_t hp_iarr_get_t(int64_t h, int64_t k) {
-    hp_iarr_t *a = (hp_iarr_t *)(intptr_t)h;
-    if (!a || !a->leased || k < 0 || k >= a->cap) return 0;
-    return a->v[k];
-}
-bool hp_iarr_set_t(int64_t h, int64_t k, int64_t v) {
-    hp_iarr_t *a = (hp_iarr_t *)(intptr_t)h;
-    if (a && a->leased && k >= 0 && k < a->cap) a->v[k] = v;
-    return true;
-}
-int64_t hp_iarr_get_fast_t(int64_t h, int64_t k) {
-    return hp_iarr_get_fast_impl(h, k);
-}
-bool hp_iarr_set_fast_t(int64_t h, int64_t k, int64_t v) {
-    return hp_iarr_set_fast_impl(h, k, v);
-}
-int64_t hp_iarr_data_ptr_t(int64_t h) {
-    hp_iarr_t *a = (hp_iarr_t *)(intptr_t)h;
-    return (a && a->leased) ? (int64_t)(intptr_t)a->v : 0;
-}
 int64_t hp_bt_read_t(int64_t h, int64_t out, int64_t cols) {
     hp_iarr_t *a = (hp_iarr_t *)(intptr_t)out;
     if (!a || cols < 0 || cols > a->cap / 4) return -1;
@@ -1160,7 +1130,7 @@ hval hpbi_sqlite_last_insert_rowid(hval dbv) {
 
 hval hpbi_sqlite_errmsg(hval dbv) {
     sqlite3 *db = hp_sqlite_db(dbv);
-    return hp_of_str(hp_str_lit(db ? sqlite3_errmsg(db) : ""));
+    return hp_of_str(hp_str_cstr(db ? sqlite3_errmsg(db) : ""));
 }
 
 hval hpbi_sqlite_extended_errcode(hval dbv) {

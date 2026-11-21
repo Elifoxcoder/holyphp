@@ -1,0 +1,34 @@
+<?php
+// $s[$i] on a string gives a one-byte string; assigning it to a variable in
+// a parser loop must not keep every byte string alive (it used to leak ~48
+// bytes per read, ~290 MB for this loop).
+class Scanner {
+    pub string $s;
+    pub int $i = 0;
+    public function __construct(string $s) { $this->s = $s; }
+    public function spaces(): int {
+        $n = 0;
+        $this->i = 0;
+        while ($this->i < strlen($this->s)) {
+            $c = $this->s[$this->i];
+            if ($c == " ") { $n++; }
+            $this->i = $this->i + 1;
+        }
+        return $n;
+    }
+}
+$s = str_repeat("ab cd ", 10);
+$p = new Scanner($s);
+if ($p->spaces() !== 20) { exit(1); }
+$c = $s[0];
+$d = $s[1];
+if ($c . $d !== "ab" || $s[2] !== " " || strlen($s[5]) !== 1) { exit(2); }
+$z = "a" . chr(0) . "b";
+if ($z[1] !== chr(0) || strlen($z[1]) !== 1) { exit(3); }
+$total = 0;
+$before = memory_get_usage();
+for ($k = 0; $k < 100000; $k++) { $total += $p->spaces(); }
+$grow = memory_get_usage() - $before;
+if ($total !== 2000000) { exit(4); }
+if ($grow > 32 * 1024 * 1024) { println("grew " . $grow); exit(5); }
+println("ok");

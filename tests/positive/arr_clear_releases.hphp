@@ -1,0 +1,39 @@
+<?php
+// arr_clear() empties a queue and releases its rows: a server that collects
+// write requests per poll cycle and clears the queue afterwards used to keep
+// every row (and its strings) forever. Rows still referenced elsewhere stay
+// valid after the clear.
+class Queue {
+    public array $pending = [];
+    public function push(int $i, string $text): void {
+        $r = [];
+        $r["kind"] = 1;
+        $r["id"] = $i;
+        $r["text"] = $text . $i;
+        $this->pending[] = $r;
+    }
+}
+$q = new Queue();
+$big = str_repeat("x", 4000);
+$q->push(1, $big);
+$keep = $q->pending[0];
+arr_clear($q->pending);
+if (count($q->pending) !== 0) { exit(1); }
+if ($keep["id"] !== 1 || strlen($keep["text"]) !== 4001) { exit(2); }
+$q->push(2, "y");
+if (count($q->pending) !== 1 || $q->pending[0]["text"] !== "y2") { exit(3); }
+arr_clear($q->pending);
+
+for ($r = 0; $r < 2000; $r++) {
+    for ($k = 0; $k < 4; $k++) { $q->push($k, $big); }
+    arr_clear($q->pending);
+}
+$before = memory_get_usage();
+for ($r = 0; $r < 20000; $r++) {
+    for ($k = 0; $k < 4; $k++) { $q->push($k, $big); }
+    arr_clear($q->pending);
+}
+$grow = memory_get_usage() - $before;
+// leaking would be ~320 MB (80000 rows x 4 KB)
+if ($grow > 64 * 1024 * 1024) { println("grew " . $grow); exit(4); }
+println("ok");

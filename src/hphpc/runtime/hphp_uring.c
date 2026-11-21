@@ -4631,10 +4631,9 @@ hval hpbi_stream_peer(hval s) {
     if (getnameinfo((struct sockaddr *)&ss, sl, host, sizeof host, port, sizeof port,
                     NI_NUMERICHOST | NI_NUMERICSERV) != 0)
         return hp_of_str(hp_str_lit(""));
-    hstr *a = hp_str_concat2(hp_str_lit(host), hp_str_lit(":"));
-    hstr *r = hp_str_concat2(a, hp_str_lit(port));
-    hp_str_free(a);
-    return hp_of_str(r);
+    char addr[160];
+    snprintf(addr, sizeof addr, "%s:%s", host, port);
+    return hp_of_str(hp_str_cstr(addr));
 }
 
 hval hpbi_stream_close(hval s) {

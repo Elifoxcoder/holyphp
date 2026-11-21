@@ -3736,6 +3736,54 @@ static Expr *if_direct_assignment(PtrVec stmts, const char *name) {
     return NULL;
 }
 
+/* The scalar type an expression will certainly have, judged before it is
+ * checked and without side effects: literals, typed variables already in
+ * scope, builtins with a fixed int return, and integer arithmetic of those.
+ * NULL means "not sure"; the caller then keeps the dynamic slot. */
+static const Type *peek_scalar_type(Scope *sc, Expr *e) {
+    if (!e) return NULL;
+    switch (e->kind) {
+    case EX_INT: return ty_int;
+    case EX_FLOAT: return ty_float;
+    case EX_BOOL: return ty_bool;
+    case EX_VAR: {
+        VarSym *v = scope_find(sc, e->u.var.name);
+        if (!v || !v->type || v->captured_byref) return NULL;
+        if (v->type->kind == TY_INT) return ty_int;
+        if (v->type->kind == TY_FLOAT) return ty_float;
+        if (v->type->kind == TY_BOOL) return ty_bool;
+        return NULL;
+    }
+    case EX_CALL: {
+        Expr *callee = e->u.call.fn;
+        if (!callee || callee->kind != EX_VAR) return NULL;
+        const char *name = callee->u.var.name;
+        if (!callee->u.var.bare_name && scope_find(sc, name)) return NULL;
+        if (find_function(name)) return NULL;
+        const Builtin *b = builtin_lookup(name);
+        if (!b || b->ret != ty_int) return NULL;
+        if (b->shape == B_MAXMIN || b->shape == B_ABS) return NULL;
+        return ty_int;
+    }
+    case EX_UN:
+        return NULL;
+    case EX_BIN: {
+        switch (e->u.bin.op.kind) {
+        case T_PLUS: case T_MINUS: case T_STAR: case T_AMP: case T_PIPE:
+        case T_CARET: case T_SHL: case T_SHR:
+            break;
+        default:
+            return NULL;
+        }
+        const Type *l = peek_scalar_type(sc, e->u.bin.l);
+        const Type *r = peek_scalar_type(sc, e->u.bin.r);
+        return (l == ty_int && r == ty_int) ? ty_int : NULL;
+    }
+    default:
+        return NULL;
+    }
+}
+
 static void promote_if_definite_assignments(Scope *sc, PtrVec then_stmts,
                                             PtrVec else_stmts) {
     for (size_t i = 0; i < then_stmts.len; i++) {
@@ -3745,8 +3793,18 @@ static void promote_if_definite_assignments(Scope *sc, PtrVec then_stmts,
         if (expr->kind != EX_ASSIGN || !expr->u.assign.target ||
             expr->u.assign.target->kind != EX_VAR) continue;
         const char *name = expr->u.assign.target->u.var.name;
-        if (scope_find(sc, name) || !if_direct_assignment(else_stmts, name)) continue;
-        VarSym *v = scope_declare(sc, name, ty_mixed, expr->u.assign.target->tok, true);
+        Expr *other = scope_find(sc, name) ? NULL : if_direct_assignment(else_stmts, name);
+        if (!other) continue;
+        /* Both arms certainly store the same scalar type: the slot gets that
+         * type instead of a dynamic one (no boxing on every use). */
+        const Type *slot = ty_mixed;
+        if (expr->u.assign.op.kind == T_ASSIGN && other->u.assign.op.kind == T_ASSIGN &&
+            !expr->u.assign.ann && !other->u.assign.ann) {
+            const Type *a = peek_scalar_type(sc, expr->u.assign.value);
+            const Type *b = peek_scalar_type(sc, other->u.assign.value);
+            if (a && a == b) slot = a;
+        }
+        VarSym *v = scope_declare(sc, name, slot, expr->u.assign.target->tok, true);
         if (!v) continue;
         v->is_auto = true;
         if (sc->cur_fn == NULL && !program_global_find(name))

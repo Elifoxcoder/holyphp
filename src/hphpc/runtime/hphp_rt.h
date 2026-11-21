@@ -12,6 +12,7 @@
 #include <stddef.h>
 #include <setjmp.h>
 #include <stdarg.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,7 +25,32 @@ typedef struct {
 } Buf;
 void hbuf_init(Buf *b);
 void hbuf_putc(Buf *b, char c);
-void hbuf_write(Buf *b, const char *s, size_t n);
+void hbuf_grow_slow(Buf *b, size_t need);
+/* Copy n bytes with a few overlapping fixed-size moves the compiler emits
+ * inline instead of a libc memcpy call: response builders append many short
+ * pieces (keys, numbers, punctuation). Every access stays inside [s, s+n)
+ * and [d, d+n). */
+static inline void hbuf_copy(char *d, const char *s, size_t n) {
+    if (n >= 8 && n <= 16) {
+        uint64_t a, z;
+        memcpy(&a, s, 8); memcpy(&z, s + n - 8, 8);
+        memcpy(d, &a, 8); memcpy(d + n - 8, &z, 8);
+    } else if (n >= 4 && n < 8) {
+        uint32_t a, z;
+        memcpy(&a, s, 4); memcpy(&z, s + n - 4, 4);
+        memcpy(d, &a, 4); memcpy(d + n - 4, &z, 4);
+    } else if (n > 0 && n < 4) {
+        d[0] = s[0]; d[n / 2] = s[n / 2]; d[n - 1] = s[n - 1];
+    } else if (n > 16) {
+        memcpy(d, s, n);
+    }
+}
+static inline void hbuf_write(Buf *b, const char *s, size_t n) {
+    if (b->len + n + 1 > b->cap) hbuf_grow_slow(b, n);
+    hbuf_copy(b->data + b->len, s, n);
+    b->len += n;
+    b->data[b->len] = 0;
+}
 void hbuf_puts(Buf *b, const char *s);
 void hbuf_printf(Buf *b, const char *fmt, ...);
 char *hbuf_take(Buf *b); /* NUL-terminated, transfers ownership */
@@ -80,6 +106,9 @@ static inline hstr *hp_str_lit_site(_Atomic(hstr *) *slot, const char *cstr) {
     return expected;
 }
 hstr *hp_str_new(const char *bytes, size_t len);
+/* A fresh (refcounted) copy of a C string. Use this, not hp_str_lit, for
+ * runtime-computed text: hp_str_lit interns forever. */
+hstr *hp_str_cstr(const char *cstr);
 hstr *hp_str_copy(hstr *s);
 void hp_str_free(hstr *s);
 bool hp_str_eq(hstr *a, hstr *b);
@@ -129,12 +158,15 @@ struct hval {
     } u;
 };
 
-hval hp_of_int(int64_t i);
-hval hp_of_float(double f);
-hval hp_of_bool(bool b);
-hval hp_of_str(hstr *s);
-hval hp_of_arr(harr *a);
-hval hp_of_ptr(void *p);
+/* Boxing helpers are inline: generated code boxes and unboxes on almost
+ * every builtin call, and an out-of-line call per box cost more than the
+ * work it wrapped (the challenge feed decoder spent ~10% of its CPU here). */
+static inline hval hp_of_int(int64_t i) { hval v = { HV_INT, { .i = i } }; return v; }
+static inline hval hp_of_float(double f) { hval v = { HV_FLOAT, { .f = f } }; return v; }
+static inline hval hp_of_bool(bool b) { hval v = { HV_BOOL, { .b = b } }; return v; }
+static inline hval hp_of_str(hstr *s) { hval v = { HV_STR, { .s = s } }; return v; }
+static inline hval hp_of_arr(harr *a) { hval v = { HV_ARR, { .a = a } }; return v; }
+static inline hval hp_of_ptr(void *p) { hval v = { HV_OBJ, { .p = p } }; return v; }
 hval hp_of_clo(hclosure *c);
 static inline hval hp_hv_id(hval v) { return v; }
 hval hp_of_i128_str(hp_i128 v);     /* box an i128 as its decimal string */
@@ -165,7 +197,10 @@ hval hp_arg_keep_hval(hval value, bool retain_value);
 void *hp_arg_keep_ptr(void *value, HKind kind, bool retain_value);
 const char *hp_kind_name(HKind k);
 hstr *hp_val_to_str(hval v);       /* PHP-style cast to string */
-int64_t hp_val_to_int(hval v);
+int64_t hp_val_to_int_slow(hval v);
+static inline int64_t hp_val_to_int(hval v) {
+    return v.tag == HV_INT ? v.u.i : hp_val_to_int_slow(v);
+}
 double hp_val_to_float(hval v);
 bool hp_val_to_bool(hval v);
 bool hp_val_eq(hval a, hval b);    /* == */
@@ -387,12 +422,18 @@ extern HP_THREAD_QUAL hp_try_frame *hp_cur_try;
 extern HP_THREAD_QUAL hval hp_exception;
 void hp_try_push(hp_try_frame *f);
 void hp_try_pop(hp_try_frame *f);
-void *hp_cleanup_mark(void);
+/* Scope marks are taken and popped around nearly every block, mostly with
+ * nothing registered in between: inline both, call out only to unwind. */
+extern HP_THREAD_QUAL size_t hp_cleanup_len;
+static inline void *hp_cleanup_mark(void) { return (void *)(uintptr_t)hp_cleanup_len; }
 void hp_cleanup_register_hval(hval *slot);
 void hp_cleanup_register_ptr(void **slot, HKind kind);
 void hp_cleanup_register_box(hval **slot);
 void hp_cleanup_register_region(hp_region *region);
-void hp_cleanup_pop_to(void *mark);
+void hp_cleanup_pop_to_slow(void *mark);
+static inline void hp_cleanup_pop_to(void *mark) {
+    if ((size_t)(uintptr_t)mark != hp_cleanup_len) hp_cleanup_pop_to_slow(mark);
+}
 void hp_throw(hval v);
 void hp_throw_str(const char *msg);
 hstr *hp_exception_msg(void);

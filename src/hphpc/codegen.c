@@ -1397,6 +1397,127 @@ static void emit_builtin_call_body(Codegen *g, const char *name, PtrVec args,
         project_hval(dst, ret);
         return;
     }
+    /* Typed fast path: builtins with a hp_<name>_t twin in the runtime take
+     * unboxed int64_t/hstr* operands. With statically typed operands (and no
+     * freshly owned string argument, whose release the generic path handles)
+     * the call skips boxing every operand into an hval and unboxing the
+     * result. The prototype is declared at the call site, so programs that
+     * never use one of these modules do not mention it. */
+    {
+        static const struct { const char *name; const char *params; char ret; } T[] = {
+            /* strlen's twin lives in io_uring: left out, so plain programs
+             * never link that module (the iarr twins are in the core) */
+            {"iarr_len", "i", 'i'}, {"iarr_new", "i", 'i'}, {"iarr_new_uninit", "i", 'i'},
+            {"iarr_release", "i", 'b'}, {"iarr_get", "ii", 'i'}, {"iarr_set", "iii", 'b'},
+            {"iarr_get_fast", "ii", 'i'}, {"iarr_set_fast", "iii", 'b'},
+            {"iarr_data_ptr", "i", 'i'},
+            {"epoll_wait_iarr2", "iii", 'b'}, {"epoll_mod", "ii", 'b'},
+            {"sb_new", "", 'i'}, {"sb_reserve", "ii", 'b'}, {"sb_len", "i", 'i'},
+            {"sb_data_ptr", "i", 'i'}, {"sb_discard", "i", 'b'}, {"sb_prepend", "is", 'b'},
+            {"sb_put", "is", 'b'}, {"sb_bytes", "iii", 'b'}, {"sb_int", "ii", 'b'},
+            {"sb_json", "iii", 'b'}, {"sb_json_str", "is", 'b'},
+            {"stream_send_sb", "ii", 'i'}, {"stream_send_nb", "is", 'i'},
+            {"stream_send2_nb", "iss", 'i'}, {"stream_recv_release", "i", 'i'},
+            {"int_digits", "i", 'i'}, {"json_num_field", "ss", 'i'},
+            {"bt_last", "i", 'i'}, {"bt_first", "i", 'i'}, {"bt_prev", "i", 'i'},
+            {"bt_next", "i", 'i'}, {"bt_seek", "ii", 'i'}, {"bt_multi_seek", "iii", 'i'},
+            {"bt_tail", "ii", 'i'}, {"bt_multi_payloads", "ii", 'b'}, {"bt_multi_keys", "ii", 'i'},
+            {"bt_multi_release", "i", 'b'}, {"bt_rowid", "i", 'i'}, {"bt_payload_ptr", "i", 'i'},
+            {"bt_payload_size", "i", 'i'}, {"bt_payload_pin", "i", 'i'}, {"bt_page_release", "i", 'b'},
+            {"bt_cols", "i", 'i'}, {"bt_col_off", "i", 'i'}, {"bt_col_len", "i", 'i'},
+            {"bt_col_int", "i", 'i'}, {"bt_col_int_at", "ii", 'i'}, {"bt_read", "iii", 'i'},
+            {"str_at_eq", "siis", 'b'}, {"str_to_int", "s", 'i'},
+            {"str_to_int_range", "sii", 'i'}, {"http_request_bounds", "s", 'i'},
+            {"str_find_range", "ssi", 'i'},
+            {"sqlite_bind_int", "iii", 'b'}, {"sqlite_bind_text", "iis", 'b'},
+            {"sqlite_step", "i", 'i'}, {"sqlite_reset", "i", 'i'},
+            {"sqlite_clear_bindings", "i", 'b'}, {"sqlite_column_int", "ii", 'i'},
+            {"sqlite_changes", "i", 'i'},
+        };
+        for (size_t k = 0; k < sizeof T / sizeof T[0]; k++) {
+            if (strcmp(name, T[k].name) != 0) continue;
+            if (strlen(T[k].params) != args.len || !ret) break;
+            bool ok = true;
+            for (size_t i = 0; i < args.len && ok; i++) {
+                Expr *ae = (Expr *)args.items[i];
+                const Type *at = ae->type;
+                char want = T[k].params[i];
+                if (!at) ok = false;
+                else if (want == 'i') ok = at->kind == TY_INT;
+                else ok = at->kind == TY_STRING && !expr_is_fresh_owned(ae);
+            }
+            /* a bool twin may serve a builtin declared as int (sb_json):
+             * the bool widens to 0/1 like the generic path's result */
+            bool ret_ok = (T[k].ret == 'i' && ret->kind == TY_INT) ||
+                          (T[k].ret == 'b' && (ret->kind == TY_BOOL || ret->kind == TY_INT));
+            if (!ok || !ret_ok) break;
+            if (T[k].ret == 'b' && ret->kind == TY_INT) buf_puts(dst, "(int64_t)");
+            buf_printf(dst, "({ extern %s hp_%s_t(", T[k].ret == 'i' ? "int64_t" : "bool", name);
+            if (args.len == 0) buf_puts(dst, "void");
+            for (size_t i = 0; i < args.len; i++)
+                buf_puts(dst, i ? (T[k].params[i] == 'i' ? ", int64_t" : ", hstr *")
+                                : (T[k].params[i] == 'i' ? "int64_t" : "hstr *"));
+            buf_printf(dst, "); hp_%s_t(", name);
+            for (size_t i = 0; i < args.len; i++) {
+                if (i) buf_puts(dst, ", ");
+                emit_expr(g, args.items[i], dst);
+            }
+            buf_puts(dst, "); })");
+            return;
+        }
+    }
+    /* Raw memory intrinsics: with int-typed operands, u8_at/u8_set/i64_at/
+     * i64_set compile to the load or store itself instead of a runtime call
+     * that boxes every operand (same null check as the runtime versions). */
+    {
+        int intr = 0;   /* 1 u8_at, 2 i64_at, 3 u8_set, 4 i64_set */
+        if (strcmp(name, "u8_at") == 0 && args.len == 2) intr = 1;
+        else if (strcmp(name, "i64_at") == 0 && args.len == 2) intr = 2;
+        else if (strcmp(name, "u8_set") == 0 && args.len == 3) intr = 3;
+        else if (strcmp(name, "i64_set") == 0 && args.len == 3) intr = 4;
+        bool all_int = intr != 0;
+        for (size_t i = 0; all_int && i < args.len; i++) {
+            const Type *t = ((Expr *)args.items[i])->type;
+            if (!t || t->kind != TY_INT) all_int = false;
+        }
+        if (all_int) {
+            Buf a0, a1, a2;
+            buf_init(&a0); buf_init(&a1); buf_init(&a2);
+            emit_expr(g, args.items[0], &a0);
+            emit_expr(g, args.items[1], &a1);
+            if (args.len == 3) emit_expr(g, args.items[2], &a2);
+            const char *p0 = buf_take(&a0), *p1 = buf_take(&a1);
+            const char *p2 = args.len == 3 ? buf_take(&a2) : NULL;
+            Buf e;
+            buf_init(&e);
+            switch (intr) {
+            case 1:
+                buf_printf(&e, "({ const unsigned char *_hp_b = (const unsigned char *)(intptr_t)(%s); "
+                               "_hp_b ? (int64_t)_hp_b[(%s)] : (int64_t)0; })", p0, p1);
+                break;
+            case 2:
+                buf_printf(&e, "({ const char *_hp_b = (const char *)(intptr_t)(%s); int64_t _hp_v = 0; "
+                               "if (_hp_b) memcpy(&_hp_v, _hp_b + (%s) * 8, 8); _hp_v; })", p0, p1);
+                break;
+            case 3:
+                buf_printf(&e, "({ unsigned char *_hp_b = (unsigned char *)(intptr_t)(%s); int64_t _hp_o = (%s); "
+                               "int64_t _hp_x = (%s); if (_hp_b) _hp_b[_hp_o] = (unsigned char)(_hp_x & 255); "
+                               "_hp_x; })", p0, p1, p2);
+                break;
+            default:
+                buf_printf(&e, "({ char *_hp_b = (char *)(intptr_t)(%s); int64_t _hp_o = (%s); "
+                               "int64_t _hp_x = (%s); if (_hp_b) memcpy(_hp_b + _hp_o * 8, &_hp_x, 8); "
+                               "_hp_x; })", p0, p1, p2);
+                break;
+            }
+            free((void *)p0); free((void *)p1); free((void *)p2);
+            char *ex = buf_take(&e);
+            if (ret && ret->kind == TY_INT) buf_puts(dst, ex);
+            else { buf_printf(dst, "hp_of_int(%s)", ex); project_hval(dst, ret); }
+            free(ex);
+            return;
+        }
+    }
     /* color-aware classical IO builtins use their own C names; the
      * generic hpbi_<name> heuristic below would otherwise call
      * hpbi_print(hpbi_input), which does not exist. */
@@ -2340,6 +2461,11 @@ static bool expr_is_borrowed_heap(Expr *e) {
         (!strcmp(e->u.method.name, "current") || !strcmp(e->u.method.name, "key") ||
          !strcmp(e->u.method.name, "reset") || !strcmp(e->u.method.name, "end")))
         return true;
+    /* `$s[$i]` on a string makes a new one-byte string (see
+     * expr_is_fresh_owned); only array elements are borrowed */
+    if (e->kind == EX_INDEX && e->u.index.obj && e->u.index.obj->type &&
+        e->u.index.obj->type->kind == TY_STRING)
+        return false;
     return e->kind == EX_VAR || e->kind == EX_FIELD || e->kind == EX_INDEX ||
            e->kind == EX_ASSIGN;
 }
@@ -2982,7 +3108,7 @@ static void emit_cast(Codegen *g, Expr *e, Buf *dst) {
     if (to->kind == TY_STRING && from_i128) {
         buf_printf(dst, "hp_i128_to_str(%s)", os);
     } else if (to->kind == TY_STRING && from && type_is_numeric(from->kind)) {
-        buf_printf(dst, "hp_str_from_num(%s)", os);
+        buf_printf(dst, "hp_val_to_str(hv(%s))", os);
     } else if (to->kind == TY_STRING && from && from->kind == TY_BOOL) {
         buf_printf(dst, "(%s ? hp_str_lit(\"true\") : hp_str_lit(\"false\"))", os);
     } else if (to_i128 && from && from->kind == TY_STRING) {
@@ -3040,7 +3166,9 @@ static void emit_expr(Codegen *g, Expr *e, Buf *dst) {
         break;
     }
     case EX_STR: emit_str_lit(g, e->u.str.s, dst); break;
-    case EX_BOOL: buf_puts(dst, e->u.boolean.b ? "true" : "false"); break;
+    /* (bool) cast: C's true/false are plain ints, so hv(false) would box
+     * the integer 0 and "x" . false printed "x0" instead of PHP's "x" */
+    case EX_BOOL: buf_puts(dst, e->u.boolean.b ? "((bool)1)" : "((bool)0)"); break;
     case EX_NULL: buf_puts(dst, "hp_null"); break;
     case EX_TPL: emit_tpl(g, e, dst); break;
     case EX_VAR:

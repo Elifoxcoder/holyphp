@@ -1,0 +1,18 @@
+<?php
+// SHA-256 and HMAC-SHA256 against published test vectors (FIPS 180-2,
+// RFC 4231). Covers the one- and two-block padding paths and keys longer
+// than a block (hashed first) and longer than 256 bytes.
+if (sha256("") !== "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") { exit(1); }
+if (sha256("abc") !== "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") { exit(2); }
+if (sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+    !== "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1") { exit(3); }
+if (hash_hmac("sha256", "what do ya want for nothing?", "Jefe")
+    !== "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843") { exit(4); }
+$big = str_repeat(chr(170), 131);
+if (hash_hmac("sha256", "Test Using Larger Than Block-Size Key - Hash Key First", $big)
+    !== "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54") { exit(5); }
+// a key over 256 bytes must not be cut: it has to differ from its prefix
+$k1 = str_repeat("k", 300);
+$k2 = str_repeat("k", 256);
+if (hash_hmac("sha256", "m", $k1) === hash_hmac("sha256", "m", $k2)) { exit(6); }
+println("ok");

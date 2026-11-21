@@ -447,13 +447,19 @@ void hp_rc_dec(void *p) {
     hp_gc_unlock();
 }
 
+#define HP_VAL_TMP 48
+static char *hp_int_digits(int64_t v, char *end);
+static const char *hp_val_bytes(hval v, char *tmp, size_t *len);
+
 /* last byte the current echo statement wrote (0 = nothing yet) */
 static _Thread_local int hp_echo_last = 0;
 
 void hp_echo(hval v) {
-    hstr *s = hp_val_to_str(v);
-    fwrite(s->data, 1, s->len, stdout);
-    if (s->len) hp_echo_last = (unsigned char)s->data[s->len - 1];
+    char tmp[HP_VAL_TMP];
+    size_t n;
+    const char *p = hp_val_bytes(v, tmp, &n);
+    fwrite(p, 1, n, stdout);
+    if (n) hp_echo_last = (unsigned char)p[n - 1];
 }
 
 /* An echo statement ends its line - unless what it printed already ends
@@ -478,12 +484,8 @@ static void hbuf_grow(Buf *b, size_t need) {
 
 void hbuf_putc(Buf *b, char c) { hbuf_grow(b, 1); b->data[b->len++] = c; b->data[b->len] = 0; }
 
-void hbuf_write(Buf *b, const char *s, size_t n) {
-    hbuf_grow(b, n);
-    memcpy(b->data + b->len, s, n);
-    b->len += n;
-    b->data[b->len] = 0;
-}
+/* hbuf_write itself is inline in hphp_rt.h; this is its growth path. */
+void hbuf_grow_slow(Buf *b, size_t need) { hbuf_grow(b, need); }
 
 void hbuf_puts(Buf *b, const char *s) { hbuf_write(b, s, strlen(s)); }
 
@@ -513,7 +515,13 @@ char *hbuf_take(Buf *b) {
 /* ---------------- strings ---------------- */
 hstr *hp_str_new(const char *bytes, size_t len) {
     size_t cap = len + 1;
-    hstr *s = hp_alloc(sizeof(hstr) + cap);
+    /* every header field and the terminator are written below, so the
+     * zeroing of hp_alloc (calloc) would be wasted work */
+    hstr *s = malloc(sizeof(hstr) + cap);
+    if (!s) {
+        fprintf(stderr, "Fatal error: Allowed memory size exhausted\n");
+        exit(255);
+    }
     s->len = len;
     s->cap = cap;
     s->hash = 0;
@@ -523,26 +531,62 @@ hstr *hp_str_new(const char *bytes, size_t len) {
     return s;
 }
 
-typedef struct hp_literal { struct hp_literal *next; hstr *value; } hp_literal;
-static hp_literal *hp_literals;
+/* Interned literals: an open-addressing hash set keyed by the bytes. It used
+ * to be a linked list searched with strcmp, so every runtime hp_str_lit("")
+ * (empty results, null-to-string, ...) scanned all of a program's literals. */
+static hstr **hp_lit_tab;
+static size_t hp_lit_cap, hp_lit_len;
 static atomic_flag hp_literals_lock = ATOMIC_FLAG_INIT;
+
+static uint64_t hp_lit_hash(const char *p, size_t n) {
+    uint64_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < n; i++) { h ^= (unsigned char)p[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+static void hp_lit_grow(void) {
+    size_t ncap = hp_lit_cap ? hp_lit_cap * 2 : 1024;
+    hstr **nt = calloc(ncap, sizeof *nt);
+    if (!nt) { fputs("hphp: out of memory\n", stderr); exit(1); }
+    for (size_t i = 0; i < hp_lit_cap; i++) {
+        hstr *v = hp_lit_tab[i];
+        if (!v) continue;
+        size_t j = (size_t)hp_lit_hash(v->data, v->len) & (ncap - 1);
+        while (nt[j]) j = (j + 1) & (ncap - 1);
+        nt[j] = v;
+    }
+    free(hp_lit_tab);
+    hp_lit_tab = nt;
+    hp_lit_cap = ncap;
+}
 
 hstr *hp_str_lit(const char *cstr) {
     if (!cstr) cstr = "";
+    size_t n = strlen(cstr);
+    uint64_t h = hp_lit_hash(cstr, n);
     while (atomic_flag_test_and_set_explicit(&hp_literals_lock, memory_order_acquire)) { }
-    for (hp_literal *it = hp_literals; it; it = it->next) {
-        if (strcmp(it->value->data, cstr) == 0) {
+    if (hp_lit_len * 2 >= hp_lit_cap) hp_lit_grow();
+    size_t j = (size_t)h & (hp_lit_cap - 1);
+    for (;;) {
+        hstr *v = hp_lit_tab[j];
+        if (!v) break;
+        if (v->len == n && memcmp(v->data, cstr, n) == 0) {
             atomic_flag_clear_explicit(&hp_literals_lock, memory_order_release);
-            return it->value;
+            return v;
         }
+        j = (j + 1) & (hp_lit_cap - 1);
     }
-    hp_literal *it = (hp_literal *)hp_alloc(sizeof(*it));
-    it->value = hp_str_new(cstr, strlen(cstr));
-    it->value->rc = UINT32_MAX; /* literal pool owns these for process lifetime */
-    it->next = hp_literals;
-    hp_literals = it;
+    hstr *v = hp_str_new(cstr, n);
+    v->rc = UINT32_MAX; /* literal pool owns these for process lifetime */
+    hp_lit_tab[j] = v;
+    hp_lit_len++;
     atomic_flag_clear_explicit(&hp_literals_lock, memory_order_release);
-    return it->value;
+    return v;
+}
+
+hstr *hp_str_cstr(const char *cstr) {
+    if (!cstr) cstr = "";
+    return hp_str_new(cstr, strlen(cstr));
 }
 
 hstr *hp_str_copy(hstr *s) {
@@ -661,19 +705,56 @@ hstr *hp_str_concat_v(hval a, hval b) {
  * owned" is a lie, because the variable is still there afterwards. Codegen
  * emits this one for `.`, so `$b = $a . "x"` leaves $a alone; `$a .= "x"`
  * goes through hp_str_append_v, where overwriting $a is the point. */
+/* The bytes of v as PHP would print them, for concatenation. Numbers are
+ * formatted into tmp (HP_VAL_TMP bytes) instead of a new string: the string
+ * hp_val_to_str makes for an int or float was never released by the concat
+ * helpers, so every `"x" . $n` leaked one allocation. */
+static const char *hp_val_bytes(hval v, char *tmp, size_t *len) {
+    switch (v.tag) {
+    case HV_INT: {
+        char *p = hp_int_digits(v.u.i, tmp + HP_VAL_TMP);
+        *len = (size_t)(tmp + HP_VAL_TMP - p);
+        return p;
+    }
+    case HV_FLOAT: {
+        double f = v.u.f;
+        int n;
+        if (f == (double)(long long)f && fabs(f) < 1e15)
+            n = snprintf(tmp, HP_VAL_TMP, "%lld", (long long)f);
+        else
+            n = snprintf(tmp, HP_VAL_TMP, "%.14g", f);
+        *len = n > 0 ? (size_t)n : 0;
+        return tmp;
+    }
+    case HV_BOOL:
+        *len = v.u.b ? 1 : 0;
+        return "1";
+    default: {
+        hstr *s = hp_val_to_str(v);   /* an existing string or a literal */
+        if (!s) { *len = 0; return ""; }
+        *len = s->len;
+        return s->data;
+    }
+    }
+}
+
 hstr *hp_str_join_v(hval a, hval b) {
-    hstr *l = hp_val_to_str(a);
-    hstr *r = hp_val_to_str(b);
-    if (!l) l = hp_str_lit("");
-    if (!r) r = hp_str_lit("");
-    size_t len = l->len + r->len;
-    hstr *s = hp_alloc(sizeof(hstr) + len + 1);
+    char lt[HP_VAL_TMP], rt[HP_VAL_TMP];
+    size_t ln, rn;
+    const char *l = hp_val_bytes(a, lt, &ln);
+    const char *r = hp_val_bytes(b, rt, &rn);
+    size_t len = ln + rn;
+    hstr *s = malloc(sizeof(hstr) + len + 1);
+    if (!s) {
+        fprintf(stderr, "Fatal error: Allowed memory size exhausted\n");
+        exit(255);
+    }
     s->len = len;
     s->cap = len + 1;
     s->hash = 0;
     s->rc = 1;
-    memcpy(s->data, l->data, l->len);
-    memcpy(s->data + l->len, r->data, r->len);
+    memcpy(s->data, l, ln);
+    memcpy(s->data + ln, r, rn);
     s->data[len] = 0;
     return s;
 }
@@ -686,29 +767,38 @@ hstr *hp_str_append_v(hval a, hval b) {
 }/* Concat over an hval array — avoids struct varargs (Win64 ABI pitfalls). */
 hstr *hp_str_concat_n(int n, const hval *vals) {
     if (n <= 0 || !vals) return hp_str_lit("");
-    hstr **parts = malloc((size_t)n * sizeof *parts);
-    if (!parts) return hp_str_lit("");
+    /* one block: the part pointers, their lengths, and number scratch */
+    size_t each = sizeof(const char *) + sizeof(size_t) + HP_VAL_TMP;
+    char *blk = malloc((size_t)n * each);
+    if (!blk) return hp_str_lit("");
+    const char **ptr = (const char **)(void *)blk;
+    size_t *lens = (size_t *)(void *)(blk + (size_t)n * sizeof(const char *));
+    char *tmp = blk + (size_t)n * (sizeof(const char *) + sizeof(size_t));
     size_t len = 0;
     for (int i = 0; i < n; i++) {
-        parts[i] = hp_val_to_str(vals[i]);
-        if (parts[i]->len > SIZE_MAX - len) {
-            free(parts);
+        ptr[i] = hp_val_bytes(vals[i], tmp + (size_t)i * HP_VAL_TMP, &lens[i]);
+        if (lens[i] > SIZE_MAX - len) {
+            free(blk);
             return hp_str_lit("");
         }
-        len += parts[i]->len;
+        len += lens[i];
     }
-
-    hstr *s = hp_alloc(sizeof(hstr) + len + 1);
+    hstr *s = malloc(sizeof(hstr) + len + 1);
+    if (!s) {
+        fprintf(stderr, "Fatal error: Allowed memory size exhausted\n");
+        exit(255);
+    }
     s->len = len;
     s->cap = len + 1;
+    s->hash = 0;
     s->rc = 1;
     size_t off = 0;
     for (int i = 0; i < n; i++) {
-        memcpy(s->data + off, parts[i]->data, parts[i]->len);
-        off += parts[i]->len;
+        memcpy(s->data + off, ptr[i], lens[i]);
+        off += lens[i];
     }
     s->data[len] = 0;
-    free(parts);
+    free(blk);
     return s;
 }
 
@@ -728,10 +818,25 @@ hstr *hp_str_slice(hstr *s, int64_t start, int64_t end) {
     return hp_str_new(s->data + start, (size_t)(end - start));
 }
 
+/* One shared, never-freed string per byte value: `$s[$i]` in a parser loop
+ * then allocates nothing. Immortal (rc UINT32_MAX), so callers may release
+ * it like any owned result. */
+static _Atomic(hstr *) hp_byte_strs[256];
 hstr *hp_str_char_at(hstr *s, int64_t idx) {
     if (!s || idx < 0 || (uint64_t)idx >= (uint64_t)s->len)
         hp_throw_str("String index out of bounds");
-    return hp_str_new(s->data + idx, 1);
+    unsigned char c = (unsigned char)s->data[idx];
+    hstr *b = atomic_load_explicit(&hp_byte_strs[c], memory_order_acquire);
+    if (b) return b;
+    b = hp_str_new(s->data + idx, 1);
+    b->rc = UINT32_MAX;
+    hstr *expected = NULL;
+    if (!atomic_compare_exchange_strong_explicit(&hp_byte_strs[c], &expected, b,
+                                                 memory_order_acq_rel, memory_order_acquire)) {
+        free(b);            /* another thread installed it first */
+        b = expected;
+    }
+    return b;
 }
 
 int64_t hp_str_len(hstr *s) { return s ? (int64_t)s->len : 0; }
@@ -746,10 +851,38 @@ int64_t hp_str_index(hstr *hay, hstr *needle) {
     return -1;
 }
 
+/* Numbers become fresh strings. They used to go through hp_str_lit, which
+ * interned every distinct value for the process lifetime in a linked list
+ * searched with strcmp: O(distinct numbers) per conversion and unbounded
+ * memory (a server turning 280k user ids into strings spent most of its CPU
+ * there). Small non-negative ints share immortal strings. */
+#define HP_SMALL_INT_STRS 256
+static _Atomic(hstr *) hp_small_int_strs[HP_SMALL_INT_STRS];
+
+/* Decimal digits of v, written backwards from end; returns the start. No
+ * snprintf: this runs for every number concatenated into a string. */
+static char *hp_int_digits(int64_t v, char *end) {
+    uint64_t u = v < 0 ? 0 - (uint64_t)v : (uint64_t)v;
+    char *p = end;
+    do { *--p = (char)('0' + u % 10); u /= 10; } while (u);
+    if (v < 0) *--p = '-';
+    return p;
+}
+
 hstr *hp_str_from_int(int64_t v) {
-    char buf[32];
-    snprintf(buf, sizeof buf, "%lld", (long long)v);
-    return hp_str_lit(buf);
+    if (v >= 0 && v < HP_SMALL_INT_STRS) {
+        hstr *s = atomic_load_explicit(&hp_small_int_strs[v], memory_order_acquire);
+        if (s) return s;
+        char sbuf[8];
+        char *sp = hp_int_digits(v, sbuf + sizeof sbuf - 1);
+        sbuf[sizeof sbuf - 1] = 0;
+        s = hp_str_lit(sp);
+        atomic_store_explicit(&hp_small_int_strs[v], s, memory_order_release);
+        return s;
+    }
+    char buf[24];
+    char *p = hp_int_digits(v, buf + sizeof buf);
+    return hp_str_new(p, (size_t)(buf + sizeof buf - p));
 }
 
 hstr *hp_str_from_double(double v) {
@@ -758,7 +891,7 @@ hstr *hp_str_from_double(double v) {
         snprintf(buf, sizeof buf, "%lld", (long long)v);
     else
         snprintf(buf, sizeof buf, "%.14g", v);
-    return hp_str_lit(buf);
+    return hp_str_new(buf, strlen(buf));
 }
 
 hstr *hp_str_from_bool(bool b) { return hp_str_lit(b ? "1" : ""); }
@@ -933,12 +1066,6 @@ hstr *hp_str_reverse(hstr *s) {
 /* ---------------- values ---------------- */
 hval hp_null = { HV_NULL, { 0 } };
 
-hval hp_of_int(int64_t i) { hval v = { HV_INT, { .i = i } }; return v; }
-hval hp_of_float(double f) { hval v = { HV_FLOAT, { .f = f } }; return v; }
-hval hp_of_bool(bool b) { hval v = { HV_BOOL, { .b = b } }; return v; }
-hval hp_of_str(hstr *s) { hval v = { HV_STR, { .s = s } }; return v; }
-hval hp_of_arr(harr *a) { hval v = { HV_ARR, { .a = a } }; return v; }
-hval hp_of_ptr(void *p) { hval v = { HV_OBJ, { .p = p } }; return v; }
 
 hstr *hp_null_str(void) {
     static hstr *ns = NULL;
@@ -982,7 +1109,7 @@ hstr *hp_val_to_str(hval v) {
     }
 }
 
-int64_t hp_val_to_int(hval v) {
+int64_t hp_val_to_int_slow(hval v) {
     switch (v.tag) {
     case HV_INT: return v.u.i;
     case HV_FLOAT: return (int64_t)v.u.f;
@@ -1116,6 +1243,10 @@ static void hp_arr_grow(harr *a, size_t need) {
     a->cap = cap;
 }
 
+static void hp_arr_index_rebuild(harr *a, uint32_t icap);
+static void hp_arr_index_del(harr *a, size_t valslot);
+static uint32_t hp_arr_index_cap_for(size_t len);
+
 harr *hp_arr_clone(harr *a) {
     harr *r = hp_arr_new();
     r->is_map = a->is_map;
@@ -1135,6 +1266,9 @@ harr *hp_arr_clone(harr *a) {
         }
     }
     r->len = a->len;
+    /* a cloned map keeps O(1) lookups (it used to start without an index,
+     * so every lookup scanned all entries until the next insert) */
+    if (r->is_map && r->len >= 12) hp_arr_index_rebuild(r, hp_arr_index_cap_for(r->len));
     return r;
 }
 
@@ -1264,9 +1398,10 @@ hval hp_arr_push_vv_take(hval container, hval v) {
 hval hp_arr_pop(harr *a) {
     if (!a || a->len == 0) return hp_null;
     a = hp_arr_cow(a);
+    if (a->is_map && a->index) hp_arr_index_del(a, a->len - 1);
     hval v = a->vals[--a->len];
     a->vals[a->len] = hp_null; /* transfer the entry owner to the result */
-    if (a->is_map) hp_val_rc_dec(a->keys[a->len]);
+    if (a->is_map) { hp_val_rc_dec(a->keys[a->len]); a->keys[a->len] = hp_null; }
     return v;
 }
 
@@ -1279,6 +1414,9 @@ hval hp_arr_shift(harr *a) {
     memmove(a->vals, a->vals + 1, (a->len - 1) * sizeof(hval));
     if (a->is_map) memmove(a->keys, a->keys + 1, (a->len - 1) * sizeof(hval));
     a->len--;
+    if (a->is_map) a->keys[a->len] = hp_null;
+    /* every slot moved: re-index (the old index pointed one slot off) */
+    if (a->is_map && a->index) hp_arr_index_rebuild(a, hp_arr_index_cap_for(a->len));
     return v;
 }
 
@@ -1291,6 +1429,7 @@ void hp_arr_unshift(harr *a, hval v) {
     a->vals[0] = v;
     if (a->is_map) a->keys[0] = hp_of_int(a->next_index++);
     a->len++;
+    if (a->is_map && a->index) hp_arr_index_rebuild(a, hp_arr_index_cap_for(a->len));
 }
 
 /* strict array-key comparison (PHP array keys): only int==int and
@@ -1371,7 +1510,11 @@ static void hp_arr_index_rebuild(harr *a, uint32_t icap) {
     free(a->index);
     a->index = calloc(icap, sizeof(uint32_t));
     a->icap = icap;
-    a->ibudget = icap / 2;   /* keep load <= 0.5 between rebuilds */
+    /* Inserts AND deletes (tombstones) spend this budget, so live entries
+     * plus tombstones stay below icap: a probe for a missing key always
+     * reaches an empty slot. (Deletes used to be free, so unset-heavy maps
+     * filled the table with tombstones and lookups spun forever.) */
+    a->ibudget = a->len < icap ? (uint32_t)((icap - a->len) / 2) : 0;
     for (size_t i = 0; i < a->len; i++) {
         hval k = a->keys[i];
         if (k.tag != HV_INT && k.tag != HV_STR) continue;
@@ -1383,17 +1526,26 @@ static void hp_arr_index_rebuild(harr *a, uint32_t icap) {
     }
 }
 
+/* Index capacity for `len` live entries: a power of two with load <= 0.5. */
+static uint32_t hp_arr_index_cap_for(size_t len) {
+    uint32_t cap = 32;
+    while ((size_t)cap < len * 2 + 2) cap *= 2;
+    return cap;
+}
+
 static void hp_arr_index_add(harr *a, size_t valslot) {
     if (a->keys[valslot].tag != HV_INT && a->keys[valslot].tag != HV_STR)
         return;
     if (!a->index) {
         if (a->len < 12) return;          /* too small to be worth it */
-        hp_arr_index_rebuild(a, 32);
+        hp_arr_index_rebuild(a, hp_arr_index_cap_for(a->len));
+        return;                           /* the rebuild indexed valslot */
     }
     if (a->ibudget == 0) {
-        /* grow to keep load factor low, or just rebuild to clear tombstones */
-        uint32_t want = (a->len * 2 >= a->icap) ? a->icap * 2 : a->icap;
-        hp_arr_index_rebuild(a, want);
+        /* grow to keep load factor low, or just rebuild to clear tombstones;
+         * the rebuild indexes every live slot, valslot included */
+        hp_arr_index_rebuild(a, hp_arr_index_cap_for(a->len));
+        return;
     }
     uint32_t slot = (a->keys[valslot].tag == HV_INT
                          ? hp_hash_int(a->keys[valslot].u.i)
@@ -1417,6 +1569,7 @@ static void hp_arr_index_del(harr *a, size_t valslot) {
         if (e == 0) return;
         if (e == (uint32_t)valslot + 1) {
             a->index[slot] = 0xFFFFFFFFu;   /* tombstone */
+            if (a->ibudget) a->ibudget--;
             return;
         }
         slot = (slot + 1) & mask;
@@ -1431,6 +1584,14 @@ void hp_arr_unset(harr *a, hval key) {
     if (!a) return;
     int64_t i = hp_key_index(a, key);
     if (i < 0) return;
+    if (!a->is_map) {
+        /* PHP: unset($list[2]) leaves keys 0,1,3,4 (and the next push still
+         * gets the old next index). The swap below would renumber a list, so
+         * give it explicit keys first. */
+        a->is_map = true;
+        hp_arr_ensure_keys(a);
+        if (a->len >= 12) hp_arr_index_rebuild(a, hp_arr_index_cap_for(a->len));
+    }
     size_t last = a->len - 1;
     hp_val_rc_dec(a->vals[i]);
     if (a->is_map) hp_val_rc_dec(a->keys[i]);
@@ -1448,6 +1609,8 @@ void hp_arr_unset(harr *a, hval key) {
         hp_arr_index_del(a, (size_t)i);
     }
     a->len = last;
+    if (a->index && a->ibudget == 0)
+        hp_arr_index_rebuild(a, hp_arr_index_cap_for(a->len));
 }
 
 hval hp_arr_unset_owner(harr **owner, hval key) {
@@ -2076,10 +2239,9 @@ typedef struct hp_cleanup_node {
     unsigned mode; /* 0=hval, 1=pointer, 2=by-reference box */
 } hp_cleanup_node;
 static HP_THREAD_QUAL hp_cleanup_node *hp_cleanups;
-static HP_THREAD_QUAL size_t hp_cleanup_len;
+HP_THREAD_QUAL size_t hp_cleanup_len;
 static HP_THREAD_QUAL size_t hp_cleanup_cap;
 
-void *hp_cleanup_mark(void) { return (void *)(uintptr_t)hp_cleanup_len; }
 
 static void hp_cleanup_register(void *slot, HKind kind, unsigned mode) {
     if (hp_cleanup_len == hp_cleanup_cap) {
@@ -2102,7 +2264,7 @@ void hp_cleanup_register_region(hp_region *region) {
     hp_cleanup_register((void *)region, HV_NULL, 3);
 }
 
-void hp_cleanup_pop_to(void *mark) {
+void hp_cleanup_pop_to_slow(void *mark) {
     size_t target = (size_t)(uintptr_t)mark;
     if (target > hp_cleanup_len) target = 0;
     while (hp_cleanup_len > target) {
@@ -2155,7 +2317,7 @@ void hp_throw(hval v) {
 }
 
 void hp_throw_str(const char *msg) {
-    hp_throw(hp_of_str(hp_str_lit(msg)));
+    hp_throw(hp_of_str(hp_str_cstr(msg)));
 }
 
 hstr *hp_exception_msg(void) {

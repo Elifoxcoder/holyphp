@@ -412,7 +412,7 @@ hval hpbi_number_format(hval n, hval dec, hval dsep, hval tsep) {
     }
     if (dot) snprintf(out + oi, sizeof out - oi, "%s%s", ds, dot + 1);
     else out[oi] = 0;
-    RETS(hp_str_lit(out));
+    RETS(hp_str_cstr(out));
 }
 hval hpbi_json_encode(hval v) {
     /* minimal JSON serializer */
@@ -420,7 +420,7 @@ hval hpbi_json_encode(hval v) {
     buf_init(&b);
     hbuf_json_r(v, &b);
     char *s = hbuf_take(&b);
-    hstr *r = hp_str_lit(s);
+    hstr *r = hp_str_cstr(s);
     free(s);
     return hp_of_str(r);
 }
@@ -752,7 +752,7 @@ static hstr *hp_b64_encode(hstr *in) {
         hbuf_putc(&b, tab[(n >> 6) & 63]); hbuf_putc(&b, '=');
     }
     char *s = hbuf_take(&b);
-    hstr *r = hp_str_lit(s);
+    hstr *r = hp_str_cstr(s);
     free(s);
     return r;
 }
@@ -2566,7 +2566,7 @@ hval hpbi_ffi_call(hval fn, hval args) {
 hval hpbi_heap_dump(hval p) {
     char buf[64];
     snprintf(buf, sizeof buf, "%p", p.tag == HV_OBJ ? p.u.p : NULL);
-    RETS(hp_str_lit(buf));
+    RETS(hp_str_new(buf, strlen(buf)));
 }
 
 /* helper: scalar fallback ops used by codegen for mixed arithmetic */
@@ -3445,11 +3445,11 @@ hval hpbi_realpath(hval path) {
 #if defined(_WIN32)
     char out[MAX_PATH];
     if (!_fullpath(out, p->data, sizeof out)) RETB(false);
-    RETS(hp_str_lit(out));
+    RETS(hp_str_cstr(out));
 #else
     char out[4096];
     if (!realpath(p->data, out)) RETB(false);
-    RETS(hp_str_lit(out));
+    RETS(hp_str_cstr(out));
 #endif
 }
 hval hpbi_is_file(hval path) {
@@ -3623,7 +3623,7 @@ static hval http_perform(const char *host, int port, const char *path,
         }
         *sep = 0;
     }
-    hstr *respbody = hp_str_lit(sep ? sep + 4 : raw);
+    hstr *respbody = hp_str_cstr(sep ? sep + 4 : raw);
     free(raw);
     if (status == 0) RETB(false);
     harr *m = hp_arr_new();
@@ -4261,42 +4261,157 @@ static const uint32_t K256[64] = {
 };
 
 static uint32_t rotr32(uint32_t x, int n) { return (x >> n) | (x << (32 - n)); }
+static void hp_sha256_digest(const unsigned char *msg, size_t len, unsigned char out[32]);
+
+static void hp_sha256_compress_soft(uint32_t h[8], const unsigned char block[64]);
+
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+/* One block with the x86 SHA extensions (SHA-NI); same result as the scalar
+ * code, chosen at run time when the CPU reports the extension. */
+__attribute__((target("sha,sse4.1,ssse3")))
+static void hp_sha256_compress_ni(uint32_t h[8], const unsigned char block[64]) {
+    const __m128i mask = _mm_set_epi64x(0x0c0d0e0f08090a0bULL, 0x0405060700010203ULL);
+    __m128i tmp = _mm_loadu_si128((const __m128i *)(const void *)&h[0]);
+    __m128i st1 = _mm_loadu_si128((const __m128i *)(const void *)&h[4]);
+    tmp = _mm_shuffle_epi32(tmp, 0xB1);              /* CDAB */
+    st1 = _mm_shuffle_epi32(st1, 0x1B);              /* EFGH */
+    __m128i st0 = _mm_alignr_epi8(tmp, st1, 8);      /* ABEF */
+    st1 = _mm_blend_epi16(st1, tmp, 0xF0);           /* CDGH */
+    const __m128i abef = st0, cdgh = st1;
+    __m128i m[4];
+    for (int i = 0; i < 16; i++) {
+        __m128i w;
+        if (i < 4) {
+            w = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(const void *)(block + 16 * i)), mask);
+        } else {
+            __m128i a = _mm_sha256msg1_epu32(m[i & 3], m[(i + 1) & 3]);
+            a = _mm_add_epi32(a, _mm_alignr_epi8(m[(i + 3) & 3], m[(i + 2) & 3], 4));
+            w = _mm_sha256msg2_epu32(a, m[(i + 3) & 3]);
+        }
+        m[i & 3] = w;
+        __m128i k = _mm_add_epi32(w, _mm_loadu_si128((const __m128i *)(const void *)&K256[4 * i]));
+        st1 = _mm_sha256rnds2_epu32(st1, st0, k);
+        k = _mm_shuffle_epi32(k, 0x0E);
+        st0 = _mm_sha256rnds2_epu32(st0, st1, k);
+    }
+    st0 = _mm_add_epi32(st0, abef);
+    st1 = _mm_add_epi32(st1, cdgh);
+    tmp = _mm_shuffle_epi32(st0, 0x1B);              /* FEBA */
+    st1 = _mm_shuffle_epi32(st1, 0xB1);              /* DCHG */
+    st0 = _mm_blend_epi16(tmp, st1, 0xF0);           /* DCBA */
+    st1 = _mm_alignr_epi8(st1, tmp, 8);              /* HGFE */
+    _mm_storeu_si128((__m128i *)(void *)&h[0], st0);
+    _mm_storeu_si128((__m128i *)(void *)&h[4], st1);
+}
+#endif
+
+static void hp_sha256_compress(uint32_t h[8], const unsigned char block[64]) {
+#if defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+    static int have_ni = -1;
+    if (have_ni < 0) {
+        __builtin_cpu_init();
+        have_ni = __builtin_cpu_supports("sha") ? 1 : 0;
+        const char *e = getenv("HPHP_SHA_NI");
+        if (e && e[0] == '0') have_ni = 0;
+    }
+    if (have_ni) { hp_sha256_compress_ni(h, block); return; }
+#endif
+    hp_sha256_compress_soft(h, block);
+}
+
+static void hp_sha256_compress_soft(uint32_t h[8], const unsigned char block[64]) {
+    uint32_t w[64];
+    for (int i = 0; i < 16; i++)
+        w[i] = ((uint32_t)block[i*4] << 24) | ((uint32_t)block[i*4+1] << 16) |
+               ((uint32_t)block[i*4+2] << 8) | (uint32_t)block[i*4+3];
+    for (int i = 16; i < 64; i++) {
+        uint32_t s0 = rotr32(w[i-15], 7) ^ rotr32(w[i-15], 18) ^ (w[i-15] >> 3);
+        uint32_t s1 = rotr32(w[i-2], 17) ^ rotr32(w[i-2], 19) ^ (w[i-2] >> 10);
+        w[i] = w[i-16] + s0 + w[i-7] + s1;
+    }
+    uint32_t a = h[0], b = h[1], cc = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+    for (int i = 0; i < 64; i++) {
+        uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
+        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t t1 = hh + S1 + ch + K256[i] + w[i];
+        uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
+        uint32_t maj = (a & b) ^ (a & cc) ^ (b & cc);
+        uint32_t t2 = S0 + maj;
+        hh = g; g = f; f = e; e = d + t1;
+        d = cc; cc = b; b = a; a = t1 + t2;
+    }
+    h[0] += a; h[1] += b; h[2] += cc; h[3] += d;
+    h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+}
+
+static void hp_sha256_init(uint32_t h[8]) {
+    static const uint32_t init[8] = {
+        0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+        0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u
+    };
+    memcpy(h, init, sizeof init);
+}
+
+/* Finish SHA-256 from a state that has consumed exactly one 64-byte block. */
+static void hp_sha256_after_block(const uint32_t initial[8], const unsigned char *msg,
+                                  size_t len, unsigned char out[32]) {
+    uint32_t h[8];
+    memcpy(h, initial, sizeof h);
+    size_t total_len = len;
+    while (len >= 64) {
+        hp_sha256_compress(h, msg);
+        msg += 64;
+        len -= 64;
+    }
+    unsigned char tail[128] = {0};
+    memcpy(tail, msg, len);
+    tail[len] = 0x80;
+    size_t padded = len < 56 ? 64 : 128;
+    uint64_t bits = (uint64_t)(64 + total_len) * 8;
+    for (int i = 0; i < 8; i++) tail[padded - 8 + i] = (unsigned char)(bits >> (56 - 8 * i));
+    hp_sha256_compress(h, tail);
+    if (padded == 128) hp_sha256_compress(h, tail + 64);
+    for (int i = 0; i < 8; i++) {
+        out[i*4] = (unsigned char)(h[i] >> 24);
+        out[i*4+1] = (unsigned char)(h[i] >> 16);
+        out[i*4+2] = (unsigned char)(h[i] >> 8);
+        out[i*4+3] = (unsigned char)h[i];
+    }
+}
+
+typedef struct { uint32_t inner[8], outer[8]; } HpHmac256Ctx;
+
+static void hp_hmac256_init(HpHmac256Ctx *ctx, const unsigned char *key, size_t klen) {
+    unsigned char k[64] = {0}, ipad[64], opad[64];
+    if (klen > 64) hp_sha256_digest(key, klen, k);
+    else if (klen) memcpy(k, key, klen);
+    for (int i = 0; i < 64; i++) { ipad[i] = k[i] ^ 0x36; opad[i] = k[i] ^ 0x5c; }
+    hp_sha256_init(ctx->inner);
+    hp_sha256_init(ctx->outer);
+    hp_sha256_compress(ctx->inner, ipad);
+    hp_sha256_compress(ctx->outer, opad);
+}
+
+static void hp_hmac256_run(const HpHmac256Ctx *ctx, const unsigned char *msg,
+                           size_t len, unsigned char out[32]) {
+    unsigned char inner[32];
+    hp_sha256_after_block(ctx->inner, msg, len, inner);
+    hp_sha256_after_block(ctx->outer, inner, sizeof inner, out);
+}
 
 static void hp_sha256_digest(const unsigned char *msg, size_t len, unsigned char out[32]) {
-    uint32_t h[8] = { 0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
-                      0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u };
-    size_t padded = ((len + 8) / 64 + 1) * 64;
-    unsigned char *m = (unsigned char *)calloc(padded, 1);
-    if (!m) return;
-    memcpy(m, msg, len);
-    m[len] = 0x80;
-    uint64_t bits = (uint64_t)len * 8;
-    for (int i = 0; i < 8; i++) m[padded - 8 + i] = (unsigned char)(bits >> (56 - 8 * i));
-    for (size_t off = 0; off < padded; off += 64) {
-        uint32_t w[64];
-        for (int i = 0; i < 16; i++)
-            w[i] = ((uint32_t)m[off + i*4] << 24) | ((uint32_t)m[off + i*4+1] << 16) |
-                   ((uint32_t)m[off + i*4+2] << 8) | (uint32_t)m[off + i*4+3];
-        for (int i = 16; i < 64; i++) {
-            uint32_t s0 = rotr32(w[i-15], 7) ^ rotr32(w[i-15], 18) ^ (w[i-15] >> 3);
-            uint32_t s1 = rotr32(w[i-2], 17) ^ rotr32(w[i-2], 19) ^ (w[i-2] >> 10);
-            w[i] = w[i-16] + s0 + w[i-7] + s1;
-        }
-        uint32_t a = h[0], b = h[1], cc = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
-        for (int i = 0; i < 64; i++) {
-            uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
-            uint32_t ch = (e & f) ^ ((~e) & g);
-            uint32_t t1 = hh + S1 + ch + K256[i] + w[i];
-            uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
-            uint32_t maj = (a & b) ^ (a & cc) ^ (b & cc);
-            uint32_t t2 = S0 + maj;
-            hh = g; g = f; f = e; e = d + t1;
-            d = cc; cc = b; b = a; a = t1 + t2;
-        }
-        h[0] += a; h[1] += b; h[2] += cc; h[3] += d;
-        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
-    }
-    free(m);
+    uint32_t h[8];
+    hp_sha256_init(h);
+    size_t total = len;
+    while (len >= 64) { hp_sha256_compress(h, msg); msg += 64; len -= 64; }
+    unsigned char tail[128] = {0};
+    memcpy(tail, msg, len);
+    tail[len] = 0x80;
+    size_t padded = len < 56 ? 64 : 128;
+    uint64_t bits = (uint64_t)total * 8;
+    for (int i = 0; i < 8; i++) tail[padded - 8 + i] = (unsigned char)(bits >> (56 - 8 * i));
+    hp_sha256_compress(h, tail);
+    if (padded == 128) hp_sha256_compress(h, tail + 64);
     for (int i = 0; i < 8; i++) {
         out[i*4]   = (unsigned char)(h[i] >> 24);
         out[i*4+1] = (unsigned char)(h[i] >> 16);
@@ -4310,7 +4425,7 @@ static hstr *hp_sha256_hex(hstr *s) {
     hp_sha256_digest((const unsigned char *)s->data, s->len, d);
     char hex[65];
     for (int i = 0; i < 32; i++) sprintf(hex + i * 2, "%02x", d[i]);
-    return hp_str_lit(hex);
+    return hp_str_new(hex, 64);
 }
 
 hval hpbi_sha256(hval s) { RETS(hp_sha256_hex(hp_val_to_str(s))); }
@@ -4318,26 +4433,9 @@ hval hpbi_sha256(hval s) { RETS(hp_sha256_hex(hp_val_to_str(s))); }
 static void hp_hmac_sha256(const unsigned char *key, size_t klen,
                            const unsigned char *msg, size_t mlen,
                            unsigned char out[32]) {
-    unsigned char k[64], ipad[64], opad[64], kopad[64];
-    memset(k, 0, sizeof k);
-    if (klen > 64) hp_sha256_digest(key, klen, k);      /* long keys are hashed */
-    else memcpy(k, key, klen);
-    for (int i = 0; i < 64; i++) { ipad[i] = k[i] ^ 0x36; opad[i] = k[i] ^ 0x5c; }
-    unsigned char inner[64 + 0];
-    Buf ib;
-    buf_init(&ib);
-    buf_write(&ib, ipad, 64);
-    buf_write(&ib, msg, mlen);
-    unsigned char ih[32];
-    hp_sha256_digest((const unsigned char *)ib.data, ib.len, ih);
-    free(ib.data);
-    Buf ob;
-    buf_init(&ob);
-    buf_write(&ob, opad, 64);
-    buf_write(&ob, ih, 32);
-    hp_sha256_digest((const unsigned char *)ob.data, ob.len, out);
-    free(ob.data);
-    (void)inner; (void)kopad;
+    HpHmac256Ctx ctx;
+    hp_hmac256_init(&ctx, key, klen);
+    hp_hmac256_run(&ctx, msg, mlen, out);
 }
 
 hval hpbi_hash_hmac(hval algo, hval data, hval key, hval raw_output) {
@@ -4353,7 +4451,7 @@ hval hpbi_hash_hmac(hval algo, hval data, hval key, hval raw_output) {
     if (raw) RETS(hp_str_new(mac, 32));
     char hex[65];
     for (int i = 0; i < 32; i++) sprintf(hex + i * 2, "%02x", mac[i]);
-    RETS(hp_str_lit(hex));
+    RETS(hp_str_cstr(hex));
 }
 
 /* PBKDF2-HMAC-SHA256, PHP password_hash's bcrypt-format output with
@@ -4411,7 +4509,7 @@ hval hpbi_password_hash(hval pw) {
     hp_b64_encode_raw(dk, 32, b64dk);
     char out[128];
     snprintf(out, sizeof out, "$hphp$%d$%s$%s", rounds, b64salt, b64dk);
-    RETS(hp_str_lit(out));
+    RETS(hp_str_cstr(out));
 }
 
 static bool hp_ct_eq(const unsigned char *a, const unsigned char *b, size_t n) {
@@ -5431,20 +5529,6 @@ static bool hp_json_field(const char *j, size_t n, const char *key, size_t klen,
     return false;
 }
 
-/* A prepared JWT verifier keeps the secret, not a running HMAC state: this
- * core has only the one-shot helper (hp_hmac_sha256 above). The struct is
- * copied through a string handle, so it stays a plain byte blob. */
-typedef struct { unsigned char key[256]; size_t klen; } HpHmac256Ctx;
-static void hp_hmac256_init(HpHmac256Ctx *ctx, const unsigned char *key, size_t klen) {
-    if (klen > sizeof ctx->key) klen = sizeof ctx->key;
-    memcpy(ctx->key, key, klen);
-    ctx->klen = klen;
-}
-static void hp_hmac256_run(const HpHmac256Ctx *ctx, const unsigned char *msg,
-                           size_t n, unsigned char out[32]) {
-    hp_hmac_sha256(ctx->key, ctx->klen, msg, n, out);
-}
-
 static hstr *hp_jwt_verify_ctx_t(hstr *tok, const HpHmac256Ctx *ctx, int64_t now) {
     if (!tok || !ctx || tok->len < 8) return hp_str_lit("");
     const char *t = tok->data;
@@ -5620,12 +5704,25 @@ hval hpbi_live_bytes(void) { return hp_of_int(hp_live_bytes()); }
 hval hpbi_arr_clear(hval a) {
     if (a.tag == HV_ARR && a.u.a) {
         harr *x = a.u.a;
+        /* release what the array held: it used to forget the elements
+         * without dropping their references, so a queue emptied with
+         * arr_clear() leaked every row it ever held */
+        for (size_t i = 0; i < x->len; i++) {
+            hval v = x->vals[i];
+            x->vals[i] = hp_null;
+            hp_val_rc_dec(v);
+            if (x->is_map && x->keys) {
+                hval k = x->keys[i];
+                x->keys[i] = hp_null;
+                hp_val_rc_dec(k);
+            }
+        }
         x->len = 0;
         x->next_index = 0;
         x->is_map = false;
         if (x->index) {
             memset(x->index, 0, (size_t)x->icap * sizeof(uint32_t));
-            x->ibudget = x->icap;
+            x->ibudget = x->icap / 2;   /* same load limit as a rebuild */
         }
     }
     return hp_of_bool(true);
@@ -5864,6 +5961,56 @@ hval hpbi_sb_prepend(hval h, hval str) {
     hp_sb_prepend_bytes(s, x->data, x->len);
     return hp_of_bool(true);
 }
+/* Typed fast-path ABI for the string builder: the compiler calls these
+ * directly when the operands are statically int/string, skipping the hval
+ * boxing of the hpbi_ wrappers above. Same behaviour. */
+int64_t hp_sb_new_t(void) { return hpbi_sb_new().u.i; }
+bool hp_sb_put_t(int64_t h, hstr *x) {
+    HpSb *s = (HpSb *)(intptr_t)h;
+    if (x) hbuf_write(&s->b, x->data, x->len);
+    return true;
+}
+bool hp_sb_bytes_t(int64_t h, int64_t ptr, int64_t n) {
+    HpSb *s = (HpSb *)(intptr_t)h;
+    const char *p = (const char *)(intptr_t)ptr;
+    if (p && n > 0) hbuf_write(&s->b, p, (size_t)n);
+    return true;
+}
+bool hp_sb_int_t(int64_t h, int64_t n) {
+    HpSb *s = (HpSb *)(intptr_t)h;
+    char tmp[24];
+    char *p = hp_fmt_i64(tmp + sizeof tmp, n);
+    hbuf_write(&s->b, p, (size_t)(tmp + sizeof tmp - p));
+    return true;
+}
+bool hp_sb_json_t(int64_t h, int64_t ptr, int64_t n) {
+    HpSb *s = (HpSb *)(intptr_t)h;
+    const unsigned char *p = (const unsigned char *)(intptr_t)ptr;
+    if (p && n > 0) sb_json_esc(&s->b, p, (size_t)n);
+    else hbuf_puts(&s->b, "\"\"");
+    return true;
+}
+bool hp_sb_json_str_t(int64_t h, hstr *x) {
+    HpSb *s = (HpSb *)(intptr_t)h;
+    if (x) sb_json_esc(&s->b, (const unsigned char *)x->data, x->len);
+    else hbuf_puts(&s->b, "\"\"");
+    return true;
+}
+bool hp_sb_reserve_t(int64_t h, int64_t n) {
+    hp_sb_reserve_pooled((HpSb *)(intptr_t)h, n);
+    return true;
+}
+int64_t hp_sb_len_t(int64_t h) {
+    HpSb *s = (HpSb *)(intptr_t)h;
+    return (int64_t)(s->b.len - s->head);
+}
+bool hp_sb_prepend_t(int64_t h, hstr *x) {
+    if (x) hp_sb_prepend_bytes((HpSb *)(intptr_t)h, x->data, x->len);
+    return true;
+}
+int64_t hp_sb_data_ptr_t(int64_t h) { return hpbi_sb_data_ptr(hp_of_int(h)).u.i; }
+bool hp_sb_discard_t(int64_t h) { hpbi_sb_discard(hp_of_int(h)); return true; }
+
 hval hpbi_str_from_bytes(hval ptr, hval len) {
     const char *p = (const char *)hp_addr_arg(ptr);
     int64_t n = hp_val_to_int(len);
@@ -5911,6 +6058,39 @@ hval hpbi_iarr_set_fast(hval h, hval i, hval v) {
 hval hpbi_iarr_data_ptr(hval h) {
     hp_iarr_t *a = iarr_of(h);
     return hp_of_int((a && a->leased) ? (int64_t)(intptr_t)a->v : 0);
+}
+/* Typed twins of the iarr builtins (the compiler calls them directly with
+ * int operands). They live here, next to the generic ones, so a program
+ * that uses iarr does not pull in the SQLite module. */
+int64_t hp_iarr_new_t(int64_t n) {
+    return (int64_t)(intptr_t)hp_iarr_acquire(n, true);
+}
+int64_t hp_iarr_new_uninit_t(int64_t n) {
+    return (int64_t)(intptr_t)hp_iarr_acquire(n, false);
+}
+bool hp_iarr_release_t(int64_t h) {
+    hp_iarr_release_ptr((hp_iarr_t *)(intptr_t)h);
+    return true;
+}
+int64_t hp_iarr_get_t(int64_t h, int64_t k) {
+    hp_iarr_t *a = (hp_iarr_t *)(intptr_t)h;
+    if (!a || !a->leased || k < 0 || k >= a->cap) return 0;
+    return a->v[k];
+}
+bool hp_iarr_set_t(int64_t h, int64_t k, int64_t v) {
+    hp_iarr_t *a = (hp_iarr_t *)(intptr_t)h;
+    if (a && a->leased && k >= 0 && k < a->cap) a->v[k] = v;
+    return true;
+}
+int64_t hp_iarr_get_fast_t(int64_t h, int64_t k) {
+    return hp_iarr_get_fast_impl(h, k);
+}
+bool hp_iarr_set_fast_t(int64_t h, int64_t k, int64_t v) {
+    return hp_iarr_set_fast_impl(h, k, v);
+}
+int64_t hp_iarr_data_ptr_t(int64_t h) {
+    hp_iarr_t *a = (hp_iarr_t *)(intptr_t)h;
+    return (a && a->leased) ? (int64_t)(intptr_t)a->v : 0;
 }
 hval hpbi_iarr_len(hval h) {
     hp_iarr_t *a = iarr_of(h);

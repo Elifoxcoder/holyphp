@@ -738,7 +738,11 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
     char *out_abs = path_join(wd, out);
     int verbose = getenv("HPHP_VERBOSE") != NULL;
     (void)rt;
-    const char *opt = dev ? "-O0" : "-O2";
+    /* HPHP_OPT replaces the optimisation flags for generated code, runtime
+     * objects and the link (e.g. "-O3 -march=native -flto" for a server
+     * built on its target machine) */
+    const char *opt_env = getenv("HPHP_OPT");
+    const char *opt = dev ? "-O0" : (opt_env && *opt_env ? opt_env : "-O2");
 
     /* ---- which runtime modules this program actually uses ----
      * hp_rt and hp_std are the base and always come along. Thread, UI and
@@ -781,9 +785,15 @@ static int cc_build_in_dir(const char *wd, const char *rt, const char *cpath,
                         strstr(genc, "hpbi_nofile_limit") != NULL ||
                         strstr(genc, "hpbi_accept_emfile") != NULL ||
                         strstr(genc, "hpbi_runtime_stats") != NULL ||
-                        strstr(genc, "hpbi_runtime_diag_write") != NULL;
+                        strstr(genc, "hpbi_runtime_diag_write") != NULL ||
+                        /* typed fast-path calls (codegen T[] table) */
+                        strstr(genc, "hp_stream_send") != NULL ||
+                        strstr(genc, "hp_stream_recv_release_t") != NULL ||
+                        strstr(genc, "hp_epoll_") != NULL;
             needed[7] = strstr(genc, "hpbi_sqlite_") != NULL ||
-                        strstr(genc, "hpbi_bt_") != NULL;
+                        strstr(genc, "hpbi_bt_") != NULL ||
+                        strstr(genc, " hp_sqlite_") != NULL ||   /* typed fast path */
+                        strstr(genc, " hp_bt_") != NULL;
             free(genc);
         }
     }
@@ -1936,6 +1946,16 @@ int main(int argc, char **argv) {
         free(cache_key);
         cache_key = tagged;
         char *rt_tagged = fmt("%s_dev", rt_key);
+        free(rt_key);
+        rt_key = rt_tagged;
+    } else if (getenv("HPHP_OPT") && *getenv("HPHP_OPT")) {
+        /* the same for custom flags (HPHP_OPT): one slot per flag set */
+        unsigned long h = 5381;
+        for (const char *c = getenv("HPHP_OPT"); *c; c++) h = h * 33 + (unsigned char)*c;
+        char *tagged = fmt("%s_o%08lx", cache_key, h & 0xffffffffUL);
+        free(cache_key);
+        cache_key = tagged;
+        char *rt_tagged = fmt("%s_o%08lx", rt_key, h & 0xffffffffUL);
         free(rt_key);
         rt_key = rt_tagged;
     }

@@ -1,0 +1,14 @@
+<?php
+// Converting many distinct numbers to strings must stay linear. The runtime
+// used to intern every converted number forever in a list searched with
+// strcmp, so this loop took minutes and its memory never came back.
+$t = hrtime(true);
+$total = 0;
+for ($i = 0; $i < 300000; $i++) {
+    $s = "u" . $i;
+    $total += strlen($s) + strlen((string)($i * 3)) + strlen(json_encode($i));
+}
+$ms = intdiv(hrtime(true) - $t, 1000000);
+if ($total < 300000) { exit(1); }
+if ($ms > 5000) { echo "too slow: " . $ms . " ms\n"; exit(2); }
+echo "ok\n";
